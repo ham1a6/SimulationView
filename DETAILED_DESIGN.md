@@ -615,8 +615,8 @@ graph TD
     App --> OperationPanel["OperationPanel<br/>接続状態・原点・フレーム表示"]
     App --> Vab["Vab<br/>4列ボタングリッド(1+4+1行)"]
     App --> MapView["MapView<br/>地形描画canvas(3D, TerrainView)"]
-    App --> StatusPanel["StatusPanel<br/>StatusPanelConfig駆動の項目表示"]
-    App --> SideView["SideView<br/>断面図(CrossSectionView)+方位角スライダー"]
+    App --> TopStatusPanel["TopStatusPanel<br/>TabbedPanel: [各種情報]タブ=StatusPanel"]
+    App --> BottomStatusPanel["BottomStatusPanel<br/>TabbedPanel: [断面図]タブ=CrossSectionView"]
 
     App -.provide_context.-> WsSignals["WsSignals<br/>(接続状態・受信データのシグナル群)"]
     App -.provide_context.-> TerrainStore["TerrainStore<br/>(heightmap/metadataを両パネルで共有)"]
@@ -626,9 +626,9 @@ graph TD
     MapView --> Mesh["terrain::mesh<br/>ENU変換・頂点/インデックス生成"]
     MapView --> Renderer["terrain::renderer::TerrainRenderer<br/>wgpu Device/Queue/Pipeline"]
     MapView --> Camera["terrain::camera::Camera<br/>view_proj行列"]
-    SideView --> Profile["terrain::profile::build_profile<br/>原点から方位角方向へ地表をサンプリング"]
+    BottomStatusPanel --> Profile["terrain::profile::build_profile<br/>原点から方位角方向へ地表をサンプリング"]
     TerrainStore -.共有データ.-> MapView
-    TerrainStore -.共有データ.-> SideView
+    TerrainStore -.共有データ.-> BottomStatusPanel
 ```
 
 ### 6.2 WebSocket接続管理のクラス図
@@ -826,9 +826,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 }
 ```
 
-### 6.9 断面図(側面図パネル、`terrain::profile` / `CrossSectionView`)
+### 6.9 断面図(ボトムステータスパネルの「断面図」タブ、`terrain::profile` / `CrossSectionView`)
 
-側面図パネルは3D視点ではなく、**原点を起点に方位角スライダーで指定した方向の地表断面を
+ボトムステータスパネルは3D視点ではなく、**原点を起点に方位角スライダーで指定した方向の地表断面を
 2D(距離 vs 標高の折れ線)で表示する**。wgpuは使わずSVGで描画するため、中央地図用の
 `TerrainRenderer`とは完全に独立(GPUリソースを消費しない)。
 
@@ -858,21 +858,22 @@ flowchart LR
 ### 7.1 レイアウト
 
 ```
-┌─────────────┬───────────────────┬─────────────┐
-│ 操作パネル(上) │                   │ 状況パネル(上) │
-│  ステータス    │                   │  各種情報     │
-├─────────────┤     地図(3D地形)    ├─────────────┤
-│ 操作パネル(下) │                   │ 状況パネル(下) │
-│    VAB       │                   │  側面図       │
-└─────────────┴───────────────────┴─────────────┘
+┌─────────────┬───────────────────┬───────────────────┐
+│ 操作パネル(上) │                   │ トップステータスパネル │
+│  ステータス    │                   │  [各種情報]タブ      │
+├─────────────┤     地図(3D地形)    ├───────────────────┤
+│ 操作パネル(下) │                   │ ボトムステータスパネル │
+│    VAB       │                   │  [断面図]タブ        │
+└─────────────┴───────────────────┴───────────────────┘
 ```
 
 - CSS Gridで4列(左パネル固定 / 地図 / リサイザー(6px) / 右パネル)を構成する
 - 左パネルは`display:grid; grid-template-rows: 1fr auto;`で上下2分割(操作パネル/VAB)。
   VAB側は`auto`で内容の高さにぴったり合わせ、余った分は操作パネル側(`1fr`)が吸収する
   (固定`1fr 1fr`だと、VABの実寸と半分の高さがずれた際に一方に余白/スクロールが生じるため)
-- 右パネルは`grid-template-rows: 1fr 1fr;`で上下2分割(状況パネル/側面図、こちらは両方とも
-  内容量の変動が小さいため固定分割のままでよい)
+- 右パネルは`grid-template-rows: 1fr 1fr;`で上下2分割(トップ/ボトムステータスパネル、
+  こちらは両方とも内容量の変動が小さいため固定分割のままでよい)。両パネルとも
+  `TabbedPanel`(7.6節)で実装しており、現状は1タブのみだが後から同じ枠に別タブを追加できる
 - 左パネル幅は`--panel-width`(CSS変数、既定320px)で固定
 - 地図・右パネルの幅は`grid-template-columns`の`minmax(下限px, Nfr)`で指定し、`N`(fr値)を
   Leptosの`RwSignal<f64>`で保持する。ドラッグ量(スクリーン座標のpx)をそのままfr値に加減算する
@@ -914,6 +915,44 @@ flowchart LR
 - フロント側は表示項目をハードコードせず、`items`の定義通りに`SimState.status_values`を
   並べて表示する
 - v1では数値項目のみを対象とする
+
+### 7.6 タブ付きパネル(`components/tabbed_panel.rs`)
+
+右パネル上下段(トップ/ボトムステータスパネル、`components/right_panel.rs`)は、
+汎用の`TabbedPanel`コンポーネントで実装する。パネル固有の名前(「各種情報」「側面図」等)は
+**タブのラベル**であり、パネル自体の見出し(タイトル)は位置に基づく汎用名
+(「トップステータスパネル」「ボトムステータスパネル」)にすることで、後から同じ枠に
+別内容のタブを追加できるようにしてある。
+
+```mermaid
+classDiagram
+    class TabbedPanel {
+        +String title
+        +Vec~Tab~ tabs
+    }
+    class Tab {
+        -label: &str
+        -view: AnyView
+    }
+    class TopStatusPanel {
+        title = "トップステータスパネル"
+        tabs = [("各種情報", StatusPanel)]
+    }
+    class BottomStatusPanel {
+        title = "ボトムステータスパネル"
+        tabs = [("断面図", CrossSectionView)]
+    }
+    TabbedPanel o-- Tab
+    TopStatusPanel ..> TabbedPanel : 使う
+    BottomStatusPanel ..> TabbedPanel : 使う
+```
+
+- `active: RwSignal<usize>`で選択中タブのインデックスを保持する
+- 各タブの中身(`AnyView`)は初回描画時に全タブぶん一度だけ生成してDOMに残し、
+  非選択タブは`style:display="none"`で隠すだけにする(タブ切り替えのたびに
+  作り直さない。Leptosの再マウントコストを避けるための一般的なパターン)
+- タブが1個しかない場合でもタブバー自体は表示する(見た目の一貫性のため、
+  タブ数によって表示/非表示を切り替えるような分岐は入れていない)
 
 ---
 

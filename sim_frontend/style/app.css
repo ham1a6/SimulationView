@@ -81,14 +81,65 @@ body {
     height: 100%;
 }
 
-/* 側面図(右パネル下部): ヘッダーの下にCrossSectionViewが残り高さいっぱいに広がる。 */
-.side-view {
+/* タブ付きパネル(右パネル上下段で共通、components/tabbed_panel.rs)。
+   ヘッダー(タイトル+タブバー)の下に選択中タブの内容が残り高さいっぱいに広がる。 */
+.tabbed-panel {
     display: flex;
     flex-direction: column;
 }
 
-.side-view h2 {
+.tabbed-panel-header {
     flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.4rem;
+}
+
+.tabbed-panel-header h2 {
+    margin: 0;
+}
+
+.tab-bar {
+    display: flex;
+    gap: 4px;
+}
+
+.tab-button {
+    background: transparent;
+    color: #999;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.15rem 0.55rem;
+    font-size: 0.72rem;
+    cursor: pointer;
+}
+
+.tab-button:hover {
+    color: var(--fg);
+    border-color: var(--accent);
+}
+
+.tab-button.active {
+    background: #234;
+    color: var(--fg);
+    border-color: var(--accent);
+}
+
+.tabbed-panel-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    margin-top: 0.5rem;
+}
+
+.tab-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
 }
 
 /* 断面図(側面図パネルの中身): 上=SVGチャート(残り高さいっぱい)、下=方位角スライダー。 */

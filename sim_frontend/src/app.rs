@@ -4,9 +4,9 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
-use crate::components::map_view::{MapView, SideView};
+use crate::components::map_view::MapView;
 use crate::components::operation_panel::OperationPanel;
-use crate::components::status_panel::StatusPanel;
+use crate::components::right_panel::{BottomStatusPanel, TopStatusPanel};
 use crate::components::vab::Vab;
 use crate::terrain::store::TerrainStore;
 use crate::ws::{default_ws_url, WsConnection, WsSignals};
@@ -97,8 +97,8 @@ pub fn App() -> impl IntoView {
                 ></div>
 
                 <div class="right-panel">
-                    <StatusPanel/>
-                    <SideView/>
+                    <TopStatusPanel/>
+                    <BottomStatusPanel/>
                 </div>
             </div>
         </div>
