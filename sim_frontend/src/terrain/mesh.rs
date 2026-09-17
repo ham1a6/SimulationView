@@ -96,6 +96,12 @@ fn geodetic_to_ecef(lat: f64, lon: f64, h: f64, a: f64, e2: f64) -> (f64, f64, f
     (x, y, z)
 }
 
+/// 海域(heightmapがNaN=データなし)の塗り色。DETAILED_DESIGN.md 2.3節: 元データが複数の
+/// GeoTIFFタイルに分かれており、タイルが存在しない領域・各タイル内のNODATA画素は
+/// geotiff_preprocessがNaNとして出力する(海の目印)。地形の標高グラデーションとは
+/// 明確に区別できる水色にする。
+const WATER_COLOR: [f32; 3] = [0.55, 0.78, 0.92];
+
 /// 標高を正規化し、低地(緑〜青みの低彩度)→高山(白に近い明色)の地形図的カラーランプへ写像する
 /// (DETAILED_DESIGN.md 6.7節)。カラーストップは実装時に調整可能な固定テーブル。
 fn elevation_to_color(elevation: f32, min: f32, max: f32) -> [f32; 3] {
@@ -128,7 +134,8 @@ fn elevation_to_color(elevation: f32, min: f32, max: f32) -> [f32; 3] {
     STOPS[STOPS.len() - 1].1
 }
 
-/// heightmapを双線形補間でサンプリングする。範囲外ならNone。
+/// heightmapを双線形補間でサンプリングする。範囲外ならNone。海域(周辺4点のいずれかがNaN)は
+/// 標高0mとして扱う(NaNをそのまま返すと呼び出し側の計算がNaN汚染されるため)。
 /// `terrain/profile.rs`(断面図)・`components/terrain_view.rs`(カメラ注視点の高さ)から使う。
 pub fn sample_heightmap(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> Option<f32> {
     let b = &data.metadata.geodetic_bounds;
@@ -155,7 +162,8 @@ pub fn sample_heightmap(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> Optio
     let h11 = data.heightmap[y1 * width + x1];
     let h0 = h00 + (h10 - h00) * tx;
     let h1 = h01 + (h11 - h01) * tx;
-    Some(h0 + (h1 - h0) * ty)
+    let result = h0 + (h1 - h0) * ty;
+    Some(if result.is_nan() { 0.0 } else { result })
 }
 
 /// heightmap全体からメッシュを構築する。原点変更時にも呼び直す(DETAILED_DESIGN.md 3.3節)。
@@ -173,9 +181,15 @@ pub fn build_mesh(data: &TerrainData, origin: &Origin) -> TerrainMesh {
             let lon = bounds.min_lon
                 + (i as f64 / (width - 1) as f64) * (bounds.max_lon - bounds.min_lon);
             let elevation = data.heightmap[j * width + i];
-            let position = transform.transform(lat, lon, elevation as f64);
-            let color =
-                elevation_to_color(elevation, data.metadata.elevation_min, data.metadata.elevation_max);
+            // NaN = データなし(海域、geotiff_preprocess参照)。頂点位置はNaNだと破綻するため
+            // 標高0mとして配置し、色だけ地形グラデーションと区別できる水色にする。
+            let is_ocean = elevation.is_nan();
+            let position = transform.transform(lat, lon, if is_ocean { 0.0 } else { elevation as f64 });
+            let color = if is_ocean {
+                WATER_COLOR
+            } else {
+                elevation_to_color(elevation, data.metadata.elevation_min, data.metadata.elevation_max)
+            };
             vertices.push(TerrainVertex { position, color });
         }
     }

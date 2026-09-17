@@ -115,10 +115,13 @@ sim_server\build\tools\geotiff_preprocess\Debug\geotiff_preprocess.exe
 成功すると以下のようなログが出る:
 
 ```
-[geotiff_preprocess] composited 17 tile(s) into 18000x18000 mosaic (missing tiles filled with 0m)
+[geotiff_preprocess] composited 17 tile(s) into 18000x18000 mosaic (missing tiles left as NaN = ocean)
 [geotiff_preprocess] wrote sim_server/assets/terrain\heightmap.bin and sim_server/assets/terrain\metadata.json
 [geotiff_preprocess] elevation range: -11.5... .. 3677.9...
 ```
+
+存在しないタイル・各タイル内のNODATA画素(主に海域)はNaNとして出力され、Web UI側で
+地形グラデーションとは別の水色として塗り分けられる(標高0mとは区別される)。
 
 ---
 

@@ -2,7 +2,8 @@
 //
 // map_data/ 内の *_DSM.tif を機械的に列挙し(DETAILED_DESIGN.md 2.1節)、緯度経度グリッド上の
 // ピクセル位置にそのまま敷き詰めてモザイクする(北緯35〜40度・東経135〜140度、
-// 18000×18000px)。実在しない8タイル分は標高0mで埋める(1.4節・2.3節)。
+// 18000×18000px)。データが存在しない領域(実在しない8タイル分 + 各タイル内のNODATA画素、
+// 主に海域)はNaNで埋め、標高0mとは区別する(海の色で塗るための目印。1.4節・2.3節)。
 // 再投影は行わない: 入力GeoTIFF(ALOS DSM)は既にEPSG:4326の緯度経度グリッドに
 // 1タイル=1度×1度ちょうどで整列しているため、単純に読み取って敷き詰め、
 // 平均法でダウンサンプリングするだけでよい(2.2節)。
@@ -11,11 +12,13 @@
 //   既定値はリポジトリルートから実行する前提のパス。
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -95,9 +98,21 @@ SourceGrid load_dsm_tile(const std::string& path) {
     // GDT_Float32を指定することで、元データが16bit整数でもGDALが自動的にfloatへ変換して読む。
     const CPLErr err = band->RasterIO(GF_Read, 0, 0, width, height, elevation.data(), width,
                                        height, GDT_Float32, 0, 0);
+    // タイル内のNODATA画素(主に海域)をNaNへ置き換える。海の色で塗る目印として使う
+    // (build_mosaic/downsample_averageもNaNを「データなし」として扱う)。
+    int has_nodata = 0;
+    const double nodata_value = band->GetNoDataValue(&has_nodata);
     GDALClose(dataset);
     if (err != CE_None) {
         throw std::runtime_error("failed to read raster data: " + path);
+    }
+    if (has_nodata) {
+        const float nodata_f = static_cast<float>(nodata_value);
+        for (float& v : elevation) {
+            if (v == nodata_f) {
+                v = std::numeric_limits<float>::quiet_NaN();
+            }
+        }
     }
 
     SourceGrid grid;
@@ -142,10 +157,11 @@ std::optional<TileId> parse_tile_filename(const std::string& filename) {
 }
 
 // map_dataディレクトリ内の*_DSM.tifを機械的に列挙してモザイクする(DETAILED_DESIGN.md 2.1節・2.3節)。
-// 見つからないタイル分は標高0mのまま(呼び出し前にcanvasを0初期化しておくこと)。
+// 見つからないタイル分はNaNのまま(「データなし」=海域の目印。0mで埋めると実際の海抜0m付近の
+// 陸地と区別がつかなくなるため)。
 std::vector<float> build_mosaic(const std::string& map_data_dir) {
     std::vector<float> canvas(static_cast<size_t>(kMosaicWidth) * static_cast<size_t>(kMosaicHeight),
-                               0.0f);
+                               std::numeric_limits<float>::quiet_NaN());
 
     int tiles_found = 0;
     for (const auto& entry : fs::directory_iterator(map_data_dir)) {
@@ -194,15 +210,19 @@ std::vector<float> build_mosaic(const std::string& map_data_dir) {
     }
 
     std::cout << "[geotiff_preprocess] composited " << tiles_found << " tile(s) into "
-               << kMosaicWidth << "x" << kMosaicHeight << " mosaic (missing tiles filled with 0m)"
-               << std::endl;
+               << kMosaicWidth << "x" << kMosaicHeight
+               << " mosaic (missing tiles left as NaN = ocean)" << std::endl;
     return canvas;
 }
 
 // 平均法(average)でダウンサンプリングする(DETAILED_DESIGN.md 2.4節)。行順は入力と同じ(北→南)。
+// NaN(データなし=海域、load_dsm_tile/build_mosaic参照)は平均から除外する。ブロック内に
+// 実データが1画素でもあればその平均を採用し、ブロック全体がNaNの場合のみ出力もNaN(海)にする
+// (陸地の縁で実データを最大限活かすため)。
 std::vector<float> downsample_average(const std::vector<float>& src, int src_w, int src_h,
                                        int dst_w, int dst_h) {
-    std::vector<float> dst(static_cast<size_t>(dst_w) * static_cast<size_t>(dst_h), 0.0f);
+    std::vector<float> dst(static_cast<size_t>(dst_w) * static_cast<size_t>(dst_h),
+                            std::numeric_limits<float>::quiet_NaN());
 
     for (int dy = 0; dy < dst_h; ++dy) {
         const int sy0 = static_cast<int>(static_cast<int64_t>(dy) * src_h / dst_h);
@@ -218,12 +238,16 @@ std::vector<float> downsample_average(const std::vector<float>& src, int src_w, 
             for (int sy = sy0; sy < sy1 && sy < src_h; ++sy) {
                 const size_t row_offset = static_cast<size_t>(sy) * static_cast<size_t>(src_w);
                 for (int sx = sx0; sx < sx1 && sx < src_w; ++sx) {
-                    sum += src[row_offset + static_cast<size_t>(sx)];
-                    ++count;
+                    const float v = src[row_offset + static_cast<size_t>(sx)];
+                    if (!std::isnan(v)) {
+                        sum += v;
+                        ++count;
+                    }
                 }
             }
             dst[static_cast<size_t>(dy) * static_cast<size_t>(dst_w) + static_cast<size_t>(dx)] =
-                count > 0 ? static_cast<float>(sum / static_cast<double>(count)) : 0.0f;
+                count > 0 ? static_cast<float>(sum / static_cast<double>(count))
+                          : std::numeric_limits<float>::quiet_NaN();
         }
     }
     return dst;
@@ -316,7 +340,17 @@ int main(int argc, char** argv) {
         const std::vector<float> output =
             flip_rows_north_to_south(downsampled, kTargetWidth, kTargetHeight);
 
-        const auto [min_it, max_it] = std::minmax_element(output.begin(), output.end());
+        // std::minmax_elementはNaNを正しく除外できない(NaNとの比較は常にfalseになるため)。
+        // 海(NaN)を除いた実データだけでmin/maxを求める。
+        float elevation_min = std::numeric_limits<float>::infinity();
+        float elevation_max = -std::numeric_limits<float>::infinity();
+        for (float v : output) {
+            if (std::isnan(v)) {
+                continue;
+            }
+            elevation_min = std::min(elevation_min, v);
+            elevation_max = std::max(elevation_max, v);
+        }
 
         const GeodeticBounds bounds{kMosaicMinLat, kMosaicMaxLat, kMosaicMinLon, kMosaicMaxLon};
 
@@ -324,13 +358,13 @@ int main(int argc, char** argv) {
         fs::create_directories(out_dir);
 
         write_heightmap_bin(out_dir / "heightmap.bin", output);
-        write_metadata_json(out_dir / "metadata.json", kTargetWidth, kTargetHeight, *min_it,
-                             *max_it, bounds);
+        write_metadata_json(out_dir / "metadata.json", kTargetWidth, kTargetHeight, elevation_min,
+                             elevation_max, bounds);
 
         std::cout << "[geotiff_preprocess] wrote " << (out_dir / "heightmap.bin").string()
                    << " and " << (out_dir / "metadata.json").string() << std::endl;
-        std::cout << "[geotiff_preprocess] elevation range: " << *min_it << " .. " << *max_it
-                   << std::endl;
+        std::cout << "[geotiff_preprocess] elevation range: " << elevation_min << " .. "
+                   << elevation_max << std::endl;
     } catch (const std::exception& e) {
         std::cerr << "[geotiff_preprocess] error: " << e.what() << std::endl;
         return 1;
