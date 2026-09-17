@@ -103,8 +103,15 @@ winget(`Rustlang.Rustup`)と`cargo install trunk`で導入済み。
 ```
 cd sim_frontend
 cargo check --target wasm32-unknown-unknown   # コンパイル確認のみ
-trunk serve --port 8081                        # 開発サーバー起動(既定の8080はDocker/WSLが使用中のため8081を使う)
+trunk serve                                     # 開発サーバー起動(ポート・待受アドレスはTrunk.toml参照)
 ```
+
+`sim_frontend/Trunk.toml`でポート8081(既定の8080はDocker/WSLが使用中のため)・待受アドレス
+`0.0.0.0`(LAN上の別端末からもアクセスできるよう全インターフェースで待ち受ける。sim_server側も
+`ws_server.cpp`で同様に`0.0.0.0`を明示している)・`disable_address_lookup = true`(このマシンでは
+起動時のネットワークインターフェース・ホスト名列挙処理がDocker関連の仮想ネットワーク環境で
+ハングし、実際には`server listening at:`ログの後も接続できない状態が続く問題があったため無効化。
+`trunk serve --help`の`--disable-address-lookup`参照)を設定済み。コマンドラインでの指定は不要。
 
 注意: このマシンでは環境変数`NO_COLOR=1`が設定されており、trunkの`--no-color`引数パーサ(clapが`true`/`false`を期待)と
 衝突してエラーになる。`trunk`実行前に `$env:NO_COLOR = "true"` を設定すること(PowerShell)。
@@ -511,3 +518,37 @@ Zファイティングなく常に手前に描画できる。板にも覆われ�
 なる(以前は暗紺色の何もない背景だった)、側面プリセット(ほぼ水平視点)では地平線を境に
 上が黒空・下が水色+地形という自然な見た目になる(富士山らしき雪山の稜線が黒空を背景に
 くっきり見える)、をスクリーンショットで確認。
+
+### LAN上の別端末からアクセスできるように(sim_server・trunk双方の待受アドレスを0.0.0.0化)
+
+「サーバでバインドするipを0.0.0.0に変更して」との要望を受けsim_server側を変更したが、
+続けて「192.168.100.11:8081 にアクセスしても表示されない」との報告があり、調査した結果
+**trunk serve(フロントの開発サーバー、8081番)側が既定でループバックのみ待受のままだった**
+ことが根本原因だった(sim_serverの9001番だけを直しても、フロント自体が配信されなければ
+そもそもページが開けない)。
+
+- `sim_server/src/ws_server.cpp`: `app.listen(port, ...)` → `app.listen("0.0.0.0", port, ...)`に
+  変更(ホスト未指定でも実質全インターフェースバインド相当だったはずだが、要望通り明示化)。
+  ビルド後`netstat`で`0.0.0.0:9001`でLISTENしていることを確認
+- `sim_frontend/Trunk.toml`(新規): `[serve] addresses = ["0.0.0.0"]`, `port = 8081`を設定し、
+  `trunk serve`にコマンドライン引数なしで全インターフェース待受させるようにした
+
+**ハマりどころ**: `trunk serve --address 0.0.0.0`を試した際、ログには
+`INFO server listening at: http://192.168.100.11:8081/`等と表示されるにもかかわらず、実際には
+`Get-NetTCPConnection`でリッスンソケットが存在せず接続も拒否される状態が続いた。ログをよく見ると
+`http://kubernetes.docker.internal:8081/`のような行が**起動から1分以上経ってから追加で**
+出力されており、trunkが起動時に行うネットワークインターフェース・ホスト名の列挙処理
+(このマシンのDocker Desktop関連の仮想ネットワーク設定のせいと思われる)がハングしていて、
+実際のリッスン開始より前にそれらしいログだけが先に出ていたことが原因と判明。
+`trunk serve --help`にある`--disable-address-lookup`(`Trunk.toml`では
+`disable_address_lookup = true`)でこの列挙処理自体を無効化して解決した。ログの見た目だけで
+「起動できている」と判断せず、`Get-NetTCPConnection`/`Test-NetConnection`等で実際にリッスン
+しているか・接続できるかを確認する必要があった好例。
+
+**もう1つのハマりどころ**: 修正後、Claude Codeの組み込みBrowserペインから
+`http://192.168.100.11:8081`にアクセスして動作確認しようとしたところ、`ERR_BLOCKED_BY_CLIENT`で
+WebSocket接続・fetchの両方が失敗した。これはBrowserペイン自身が(サンドボックス上の安全対策と
+思われる)プライベートIPアドレス宛のリクエストをブロックしているためで、実際のネットワーク疎通
+とは無関係と判断した(PowerShellの`Test-NetConnection -ComputerName 192.168.100.11 -Port 9001`
+/`-Port 8081`が両方とも`TcpTestSucceeded: True`を返すことで実疎通は確認済み)。Browserペインでの
+プライベートIP宛動作確認には限界があることを覚えておく。

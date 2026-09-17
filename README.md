@@ -152,10 +152,12 @@ cd sim_server
 ```powershell
 cd sim_frontend
 $env:NO_COLOR = "true"   # 下記「既知の環境問題」参照。設定していないとtrunkがエラー終了する
-trunk serve --port 8081
+trunk serve
 ```
 
-初回はコンパイルに数十秒〜数分かかる(2回目以降は差分ビルドで数秒)。
+ポート番号(8081)・待受アドレス(`0.0.0.0`、LAN上の別端末からもアクセスできるように全
+インターフェースで待ち受ける)は`sim_frontend/Trunk.toml`に設定済みなので、コマンドラインでの
+指定は不要。初回はコンパイルに数十秒〜数分かかる(2回目以降は差分ビルドで数秒)。
 `既定の8080番ポートはDocker Desktop/WSLが使用していることが多い`ため、本プロジェクトでは
 8081番を使う運用にしている(競合する場合は空いている別のポート番号に変更してよい)。
 
@@ -188,7 +190,8 @@ http://localhost:8081
 | 症状 | 原因・対処 |
 |---|---|
 | `trunk`実行時に`--no-color`関連のエラーで即終了する | 環境変数`NO_COLOR=1`がセットされているとtrunkの引数パーサ(`true`/`false`を期待)と衝突する。`$env:NO_COLOR = "true"`に設定してから実行する |
-| `trunk serve`が`address already in use`(os error 10048)で失敗する | 既定の8080番ポートはDocker Desktop/WSLが使用していることがある。`trunk serve --port 8081`のように別ポートを指定する |
+| `trunk serve`が`address already in use`(os error 10048)で失敗する | 既定の8080番ポートはDocker Desktop/WSLが使用していることがある。`sim_frontend/Trunk.toml`で8081番に変更済み |
+| `trunk serve`の起動ログが`server listening at:`の後、一部アドレス(`kubernetes.docker.internal`等)を数十秒おきに追加表示し続けて実際には繋がらない | 起動時のネットワークインターフェース・ホスト名列挙処理がDocker関連の仮想ネットワーク環境でハングすることがある。`Trunk.toml`で`disable_address_lookup = true`にして回避済み |
 | `sim_server.exe`が起動しない/すぐ終了する | 別プロセスが既に9001番ポートを使っていないか確認(`netstat -ano \| findstr 9001`)。前のsim_serverプロセスが残っていないか確認する |
 | vcpkgの`gdal`インストールが`libxml2`のビルドで失敗する | 本プロジェクトでは`sim_server/vcpkg.json`で`gdal`を`"default-features": false`にすることで、不要な`libxml2`(GML/KML用、Windowsで既知のIconv関連ビルド失敗がある)を回避済み。設定を変更していなければ発生しない |
 | `geotiff_preprocess.exe`を実行しても`map_data`が見つからない | リポジトリの**ルートディレクトリ**から実行しているか確認する(既定のパスは`map_data`/`sim_server/assets/terrain`という相対パス) |
