@@ -81,7 +81,7 @@ body {
     height: 100%;
 }
 
-/* 側面図(右パネル下部): ヘッダーの下にTerrainViewが残り高さいっぱいに広がる(フェーズ10)。 */
+/* 側面図(右パネル下部): ヘッダーの下にCrossSectionViewが残り高さいっぱいに広がる。 */
 .side-view {
     display: flex;
     flex-direction: column;
@@ -89,6 +89,80 @@ body {
 
 .side-view h2 {
     flex: 0 0 auto;
+}
+
+/* 断面図(側面図パネルの中身): 上=SVGチャート(残り高さいっぱい)、下=方位角スライダー。 */
+.cross-section-view {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    gap: 0.5rem;
+}
+
+.cross-section-chart {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+}
+
+.cross-section-svg {
+    width: 100%;
+    height: 100%;
+}
+
+.cs-axis {
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.cs-area {
+    fill: var(--accent);
+    fill-opacity: 0.18;
+    stroke: none;
+}
+
+.cs-line {
+    stroke: var(--accent);
+    stroke-width: 1.5;
+}
+
+.cs-label {
+    fill: #999;
+    font-size: 9px;
+}
+
+.cross-section-status {
+    margin: auto;
+}
+
+.cross-section-controls {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.cross-section-slider-label {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.75rem;
+    color: #999;
+}
+
+.cross-section-slider-label input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+}
+
+.cross-section-azimuth-value {
+    flex: 0 0 auto;
+    min-width: 3.5ch;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.85rem;
 }
 
 .terrain-view {

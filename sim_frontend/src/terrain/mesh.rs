@@ -72,6 +72,20 @@ impl EnuTransform {
 
         [east as f32, north as f32, up as f32]
     }
+
+    /// `transform`の逆(近似): 原点からのENUオフセット(東, 北。メートル)から緯度経度を求める。
+    /// ローカル接平面近似(原点緯度における子午線・卯酉線曲率半径を使う)。断面図
+    /// (`terrain/profile.rs`)で、原点から方位角方向へ地表をサンプリングするために使う。
+    pub fn inverse(&self, east: f64, north: f64) -> (f64, f64) {
+        let sin_lat0 = self.origin_lat_rad.sin();
+        let denom = (1.0 - self.e2 * sin_lat0 * sin_lat0).sqrt();
+        let m = self.a * (1.0 - self.e2) / denom.powi(3); // 子午線曲率半径
+        let n = self.a / denom; // 卯酉線曲率半径
+
+        let lat = self.origin_lat_rad + north / m;
+        let lon = self.origin_lon_rad + east / (n * self.origin_lat_rad.cos());
+        (lat.to_degrees(), lon.to_degrees())
+    }
 }
 
 fn geodetic_to_ecef(lat: f64, lon: f64, h: f64, a: f64, e2: f64) -> (f64, f64, f64) {

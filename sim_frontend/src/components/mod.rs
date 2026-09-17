@@ -1,3 +1,4 @@
+pub mod cross_section_view;
 pub mod map_view;
 pub mod operation_panel;
 pub mod status_panel;

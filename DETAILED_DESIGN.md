@@ -613,18 +613,22 @@ classDiagram
 graph TD
     App["App (app.rs)<br/>3カラムCSS Gridレイアウト・リサイザー"]
     App --> OperationPanel["OperationPanel<br/>接続状態・原点・フレーム表示"]
-    App --> Vab["Vab<br/>4x6ボタングリッド"]
-    App --> MapView["MapView<br/>地形描画canvas"]
+    App --> Vab["Vab<br/>4列ボタングリッド(1+4+1行)"]
+    App --> MapView["MapView<br/>地形描画canvas(3D, TerrainView)"]
     App --> StatusPanel["StatusPanel<br/>StatusPanelConfig駆動の項目表示"]
-    App --> SideView["SideView<br/>(フェーズ10で実装予定)"]
+    App --> SideView["SideView<br/>断面図(CrossSectionView)+方位角スライダー"]
 
     App -.provide_context.-> WsSignals["WsSignals<br/>(接続状態・受信データのシグナル群)"]
+    App -.provide_context.-> TerrainStore["TerrainStore<br/>(heightmap/metadataを両パネルで共有)"]
     App -.propとして渡す.-> WsConnection["WsConnection<br/>(Rc<RefCell<...>>、Send/Sync境界回避のためcontext不使用)"]
 
     MapView --> Loader["terrain::loader<br/>heightmap.bin/metadata.json取得"]
     MapView --> Mesh["terrain::mesh<br/>ENU変換・頂点/インデックス生成"]
     MapView --> Renderer["terrain::renderer::TerrainRenderer<br/>wgpu Device/Queue/Pipeline"]
     MapView --> Camera["terrain::camera::Camera<br/>view_proj行列"]
+    SideView --> Profile["terrain::profile::build_profile<br/>原点から方位角方向へ地表をサンプリング"]
+    TerrainStore -.共有データ.-> MapView
+    TerrainStore -.共有データ.-> SideView
 ```
 
 ### 6.2 WebSocket接続管理のクラス図
@@ -821,6 +825,31 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color, 1.0);
 }
 ```
+
+### 6.9 断面図(側面図パネル、`terrain::profile` / `CrossSectionView`)
+
+側面図パネルは3D視点ではなく、**原点を起点に方位角スライダーで指定した方向の地表断面を
+2D(距離 vs 標高の折れ線)で表示する**。wgpuは使わずSVGで描画するため、中央地図用の
+`TerrainRenderer`とは完全に独立(GPUリソースを消費しない)。
+
+```mermaid
+flowchart LR
+    A["スライダー操作<br/>azimuth: RwSignal&lt;f64&gt;(度、北=0・東=90・時計回り)"] --> B["profile::build_profile(data, origin, azimuth)"]
+    B --> C["EnuTransform::inverse(east, north)<br/>ローカル接平面近似でENUオフセット→緯度経度"]
+    C --> D["heightmapを双線形補間でサンプリング<br/>範囲外に出たら二分探索で打ち切り距離を確定"]
+    D --> E["Vec&lt;ProfilePoint&gt;(distance_m, elevation_m)"]
+    E --> F["CrossSectionView: SVG折れ線・塗りつぶしへ変換して描画"]
+```
+
+- 方位角0本につき301点(`NUM_SAMPLES=300`)を、原点から「地形データの範囲内にいられる
+  最大距離」まで均等にサンプリングする。最大距離は二分探索(30回)で求める
+  (`EnuTransform::inverse`で緯度経度に変換し、`geodetic_bounds`内かどうかを判定する)
+- `EnuTransform::inverse`は`transform`(緯度経度→ENU)の近似逆変換。原点緯度における
+  子午線曲率半径Mと卯酉線曲率半径Nを使ったローカル接平面近似(`lat = lat0 + north/M`,
+  `lon = lon0 + east/(N・cos(lat0))`)
+- 原点(`WsSignals.origin`)・方位角(`azimuth`)のどちらが変わってもLeptosの反応性により
+  自動的に再計算・再描画される(明示的なEffectは不要、`chart`クロージャ内で両方を`.get()`
+  しているため)
 
 ---
 
