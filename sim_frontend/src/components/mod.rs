@@ -1,6 +1,8 @@
 pub mod cross_section_view;
 pub mod main_panel;
+pub mod menu_bar;
 pub mod operation_panel;
+pub mod origin_dialog;
 pub mod right_panel;
 pub mod status_panel;
 pub mod tabbed_panel;

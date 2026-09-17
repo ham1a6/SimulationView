@@ -2,6 +2,7 @@ mod app;
 mod components;
 mod protocol;
 mod terrain;
+mod ui_state;
 mod ws;
 
 use app::App;

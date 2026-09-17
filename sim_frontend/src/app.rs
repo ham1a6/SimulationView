@@ -5,10 +5,13 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::components::main_panel::MainPanel;
+use crate::components::menu_bar::MenuBar;
 use crate::components::operation_panel::SimulationStatusPanel;
+use crate::components::origin_dialog::OriginDialog;
 use crate::components::right_panel::{BottomStatusPanel, TopStatusPanel};
 use crate::components::vab::VabPanel;
 use crate::terrain::store::TerrainStore;
+use crate::ui_state::OriginDialogState;
 use crate::ws::{default_ws_url, WsConnection, WsSignals};
 
 // 地図・右パネルの最小幅(DETAILED_DESIGN.md 7.2節: これを下回ったら外側コンテナを横スクロールさせる)。
@@ -19,6 +22,8 @@ const MIN_RIGHT_PX: f64 = 260.0;
 pub fn App() -> impl IntoView {
     let signals = WsSignals::new();
     provide_context(signals);
+    // 原点設定フローティングパネルの開閉状態(メニューバーから開く)。
+    provide_context(OriginDialogState(RwSignal::new(false)));
     // 地形データはメインパネル・ボトムステータスパネル(断面図タブ)で共有する(フェッチは
     // 1回だけ、BASIC_DESIGN.md 6節フェーズ10: 同一の地形メッシュに異なるカメラを適用する構成)。
     provide_context(TerrainStore::new());
@@ -77,30 +82,34 @@ pub fn App() -> impl IntoView {
     };
 
     view! {
-        <div class="app-shell">
-            <div class="app-layout" style:grid-template-columns=grid_columns>
-                <div class="left-panel">
-                    <SimulationStatusPanel conn=conn.clone()/>
-                    <VabPanel conn=conn.clone()/>
-                </div>
+        <div class="app-root">
+            <MenuBar/>
+            <div class="app-shell">
+                <div class="app-layout" style:grid-template-columns=grid_columns>
+                    <div class="left-panel">
+                        <SimulationStatusPanel/>
+                        <VabPanel conn=conn.clone()/>
+                    </div>
 
-                <div class="center-panel">
-                    <MainPanel/>
-                </div>
+                    <div class="center-panel">
+                        <MainPanel/>
+                    </div>
 
-                <div
-                    class="resizer"
-                    on:pointerdown=on_pointer_down
-                    on:pointermove=on_pointer_move
-                    on:pointerup=on_pointer_up
-                    on:pointercancel=on_pointer_up
-                ></div>
+                    <div
+                        class="resizer"
+                        on:pointerdown=on_pointer_down
+                        on:pointermove=on_pointer_move
+                        on:pointerup=on_pointer_up
+                        on:pointercancel=on_pointer_up
+                    ></div>
 
-                <div class="right-panel">
-                    <TopStatusPanel/>
-                    <BottomStatusPanel/>
+                    <div class="right-panel">
+                        <TopStatusPanel/>
+                        <BottomStatusPanel/>
+                    </div>
                 </div>
             </div>
+            <OriginDialog conn=conn.clone()/>
         </div>
     }
 }

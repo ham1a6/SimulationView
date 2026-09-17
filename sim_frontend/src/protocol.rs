@@ -17,6 +17,7 @@ pub enum MsgType {
     OriginState = 0x03,
     StatusPanelConfig = 0x04,
     CommandError = 0x05,
+    AppStatus = 0x06,
 }
 
 impl MsgType {
@@ -27,6 +28,7 @@ impl MsgType {
             0x03 => Some(MsgType::OriginState),
             0x04 => Some(MsgType::StatusPanelConfig),
             0x05 => Some(MsgType::CommandError),
+            0x06 => Some(MsgType::AppStatus),
             _ => None,
         }
     }
@@ -91,6 +93,14 @@ pub struct CommandError {
     pub command_type: String,
     /// エラー内容(人間可読)
     pub message: String,
+}
+
+/// シミュレータアプリケーション自体の状態を表す表示用文字列(状態変化時+接続直後)。
+/// DETAILED_DESIGN.md 7.7節: WebSocket接続が確立している間、シミュレーションステータス
+/// パネルはこの文字列をそのまま表示する。
+#[derive(Debug, Clone, Deserialize)]
+pub struct AppStatus {
+    pub text: String,
 }
 
 // --- Client -> Server --------------------------------------------------

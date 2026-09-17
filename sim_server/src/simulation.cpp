@@ -59,7 +59,7 @@ void Simulation::enqueue_command(ClientId client_id, protocol::ClientCommand cmd
 
 SimulationTickResult Simulation::step(double dt) {
     SimulationTickResult result;
-    apply_queued_commands(result.errors, result.origin_changed);
+    apply_queued_commands(result.errors, result.origin_changed, result.app_status_changed);
 
     // 物理状態の更新。実シミュレーションロジック自体は本プロジェクトのスコープ外のため、
     // フェーズ1と同じダミーの円軌道を、ここでは正式なsimスレッドのstep()内部状態として進める。
@@ -74,28 +74,35 @@ SimulationTickResult Simulation::step(double dt) {
 }
 
 void Simulation::apply_queued_commands(std::vector<OutgoingCommandError>& out_errors,
-                                        bool& out_origin_changed) {
+                                        bool& out_origin_changed, bool& out_app_status_changed) {
     std::deque<QueuedCommand> pending;
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         pending.swap(command_queue_);
     }
     for (const auto& queued : pending) {
-        apply_command(queued.cmd, queued.client_id, out_errors, out_origin_changed);
+        apply_command(queued.cmd, queued.client_id, out_errors, out_origin_changed,
+                      out_app_status_changed);
     }
 }
 
 void Simulation::apply_command(const protocol::ClientCommand& cmd, ClientId client_id,
                                 std::vector<OutgoingCommandError>& out_errors,
-                                bool& out_origin_changed) {
+                                bool& out_origin_changed, bool& out_app_status_changed) {
     if (cmd.type == "set_origin") {
         apply_set_origin(cmd, client_id, out_errors, out_origin_changed);
     } else if (cmd.type == "pause") {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        running_ = false;
+        if (running_) {
+            running_ = false;
+            out_app_status_changed = true;
+        }
     } else if (cmd.type == "resume") {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        running_ = true;
+        if (!running_) {
+            running_ = true;
+            out_app_status_changed = true;
+        }
     } else if (cmd.type == "vab_press") {
         // 実アクチュエーション対象がないため、フェーズ5時点でも押下ログのみ。
         std::cout << "[vab_press] button_id=" << cmd.button_id << std::endl;
@@ -164,6 +171,13 @@ protocol::SimState Simulation::snapshot_sim_state() const {
 protocol::OriginState Simulation::snapshot_origin() const {
     std::lock_guard<std::mutex> lock(state_mutex_);
     return origin_;
+}
+
+protocol::AppStatus Simulation::snapshot_app_status() const {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    protocol::AppStatus status;
+    status.text = running_ ? "シミュレーション実行中" : "一時停止中";
+    return status;
 }
 
 } // namespace sim3dview

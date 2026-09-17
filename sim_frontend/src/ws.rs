@@ -16,7 +16,8 @@ use wasm_bindgen::JsCast;
 use web_sys::{BinaryType, CloseEvent, MessageEvent, WebSocket};
 
 use crate::protocol::{
-    ClientCommand, CommandError, MsgType, OriginState, SimState, StatusPanelConfig, VabConfig,
+    AppStatus, ClientCommand, CommandError, MsgType, OriginState, SimState, StatusPanelConfig,
+    VabConfig,
 };
 
 const INITIAL_BACKOFF_MS: u32 = 1_000;
@@ -55,6 +56,8 @@ pub struct WsSignals {
     pub status_panel_config: RwSignal<Option<StatusPanelConfig>>,
     pub last_sim_state: RwSignal<Option<SimState>>,
     pub last_command_error: RwSignal<Option<CommandError>>,
+    /// シミュレータアプリケーション自体の状態文字列(DETAILED_DESIGN.md 7.7節)。
+    pub app_status: RwSignal<Option<AppStatus>>,
 }
 
 impl WsSignals {
@@ -66,6 +69,7 @@ impl WsSignals {
             status_panel_config: RwSignal::new(None),
             last_sim_state: RwSignal::new(None),
             last_command_error: RwSignal::new(None),
+            app_status: RwSignal::new(None),
         }
     }
 }
@@ -239,6 +243,10 @@ impl WsConnection {
                     self.signals.last_command_error.set(Some(err));
                 }
                 Err(e) => log::error!("[ws] failed to decode CommandError: {e}"),
+            },
+            MsgType::AppStatus => match rmp_serde::from_slice::<AppStatus>(body) {
+                Ok(status) => self.signals.app_status.set(Some(status)),
+                Err(e) => log::error!("[ws] failed to decode AppStatus: {e}"),
             },
         }
     }

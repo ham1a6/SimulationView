@@ -121,6 +121,8 @@ void WsServer::run() {
                        protocol::encode_frame(MsgType::VabConfig, impl->simulation.vab_config()));
         impl->send_to(ws, protocol::encode_frame(MsgType::StatusPanelConfig,
                                                    impl->simulation.status_panel_config()));
+        impl->send_to(ws, protocol::encode_frame(MsgType::AppStatus,
+                                                   impl->simulation.snapshot_app_status()));
     };
 
     behavior.message = [impl](ServerWebSocket* ws, std::string_view message, uWS::OpCode) {
@@ -184,6 +186,15 @@ void WsServer::run() {
                     MsgType::OriginState, impl->simulation.snapshot_origin());
                 loop->defer([impl, origin_frame = std::move(origin_frame)]() {
                     impl->broadcast(origin_frame);
+                });
+            }
+
+            // pause/resumeでアプリ状態が変化していれば新しいAppStatusを全クライアントへ再配信。
+            if (tick.app_status_changed) {
+                std::string app_status_frame = protocol::encode_frame(
+                    MsgType::AppStatus, impl->simulation.snapshot_app_status());
+                loop->defer([impl, app_status_frame = std::move(app_status_frame)]() {
+                    impl->broadcast(app_status_frame);
                 });
             }
 

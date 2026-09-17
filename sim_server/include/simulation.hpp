@@ -43,6 +43,8 @@ struct SimulationTickResult {
     std::vector<OutgoingCommandError> errors;
     // trueなら新しいOriginStateを全クライアントへ再配信する(DETAILED_DESIGN.md 4.3節)。
     bool origin_changed = false;
+    // trueなら新しいAppStatusを全クライアントへ再配信する(pause/resumeで変化した時)。
+    bool app_status_changed = false;
 };
 
 class Simulation {
@@ -59,6 +61,7 @@ public:
     // 以下はすべてスレッドセーフ(uWSスレッドからのbroadcast用スナップショット取得)。
     protocol::SimState snapshot_sim_state() const;
     protocol::OriginState snapshot_origin() const;
+    protocol::AppStatus snapshot_app_status() const;
 
     // VabConfig/StatusPanelConfigは起動後不変(v1はダミー固定値)なので、
     // 生成後は読み取り専用として扱い、mutex保護なしで直接返してよい。
@@ -69,9 +72,10 @@ public:
 
 private:
     void apply_queued_commands(std::vector<OutgoingCommandError>& out_errors,
-                                bool& out_origin_changed);
+                                bool& out_origin_changed, bool& out_app_status_changed);
     void apply_command(const protocol::ClientCommand& cmd, ClientId client_id,
-                        std::vector<OutgoingCommandError>& out_errors, bool& out_origin_changed);
+                        std::vector<OutgoingCommandError>& out_errors, bool& out_origin_changed,
+                        bool& out_app_status_changed);
     void apply_set_origin(const protocol::ClientCommand& cmd, ClientId client_id,
                            std::vector<OutgoingCommandError>& out_errors,
                            bool& out_origin_changed);

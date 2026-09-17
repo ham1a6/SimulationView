@@ -18,6 +18,7 @@ enum class MsgType : uint8_t {
     OriginState = 0x03,       // Server -> Client (状態変化時、接続直後にも送信)
     StatusPanelConfig = 0x04, // Server -> Client (状態変化時、接続直後にも送信)
     CommandError = 0x05,      // Server -> Client (要求元クライアントのみ)
+    AppStatus = 0x06,         // Server -> Client (状態変化時、接続直後にも送信)
 };
 
 // --- Server -> Client ------------------------------------------------
@@ -81,6 +82,16 @@ struct CommandError {
     std::string message;      // エラー内容(人間可読)
 
     MSGPACK_DEFINE(command_type, message);
+};
+
+// シミュレータアプリケーション自体の状態を表す表示用文字列(状態変化時+接続直後)。
+// フロント側のシミュレーションステータスパネルは、WebSocket接続が確立している間は
+// この文字列をそのまま表示する(接続そのものの状態はConnectionStatusとして
+// フロント側が自前で計算する、別レイヤーの情報)。
+struct AppStatus {
+    std::string text; // 例: "シミュレーション実行中" / "一時停止中"
+
+    MSGPACK_DEFINE(text);
 };
 
 // --- Client -> Server --------------------------------------------------

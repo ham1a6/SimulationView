@@ -25,16 +25,24 @@ body {
     font-family: system-ui, sans-serif;
 }
 
+/* 画面全体: 上段=メニューバー(固定高さ)、下段=app-shell(残り全部)。 */
+.app-root {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
 /* 外側コンテナ: 最小幅を下回ったら縦積みにせず横スクロールする(6.1節)。 */
 .app-shell {
-    height: 100vh;
+    flex: 1 1 auto;
+    min-height: 0;
     overflow-x: auto;
     overflow-y: hidden;
 }
 
 .app-layout {
     display: grid;
-    grid-template-rows: 100vh;
+    grid-template-rows: 100%;
     height: 100%;
 }
 
@@ -357,18 +365,122 @@ body {
     margin: 0;
 }
 
-.origin-form {
-    margin-top: 0.5rem;
-    padding-top: 0.5rem;
-    border-top: 1px solid var(--border);
+/* メニューバー(app.rs::MenuBar)。画面最上部、固定高さ。 */
+.menu-bar {
+    flex: 0 0 auto;
+    display: flex;
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    position: relative;
+    z-index: 10;
 }
 
-.origin-form h3 {
-    font-size: 0.8rem;
-    margin: 0 0 0.5rem;
+.menu-item {
+    position: relative;
+}
+
+.menu-button {
+    background: transparent;
+    color: var(--fg);
+    border: none;
+    padding: 0.4rem 0.9rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.menu-button:hover,
+.menu-button.active {
+    background: #234;
+}
+
+.menu-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 11;
+    min-width: 10rem;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 0 4px 4px 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    padding: 0.25rem 0;
+}
+
+.menu-dropdown-item {
+    background: transparent;
+    color: var(--fg);
+    border: none;
+    text-align: left;
+    padding: 0.4rem 0.9rem;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.menu-dropdown-item:hover {
+    background: #234;
+}
+
+.menu-dropdown-item--disabled {
+    color: #666;
+    cursor: default;
+}
+
+.menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 9;
+}
+
+/* 原点設定フローティングパネル(components/origin_dialog.rs)。 */
+.origin-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.origin-dialog {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    min-width: 280px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+}
+
+.origin-dialog-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.6rem;
+}
+
+.origin-dialog-header h3 {
+    font-size: 0.85rem;
+    margin: 0;
     color: var(--accent);
     text-transform: uppercase;
     letter-spacing: 0.05em;
+}
+
+.origin-dialog-close {
+    background: transparent;
+    color: #999;
+    border: none;
+    font-size: 0.9rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0.2rem;
+}
+
+.origin-dialog-close:hover {
+    color: var(--fg);
 }
 
 .origin-form-row {
@@ -378,7 +490,7 @@ body {
     gap: 0.5rem;
 }
 
-.origin-form label {
+.origin-form-row label {
     display: flex;
     flex-direction: column;
     gap: 0.2rem;
@@ -386,7 +498,7 @@ body {
     color: #999;
 }
 
-.origin-form input {
+.origin-form-row input {
     width: 9ch;
     background: #0d0d0d;
     border: 1px solid var(--border);
@@ -396,7 +508,7 @@ body {
     font-size: 0.85rem;
 }
 
-.origin-form button {
+.origin-form-row button {
     background: #234;
     color: var(--fg);
     border: 1px solid var(--border);
@@ -406,12 +518,12 @@ body {
     font-size: 0.85rem;
 }
 
-.origin-form button:hover:not(:disabled) {
+.origin-form-row button:hover:not(:disabled) {
     background: #356;
     border-color: var(--accent);
 }
 
-.origin-form button:disabled {
+.origin-form-row button:disabled {
     background: #1a1a1a;
     color: #555;
     cursor: not-allowed;

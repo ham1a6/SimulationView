@@ -1,21 +1,27 @@
-//! 左パネル上: シミュレーションステータスパネル(接続状態表示 + 原点入力フォーム)。
+//! 左パネル上: シミュレーションステータスパネル(接続状態・原点・フレームの読み取り専用表示)。
 //! DETAILED_DESIGN.md 7.1節参照。VABパネル(左パネル下)は`vab.rs`。
+//! 原点を変更するフォームは、メニューバー(設定→原点設定...)から開く
+//! フローティングパネル(`origin_dialog.rs`)へ移動済み。
 
 use leptos::prelude::*;
 
-use crate::protocol::ClientCommand;
-use crate::terrain::loader::{self, GeodeticBounds};
-use crate::ws::{ConnectionStatus, WsConnection, WsSignals};
+use crate::ws::{ConnectionStatus, WsSignals};
 
 #[component]
-pub fn SimulationStatusPanel(
-    /// WsConnectionはRc<RefCell<..>>を含みSend/Syncでないため(vab.rsと同じ理由)、
-    /// contextではなくpropとして受け取る。
-    conn: WsConnection,
-) -> impl IntoView {
+pub fn SimulationStatusPanel() -> impl IntoView {
     let signals = use_context::<WsSignals>().expect("WsSignals context not found");
 
-    let status_text = move || signals.status.get().to_string();
+    // 接続済みの間は、シミュレータアプリケーション自身が送ってきた状態文字列を
+    // そのまま表示する。それ以外の状態(接続中・再接続試行中・一時停止中)は、
+    // 詳細を出し分けず一律「接続中」と表示する(バッジの色分けは維持する)。
+    let status_text = move || match signals.status.get() {
+        ConnectionStatus::Connected => signals
+            .app_status
+            .get()
+            .map(|s| s.text)
+            .unwrap_or_else(|| "接続済み".to_string()),
+        _ => "接続中".to_string(),
+    };
     let status_class = move || match signals.status.get() {
         ConnectionStatus::Connected => "status status--connected",
         ConnectionStatus::Connecting => "status status--connecting",
@@ -46,8 +52,6 @@ pub fn SimulationStatusPanel(
                 </dd>
             </dl>
 
-            <OriginForm conn=conn signals=signals/>
-
             {move || {
                 signals
                     .last_command_error
@@ -57,118 +61,6 @@ pub fn SimulationStatusPanel(
                             "[" {e.command_type} "] " {e.message}
                         </p>
                     })
-            }}
-        </div>
-    }
-}
-
-/// 原点入力フォーム。DETAILED_DESIGN.md 3.5節: 地形データ範囲外の値はそもそも送信できないようにする
-/// (入力段階でブロック)。範囲(`geodetic_bounds`)はmetadata.jsonから取得する。
-#[component]
-fn OriginForm(conn: WsConnection, signals: WsSignals) -> impl IntoView {
-    let bounds = RwSignal::new(None::<GeodeticBounds>);
-    let lat_input = RwSignal::new(String::new());
-    let lon_input = RwSignal::new(String::new());
-    // ユーザーが手で編集を始めたら、OriginState受信による自動上書きを止める
-    // (サーバーからの再配信で入力中の値が消えてしまうのを防ぐ)。
-    let dirty = RwSignal::new(false);
-
-    // 起動時に一度だけmetadata.jsonを取得してバリデーション用のgeodetic_boundsを得る。
-    Effect::new(move |_| {
-        if bounds.get_untracked().is_some() {
-            return;
-        }
-        wasm_bindgen_futures::spawn_local(async move {
-            match loader::fetch_metadata().await {
-                Ok(meta) => bounds.set(Some(meta.geodetic_bounds)),
-                Err(e) => log::error!("[origin_form] failed to fetch metadata.json: {e}"),
-            }
-        });
-    });
-
-    // サーバーからOriginStateが届くたびに、まだ編集していなければ入力欄へ反映する。
-    Effect::new(move |_| {
-        if let Some(origin) = signals.origin.get() {
-            if !dirty.get_untracked() {
-                lat_input.set(format!("{:.6}", origin.lat_deg));
-                lon_input.set(format!("{:.6}", origin.lon_deg));
-            }
-        }
-    });
-
-    // 入力値を解析し、範囲チェックまで行う。Err内の文字列はそのままUIに表示するメッセージ。
-    let parsed = move || -> Result<(f64, f64), String> {
-        let lat: f64 = lat_input
-            .get()
-            .trim()
-            .parse()
-            .map_err(|_| "緯度は数値で入力してください".to_string())?;
-        let lon: f64 = lon_input
-            .get()
-            .trim()
-            .parse()
-            .map_err(|_| "経度は数値で入力してください".to_string())?;
-        let Some(b) = bounds.get() else {
-            return Err("地形データ範囲を取得中です...".to_string());
-        };
-        if lat < b.min_lat || lat > b.max_lat {
-            return Err(format!(
-                "緯度は{:.1}〜{:.1}の範囲で入力してください",
-                b.min_lat, b.max_lat
-            ));
-        }
-        if lon < b.min_lon || lon > b.max_lon {
-            return Err(format!(
-                "経度は{:.1}〜{:.1}の範囲で入力してください",
-                b.min_lon, b.max_lon
-            ));
-        }
-        Ok((lat, lon))
-    };
-
-    let on_submit = move |_| {
-        if let Ok((lat, lon)) = parsed() {
-            conn.send_command(&ClientCommand::set_origin(lat, lon));
-            dirty.set(false); // 送信後は次に届くOriginStateで表示を更新させる
-        }
-    };
-
-    view! {
-        <div class="origin-form">
-            <h3>"原点設定"</h3>
-            <div class="origin-form-row">
-                <label>
-                    "緯度"
-                    <input
-                        type="text"
-                        inputmode="decimal"
-                        prop:value=move || lat_input.get()
-                        on:input=move |ev| {
-                            dirty.set(true);
-                            lat_input.set(event_target_value(&ev));
-                        }
-                    />
-                </label>
-                <label>
-                    "経度"
-                    <input
-                        type="text"
-                        inputmode="decimal"
-                        prop:value=move || lon_input.get()
-                        on:input=move |ev| {
-                            dirty.set(true);
-                            lon_input.set(event_target_value(&ev));
-                        }
-                    />
-                </label>
-                <button on:click=on_submit disabled=move || parsed().is_err()>
-                    "設定"
-                </button>
-            </div>
-            {move || {
-                parsed()
-                    .err()
-                    .map(|msg| view! { <p class="field-error">{msg}</p> })
             }}
         </div>
     }
