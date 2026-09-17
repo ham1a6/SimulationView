@@ -58,6 +58,8 @@ pub struct VabButton {
 /// VABボタン配置設定(状態変化時のみ送信)。
 #[derive(Debug, Clone, Deserialize)]
 pub struct VabConfig {
+    #[allow(dead_code)] // UIは先頭行(カテゴリ選択、cols個ぶん)しか使わないが、msgpackが
+    // 配列位置エンコードのためフィールド自体は削除できない(vab.rs参照)。
     pub rows: u32,
     pub cols: u32,
     pub buttons: Vec<VabButton>,
