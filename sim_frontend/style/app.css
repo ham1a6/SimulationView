@@ -1,0 +1,316 @@
+/* Sim3dView 3カラムレイアウト。DESIGN.md 6.1節。 */
+
+:root {
+    --panel-width: 320px;
+    --bg: #111;
+    --bg-panel: #181818;
+    --fg: #eee;
+    --border: #3a3a3a;
+    --accent: #9cf;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: system-ui, sans-serif;
+}
+
+/* 外側コンテナ: 最小幅を下回ったら縦積みにせず横スクロールする(6.1節)。 */
+.app-shell {
+    height: 100vh;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+.app-layout {
+    display: grid;
+    grid-template-rows: 100vh;
+    height: 100%;
+}
+
+.left-panel,
+.right-panel {
+    display: grid;
+    grid-template-rows: 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    overflow: hidden;
+}
+
+.center-panel {
+    position: relative;
+    overflow: hidden;
+    background: #000;
+}
+
+/* 各パネル内は縦方向に収まらなければスクロール(6.1節)。 */
+.panel-section {
+    background: var(--bg-panel);
+    padding: 0.75rem 1rem;
+    overflow-y: auto;
+    min-height: 0;
+}
+
+.panel-section h2 {
+    font-size: 0.85rem;
+    margin: 0 0 0.5rem 0;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.map-view {
+    position: relative;
+    height: 100%;
+}
+
+/* 側面図(右パネル下部): ヘッダーの下にTerrainViewが残り高さいっぱいに広がる(フェーズ10)。 */
+.side-view {
+    display: flex;
+    flex-direction: column;
+}
+
+.side-view h2 {
+    flex: 0 0 auto;
+}
+
+.terrain-view {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.terrain-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+    touch-action: none;
+}
+
+.terrain-canvas:active {
+    cursor: grabbing;
+}
+
+.terrain-view-controls {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 2;
+    display: flex;
+    gap: 6px;
+}
+
+.terrain-view-controls button {
+    background: rgba(20, 20, 20, 0.75);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
+.terrain-view-controls button:hover {
+    background: rgba(40, 60, 70, 0.85);
+    border-color: var(--accent);
+}
+
+.map-status {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    margin: 0;
+    z-index: 1;
+}
+
+.placeholder {
+    color: #777;
+    font-style: italic;
+}
+
+/* VAB(6.2節): rows×colsのボタングリッド。空ラベルの穴は要素自体を生成しないため、
+   各ボタンにgrid-row/grid-columnを明示指定して位置ずれを防いでいる(vab.rs参照)。 */
+.vab-grid {
+    display: grid;
+    gap: 6px;
+}
+
+.vab-button {
+    aspect-ratio: 1 / 1;
+    background: #234;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8rem;
+    padding: 0.25rem;
+}
+
+.vab-button:hover:not(:disabled) {
+    background: #356;
+    border-color: var(--accent);
+}
+
+.vab-button:active:not(:disabled) {
+    background: var(--accent);
+    color: #003;
+}
+
+.vab-button:disabled {
+    background: #1a1a1a;
+    color: #555;
+    cursor: not-allowed;
+}
+
+/* 地図・右パネルの境界のドラッグ可能なリサイザー(6.1節)。 */
+.resizer {
+    background: var(--border);
+    cursor: col-resize;
+    touch-action: none;
+}
+
+.resizer:hover,
+.resizer:active {
+    background: var(--accent);
+}
+
+.kv-list {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.15rem 0.75rem;
+    margin: 0;
+    font-size: 0.9rem;
+}
+
+.kv-list dt {
+    color: #999;
+}
+
+.kv-list dd {
+    margin: 0;
+}
+
+.origin-form {
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--border);
+}
+
+.origin-form h3 {
+    font-size: 0.8rem;
+    margin: 0 0 0.5rem;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.origin-form-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.5rem;
+}
+
+.origin-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.75rem;
+    color: #999;
+}
+
+.origin-form input {
+    width: 9ch;
+    background: #0d0d0d;
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 0.3rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
+.origin-form button {
+    background: #234;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.35rem 0.7rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+.origin-form button:hover:not(:disabled) {
+    background: #356;
+    border-color: var(--accent);
+}
+
+.origin-form button:disabled {
+    background: #1a1a1a;
+    color: #555;
+    cursor: not-allowed;
+}
+
+.field-error {
+    margin: 0.4rem 0 0;
+    font-size: 0.78rem;
+    color: #fca;
+}
+
+.status-values {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    font-size: 0.9rem;
+}
+
+.status-values li {
+    padding: 0.15rem 0;
+}
+
+.command-error {
+    margin-top: 0.5rem;
+    padding: 0.4rem 0.6rem;
+    background: #421;
+    color: #fca;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
+.status {
+    display: inline-block;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    font-weight: bold;
+    font-size: 0.85rem;
+}
+
+.status--connected {
+    background: #163;
+    color: #9f9;
+}
+
+.status--connecting {
+    background: #663;
+    color: #ff9;
+}
+
+.status--reconnecting {
+    background: #631;
+    color: #fc9;
+}
+
+.status--paused {
+    background: #333;
+    color: #999;
+}

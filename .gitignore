@@ -1,0 +1,21 @@
+# C++ (sim_server)
+sim_server/build/
+sim_server/third_party/vcpkg_installed/
+sim_server/vcpkg-configuration.json
+# geotiff_preprocessの生成物(map_data/から再生成可能なのでコミットしない)
+sim_server/assets/terrain/*.bin
+sim_server/assets/terrain/*.json
+sim_server/assets/terrain/*.png
+
+# Rust (sim_frontend)
+sim_frontend/target/
+sim_frontend/dist/
+
+# エディタ・OS
+.vs/
+.vscode/
+*.user
+Thumbs.db
+
+# Claude Code ローカル実行時ファイル
+.claude/
