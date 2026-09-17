@@ -137,3 +137,54 @@ pub fn is_visible(
     }
     true
 }
+
+/// 単一の観測点(レーダー)から見て、指定した地表座標の真上で「これ以上の高度(標高、m)なら
+/// 見える」という下限高度を求める(等価地球半径による曲率・手前の地形によるマスク角を考慮)。
+/// `is_visible`が対象の実標高との比較で真偽を返すのに対し、こちらは仰角の式が対象の高度に
+/// ついて線形であることを利用し、可視となる最小高度を直接逆算する。断面図の覆域表示
+/// (`components/cross_section_view.rs`)で、地表だけでなく上空を含めた覆域を図示するために使う。
+/// 対象地点までの距離がレーダーの最大観測範囲を超える場合はNone(どんな高度でも覆域外)。
+pub fn min_visible_altitude(
+    data: &TerrainData,
+    radar_lat_deg: f64,
+    radar_lon_deg: f64,
+    radar_height_m: f64,
+    max_range_m: f64,
+    target_lat_deg: f64,
+    target_lon_deg: f64,
+) -> Option<f64> {
+    let radar_origin = Origin { lat_deg: radar_lat_deg, lon_deg: radar_lon_deg };
+    let transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
+    let observer_ground_elevation =
+        sample_heightmap(data, radar_lat_deg, radar_lon_deg).unwrap_or(0.0) as f64;
+    let observer_height = observer_ground_elevation + radar_height_m;
+    let r_eff = EARTH_RADIUS_M * K_FACTOR;
+
+    let target_pos = transform.transform(target_lat_deg, target_lon_deg, 0.0);
+    let target_distance = ((target_pos[0] as f64).powi(2) + (target_pos[1] as f64).powi(2)).sqrt();
+    if target_distance > max_range_m {
+        return None;
+    }
+    if target_distance < 1.0 {
+        return Some(observer_height);
+    }
+    let dir_east = target_pos[0] as f64 / target_distance;
+    let dir_north = target_pos[1] as f64 / target_distance;
+
+    // 観測点から対象地点までの間の地形が作る最大の見かけ仰角(=対象が見えるために
+    // 必要な最低仰角)を求める。target自身の標高には依存しない点がis_visibleと異なる。
+    let samples = ((target_distance / 500.0).ceil() as usize).clamp(10, SAMPLES_PER_RAY);
+    let mut required_angle = f64::NEG_INFINITY;
+    for i in 1..samples {
+        let d = target_distance * i as f64 / samples as f64;
+        let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
+        let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
+        let angle = (elevation - curvature_drop_m(d, r_eff) - observer_height) / d;
+        if angle > required_angle {
+            required_angle = angle;
+        }
+    }
+    // angle(h) = (h - curvature_drop(d) - observer_height) / d が対象高度hについて線形なので、
+    // angle(h) == required_angle となるhを直接解く(それ以上の高度なら見える下限)。
+    Some(required_angle * target_distance + curvature_drop_m(target_distance, r_eff) + observer_height)
+}

@@ -213,6 +213,14 @@ body {
     stroke-width: 2.5;
 }
 
+/* 覆域(上空を含む、いずれかのレーダーから見える領域)の塗りつぶし。cs-areaより下(背面)に
+   描き、地形のシルエットがこの上に重なって正しく手前に見えるようにする。 */
+.cs-airspace {
+    fill: #4be0a0;
+    fill-opacity: 0.16;
+    stroke: none;
+}
+
 .cs-label {
     fill: #999;
     font-size: 9px;
