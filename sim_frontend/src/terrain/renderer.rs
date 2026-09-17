@@ -1,4 +1,4 @@
-//! wgpuによる地形メッシュの描画。DESIGN.md 5節。
+//! wgpuによる地形メッシュの描画。DETAILED_DESIGN.md 6節。
 //! フェーズ8時点では単一メッシュ・単一カメラでの描画確認が目的
 //! (自由視点カメラはフェーズ10、側面図パネルへの適用もフェーズ10でカメラ機構と合わせて行う)。
 
@@ -202,7 +202,7 @@ impl TerrainRenderer {
     }
 
     /// 原点変更時など、頂点数は変わらないまま座標(位置)だけを更新したいときに使う。
-    /// DESIGN.md 3.3節: 原点を変更したら頂点バッファを再計算・再アップロードする
+    /// DETAILED_DESIGN.md 3.3節: 原点を変更したら頂点バッファを再計算・再アップロードする
     /// (heightmap.bin/metadata.jsonの再フェッチは不要)。
     pub fn update_vertices(&self, mesh: &TerrainMesh) {
         self.queue

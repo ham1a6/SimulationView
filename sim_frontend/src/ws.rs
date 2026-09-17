@@ -1,8 +1,8 @@
 //! WebSocket接続管理。
 //!
-//! DESIGN.md 4.5節: 自動再接続(指数バックオフ1s→30s+ジッター)、
+//! DETAILED_DESIGN.md 4.5節: 自動再接続(指数バックオフ1s→30s+ジッター)、
 //! ブラウザタブが非表示の間は再接続を一時停止(Page Visibility API)。
-//! 指示書: `set_binary_type(BinaryType::Arraybuffer)` を必ず設定する。
+//! バイナリフレームをTextとして誤受信しないよう、`set_binary_type(BinaryType::Arraybuffer)` を必ず設定する。
 
 use std::cell::RefCell;
 use std::fmt;
@@ -253,7 +253,7 @@ impl WsConnection {
         inner.reconnect_timeout = None;
 
         if !inner.tab_visible {
-            // DESIGN.md 4.5節: タブが非表示の間は再接続を試みない。
+            // DETAILED_DESIGN.md 4.5節: タブが非表示の間は再接続を試みない。
             self.signals.status.set(ConnectionStatus::PausedHidden);
             return;
         }

@@ -1,4 +1,4 @@
-//! 左パネル上: 操作パネル(ステータス表示 + 原点入力フォーム)。指示書UIレイアウト参照。
+//! 左パネル上: 操作パネル(ステータス表示 + 原点入力フォーム)。DETAILED_DESIGN.md 7.1節参照。
 //! VAB(左パネル下)は`vab.rs`。
 
 use leptos::prelude::*;
@@ -62,7 +62,7 @@ pub fn OperationPanel(
     }
 }
 
-/// 原点入力フォーム。DESIGN.md 3.5節: 地形データ範囲外の値はそもそも送信できないようにする
+/// 原点入力フォーム。DETAILED_DESIGN.md 3.5節: 地形データ範囲外の値はそもそも送信できないようにする
 /// (入力段階でブロック)。範囲(`geodetic_bounds`)はmetadata.jsonから取得する。
 #[component]
 fn OriginForm(conn: WsConnection, signals: WsSignals) -> impl IntoView {

@@ -1,5 +1,5 @@
 //! 地形メッシュを描画する再利用可能なcanvasコンポーネント。
-//! 中央の地図・右パネル下部の側面図の両方がこれを使う(DESIGN.md 5.2節: 同一メッシュに
+//! 中央の地図・右パネル下部の側面図の両方がこれを使う(BASIC_DESIGN.md 6節フェーズ10: 同一メッシュに
 //! 異なるカメラを適用する構成)。地形データ本体は`TerrainStore`で共有し、フェッチは1回だけ。
 //!
 //! フェーズ10: 自由視点カメラ(ドラッグで回転、ホイールでズーム、俯瞰/側面プリセット)。
@@ -200,7 +200,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         });
     }
 
-    // --- Effect 3: OriginStateの変化に追従してメッシュを再計算する(DESIGN.md 3.3節) ---
+    // --- Effect 3: OriginStateの変化に追従してメッシュを再計算する(DETAILED_DESIGN.md 3.3節) ---
     {
         let state = state.clone();
         Effect::new(move |_| {

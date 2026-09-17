@@ -1,5 +1,5 @@
 //! 右パネル上: 状況パネル(各種情報)。
-//! 表示項目はC++側が`StatusPanelConfig`で動的に決定する(DESIGN.md 4.4節・6.3節)。
+//! 表示項目はC++側が`StatusPanelConfig`で動的に決定する(DETAILED_DESIGN.md 4.3節・7.5節)。
 //! フロント側はハードコードしない。
 
 use leptos::prelude::*;

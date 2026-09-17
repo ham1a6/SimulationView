@@ -1,6 +1,6 @@
-// GeoTIFF前処理ツール(単発実行CLI)。DESIGN.md 2節・7節。
+// GeoTIFF前処理ツール(単発実行CLI)。DETAILED_DESIGN.md 2節・5.5節。
 //
-// map_data/ 内の *_DSM.tif を機械的に列挙し(DESIGN.md 2.1節)、緯度経度グリッド上の
+// map_data/ 内の *_DSM.tif を機械的に列挙し(DETAILED_DESIGN.md 2.1節)、緯度経度グリッド上の
 // ピクセル位置にそのまま敷き詰めてモザイクする(北緯35〜40度・東経135〜140度、
 // 18000×18000px)。実在しない8タイル分は標高0mで埋める(1.4節・2.3節)。
 // 再投影は行わない: 入力GeoTIFF(ALOS DSM)は既にEPSG:4326の緯度経度グリッドに
@@ -30,15 +30,15 @@ namespace {
 constexpr int kTargetWidth = 1024;
 constexpr int kTargetHeight = 1024;
 
-// GRS80楕円体パラメータ(DESIGN.md 3.2節・metadata.jsonスキーマ)。
+// GRS80楕円体パラメータ(DETAILED_DESIGN.md 3.2節・metadata.jsonスキーマ)。
 constexpr double kEllipsoidA = 6378137.0;
 constexpr double kEllipsoidInvF = 298.257222101;
 
-// 試験用デフォルト原点(DESIGN.md 3.1節)。
+// 試験用デフォルト原点(DETAILED_DESIGN.md 3.1節)。
 constexpr double kDefaultOriginLat = 35.355556;
 constexpr double kDefaultOriginLon = 138.859722;
 
-// モザイク対象の外接矩形(DESIGN.md 1.2節・2.3節)。
+// モザイク対象の外接矩形(DETAILED_DESIGN.md 1.2節・2.3節)。
 constexpr int kTileFullPx = 3600; // 1タイル = 1度 × 3600px/度(1秒角)
 constexpr int kMosaicMinLat = 35;
 constexpr int kMosaicMaxLat = 40;
@@ -141,7 +141,7 @@ std::optional<TileId> parse_tile_filename(const std::string& filename) {
     }
 }
 
-// map_dataディレクトリ内の*_DSM.tifを機械的に列挙してモザイクする(DESIGN.md 2.1節・2.3節)。
+// map_dataディレクトリ内の*_DSM.tifを機械的に列挙してモザイクする(DETAILED_DESIGN.md 2.1節・2.3節)。
 // 見つからないタイル分は標高0mのまま(呼び出し前にcanvasを0初期化しておくこと)。
 std::vector<float> build_mosaic(const std::string& map_data_dir) {
     std::vector<float> canvas(static_cast<size_t>(kMosaicWidth) * static_cast<size_t>(kMosaicHeight),
@@ -199,7 +199,7 @@ std::vector<float> build_mosaic(const std::string& map_data_dir) {
     return canvas;
 }
 
-// 平均法(average)でダウンサンプリングする(DESIGN.md 2.4節)。行順は入力と同じ(北→南)。
+// 平均法(average)でダウンサンプリングする(DETAILED_DESIGN.md 2.4節)。行順は入力と同じ(北→南)。
 std::vector<float> downsample_average(const std::vector<float>& src, int src_w, int src_h,
                                        int dst_w, int dst_h) {
     std::vector<float> dst(static_cast<size_t>(dst_w) * static_cast<size_t>(dst_h), 0.0f);
@@ -229,7 +229,7 @@ std::vector<float> downsample_average(const std::vector<float>& src, int src_w, 
     return dst;
 }
 
-// 行順をGDAL標準(北→南、row0=max_lat)からDESIGN.md 2.6節の座標復元式が前提とする
+// 行順をGDAL標準(北→南、row0=max_lat)からDETAILED_DESIGN.md 2.6節の座標復元式が前提とする
 // 順序(南→北、row0=min_lat: `lat = min_lat + (j/(height-1))*(max_lat-min_lat)`)へ反転する。
 // これを行わないと、フロント側で地形が南北反転して描画されてしまう。
 std::vector<float> flip_rows_north_to_south(const std::vector<float>& src, int w, int h) {
@@ -251,7 +251,7 @@ void write_heightmap_bin(const fs::path& path, const std::vector<float>& data) {
               static_cast<std::streamsize>(data.size() * sizeof(float)));
 }
 
-// DESIGN.md 2.6節のスキーマに従ってmetadata.jsonを書き出す。
+// DETAILED_DESIGN.md 2.6節のスキーマに従ってmetadata.jsonを書き出す。
 // フィールド構成が固定・少数なので、JSONライブラリは使わず手書きで組み立てる。
 void write_metadata_json(const fs::path& path, int width, int height, float elevation_min,
                           float elevation_max, const GeodeticBounds& bounds) {

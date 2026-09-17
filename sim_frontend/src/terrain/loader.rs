@@ -1,4 +1,4 @@
-//! 地形データ(heightmap.bin / metadata.json)の取得。DESIGN.md 2.5節・2.6節。
+//! 地形データ(heightmap.bin / metadata.json)の取得。DETAILED_DESIGN.md 2.5節・2.6節。
 //! sim_server が `/terrain/*` でHTTP静的配信する(WebSocketの`/sim`とは独立ルート)。
 
 use serde::Deserialize;
@@ -38,7 +38,7 @@ pub struct TerrainMetadata {
 
 pub struct TerrainData {
     pub metadata: TerrainMetadata,
-    /// row-major, f32。行順は南→北(`geodetic_bounds`の座標復元式に対応。DESIGN.md 2.6節)。
+    /// row-major, f32。行順は南→北(`geodetic_bounds`の座標復元式に対応。DETAILED_DESIGN.md 2.6節)。
     pub heightmap: Vec<f32>,
 }
 

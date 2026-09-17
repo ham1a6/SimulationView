@@ -1,6 +1,6 @@
 //! Sim3dView 通信プロトコル定義。
 //! フレーミング: `[1 byte: msg_type][MessagePack body]`
-//! 詳細: DESIGN.md 4節。C++側 (`sim_server/include/protocol.hpp`) と内容を一致させること。
+//! 詳細: DETAILED_DESIGN.md 4節。C++側 (`sim_server/include/protocol.hpp`) と内容を一致させること。
 //!
 //! 注意: rmp-serdeはデフォルトでstructをmsgpackの「配列」としてエンコード/デコードする
 //! (C++側の`MSGPACK_DEFINE`マクロと同じ、フィールド名ではなく宣言順の位置で対応する形式)。
@@ -34,7 +34,7 @@ impl MsgType {
 
 // --- Server -> Client ------------------------------------------------
 
-/// シミュレーション状態(高頻度、約60Hz)。DESIGN.md 4.4節。
+/// シミュレーション状態(高頻度、約60Hz)。DETAILED_DESIGN.md 4.3節。
 #[derive(Debug, Clone, Deserialize)]
 pub struct SimState {
     pub t: f64,
@@ -45,7 +45,7 @@ pub struct SimState {
     pub status_values: Vec<f64>,
 }
 
-/// VAB(操作ボタン)1個分。ラベルが空文字のボタンは「未使用の穴」(DESIGN.md 6.2節)。
+/// VAB(操作ボタン)1個分。ラベルが空文字のボタンは「未使用の穴」(DETAILED_DESIGN.md 7.4節)。
 #[derive(Debug, Clone, Deserialize)]
 pub struct VabButton {
     pub id: String,
@@ -61,14 +61,14 @@ pub struct VabConfig {
     pub buttons: Vec<VabButton>,
 }
 
-/// 基準位置(原点)。DESIGN.md 3節・4.1節。サーバーが保持する状態が正。
+/// 基準位置(原点)。DETAILED_DESIGN.md 3節・4.3節。サーバーが保持する状態が正。
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct OriginState {
     pub lat_deg: f64,
     pub lon_deg: f64,
 }
 
-/// 状況パネル項目1個分。DESIGN.md 4.4節。
+/// 状況パネル項目1個分。DETAILED_DESIGN.md 4.3節・7.5節。
 #[derive(Debug, Clone, Deserialize)]
 pub struct StatusItem {
     #[allow(dead_code)] // UIはlabel/unitのみ表示に使うが、msgpackは配列位置エンコードのため保持が必要。
@@ -84,7 +84,7 @@ pub struct StatusPanelConfig {
     pub items: Vec<StatusItem>,
 }
 
-/// コマンド拒否応答。要求元クライアントのみに送信される。DESIGN.md 4.3節。
+/// コマンド拒否応答。要求元クライアントのみに送信される。DETAILED_DESIGN.md 4.3節。
 #[derive(Debug, Clone, Deserialize)]
 pub struct CommandError {
     /// 拒否された ClientCommand.type
@@ -95,7 +95,7 @@ pub struct CommandError {
 
 // --- Client -> Server --------------------------------------------------
 
-/// クライアントからの操作コマンド。DESIGN.md 4.2節。
+/// クライアントからの操作コマンド。DETAILED_DESIGN.md 4.3節。
 /// (プレフィックスバイトなし、msgpack本体のみで送信する)
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct ClientCommand {

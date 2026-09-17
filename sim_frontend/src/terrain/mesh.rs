@@ -1,8 +1,8 @@
-//! 地形メッシュ生成。DESIGN.md 3.2節(ENU変換)・5.1節(頂点構造・配色)。
+//! 地形メッシュ生成。DETAILED_DESIGN.md 3.2節(ENU変換)・6.5節(頂点構造)・6.7節(配色)。
 
 use super::loader::{Ellipsoid, TerrainData};
 
-/// 頂点構造(DESIGN.md 5.1節)。UV座標は使わず、標高由来の色を直接持たせる。
+/// 頂点構造(DETAILED_DESIGN.md 6.5節)。UV座標は使わず、標高由来の色を直接持たせる。
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TerrainVertex {
@@ -15,14 +15,14 @@ pub struct TerrainMesh {
     pub indices: Vec<u32>,
 }
 
-/// 基準位置(原点)。DESIGN.md 3.1節。
+/// 基準位置(原点)。DETAILED_DESIGN.md 3.1節。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Origin {
     pub lat_deg: f64,
     pub lon_deg: f64,
 }
 
-/// 緯度経度(+標高)からENU座標(東=X, 北=Y, 上=Z)へ変換する。DESIGN.md 3.2節の変換式そのもの。
+/// 緯度経度(+標高)からENU座標(東=X, 北=Y, 上=Z)へ変換する。DETAILED_DESIGN.md 3.2節の変換式そのもの。
 /// C++側 sim_server の座標系定義と完全に一致させること(3.4節: サーバーとフロントで同一座標系)。
 pub struct EnuTransform {
     origin_lat_rad: f64,
@@ -83,7 +83,7 @@ fn geodetic_to_ecef(lat: f64, lon: f64, h: f64, a: f64, e2: f64) -> (f64, f64, f
 }
 
 /// 標高を正規化し、低地(緑〜青みの低彩度)→高山(白に近い明色)の地形図的カラーランプへ写像する
-/// (DESIGN.md 5.1節)。カラーストップは実装時に調整可能な固定テーブル。
+/// (DETAILED_DESIGN.md 6.7節)。カラーストップは実装時に調整可能な固定テーブル。
 fn elevation_to_color(elevation: f32, min: f32, max: f32) -> [f32; 3] {
     const STOPS: [(f32, [f32; 3]); 5] = [
         (0.0, [0.05, 0.35, 0.35]),  // 低地: 深緑がかった青緑
@@ -114,7 +114,7 @@ fn elevation_to_color(elevation: f32, min: f32, max: f32) -> [f32; 3] {
     STOPS[STOPS.len() - 1].1
 }
 
-/// heightmap全体からメッシュを構築する。原点変更時にも呼び直す(DESIGN.md 3.3節)。
+/// heightmap全体からメッシュを構築する。原点変更時にも呼び直す(DETAILED_DESIGN.md 3.3節)。
 pub fn build_mesh(data: &TerrainData, origin: &Origin) -> TerrainMesh {
     let width = data.metadata.width as usize;
     let height = data.metadata.height as usize;

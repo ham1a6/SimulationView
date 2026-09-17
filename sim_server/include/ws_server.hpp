@@ -1,8 +1,8 @@
 #pragma once
 
-// WebSocketサーバー。DESIGN.md 9節フェーズ5: 実シミュレーション(Simulation)との結合。
+// WebSocketサーバー。BASIC_DESIGN.md 6節フェーズ5: 実シミュレーション(Simulation)との結合。
 //
-// スレッドモデル(指示書 C++側実装要件):
+// スレッドモデル(DETAILED_DESIGN.md 5.1節):
 // - uWSイベントループスレッドとsimスレッドを分離する。
 // - .messageハンドラで受信したコマンドは直接状態を書き換えず、
 //   Simulation::enqueue_command()でスレッドセーフなキューに積む。

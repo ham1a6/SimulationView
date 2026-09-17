@@ -8,7 +8,7 @@ namespace sim3dview {
 namespace {
 
 protocol::VabConfig make_dummy_vab_config() {
-    // DESIGN.md 6.2節: 開発用ダミー値は縦4行×横6列。
+    // DETAILED_DESIGN.md 7.4節: 開発用ダミー値は縦4行×横6列。
     constexpr uint32_t kRows = 4;
     constexpr uint32_t kCols = 6;
 
@@ -31,7 +31,7 @@ protocol::VabConfig make_dummy_vab_config() {
 }
 
 protocol::StatusPanelConfig make_dummy_status_panel_config() {
-    // DESIGN.md 4.4節: 表示項目はC++側が自由に定義する。開発用ダミー項目。
+    // DETAILED_DESIGN.md 7.5節: 表示項目はC++側が自由に定義する。開発用ダミー項目。
     protocol::StatusPanelConfig config;
     config.items = {
         protocol::StatusItem{"elapsed_time", "経過時間", "s"},
@@ -106,7 +106,7 @@ void Simulation::apply_set_origin(const protocol::ClientCommand& cmd, ClientId c
                                    bool& out_origin_changed) {
     std::lock_guard<std::mutex> lock(state_mutex_);
 
-    // DESIGN.md 3.4節: シミュレーション実行中は原点変更不可。
+    // DETAILED_DESIGN.md 3.4節: シミュレーション実行中は原点変更不可。
     if (running_) {
         out_errors.push_back(OutgoingCommandError{
             client_id,
@@ -114,7 +114,7 @@ void Simulation::apply_set_origin(const protocol::ClientCommand& cmd, ClientId c
         return;
     }
 
-    // DESIGN.md 3.5節: geodetic_bounds範囲外はサーバー側でも拒否する(防御的チェック)。
+    // DETAILED_DESIGN.md 3.5節: geodetic_bounds範囲外はサーバー側でも拒否する(防御的チェック)。
     if (cmd.lat_deg < kMinLat || cmd.lat_deg > kMaxLat || cmd.lon_deg < kMinLon ||
         cmd.lon_deg > kMaxLon) {
         out_errors.push_back(OutgoingCommandError{
@@ -141,7 +141,7 @@ protocol::SimState Simulation::snapshot_sim_state() const {
     state.t = t;
     state.frame_id = frame_id;
 
-    // ダミーの単一点位置(円軌道)。DESIGN.md 5節の座標系(東=X,北=Y,上=Z)に合わせる。
+    // ダミーの単一点位置(円軌道)。DETAILED_DESIGN.md 6.6節の座標系(東=X,北=Y,上=Z)に合わせる。
     const float radius = 100.0f;
     const float x = radius * std::cos(static_cast<float>(t));
     const float y = radius * std::sin(static_cast<float>(t));

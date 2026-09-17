@@ -1,11 +1,12 @@
-//! カメラ(ビュー・射影行列)。DESIGN.md 5.1節。
+//! カメラ(ビュー・射影行列)。
 //!
 //! ENU座標系(東=X, 北=Y, 上=Z)はZ-upの右手系。wgpu/glamの一般的な慣習であるY-upとは
 //! 軸の意味が異なるが、メッシュの頂点データ自体は変換せず、ここ(ビュー行列側)で
 //! up方向として`Vec3::Z`を明示的に渡すことで吸収する(頂点を並べ替えるより単純で、
-//! ENUがそもそも右手系なのでlook_at_rh/perspective_rhの右手系前提ともそのまま整合する)。
+//! ENUがそもそも右手系なのでlook_at_rh/perspective_rhの右手系前提ともそのまま整合する。
+//! DETAILED_DESIGN.md 6.6節)。
 //!
-//! フェーズ10: 自由視点カメラ(ズーム・回転・視点プリセット)。DESIGN.md 5.2節。
+//! フェーズ10: 自由視点カメラ(ズーム・回転・視点プリセット)。BASIC_DESIGN.md 6節フェーズ10。
 
 use glam::camera::rh::{proj::directx, view::look_at_mat4};
 use glam::{Mat4, Vec3};
@@ -31,7 +32,7 @@ impl Camera {
     }
 }
 
-/// 視点プリセット(DESIGN.md 5.2節: 俯瞰・側面のワンクリック切り替え)。
+/// 視点プリセット(BASIC_DESIGN.md 6節フェーズ10: 俯瞰・側面のワンクリック切り替え)。
 /// 切り替え後もズーム・回転の自由操作は継続できる(初期アングルの提供に過ぎない)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraPreset {
@@ -50,7 +51,7 @@ const MAX_PITCH: f32 = 1.5;
 
 /// 自由視点カメラの内部状態。ドラッグ(回転)・ホイール(ズーム)で更新し、
 /// 都度`to_camera()`で描画用の`Camera`(視点位置・注視点)へ変換する。
-/// DESIGN.md 5.2節: 「カメラの状態(位置・角度・ズーム)はLeptosのSignalで保持し、
+/// BASIC_DESIGN.md 6節フェーズ10: 「カメラの状態(位置・角度・ズーム)はLeptosのSignalで保持し、
 /// パネルごとに独立させる」— 本構造体自体は素のRust構造体だが、
 /// `components/terrain_view.rs`側で各パネルごとに独立したインスタンスとして保持することで
 /// この方針を満たす。

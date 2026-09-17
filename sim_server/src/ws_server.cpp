@@ -114,7 +114,7 @@ void WsServer::run() {
         }
         std::cout << "[ws_server] client connected (id=" << client_id << ")" << std::endl;
 
-        // 接続直後に現在の状態を1回送信する(DESIGN.md 4.1節/4.4節)。
+        // 接続直後に現在の状態を1回送信する(DETAILED_DESIGN.md 4.2節/4.3節)。
         impl->send_to(ws, protocol::encode_frame(MsgType::OriginState,
                                                    impl->simulation.snapshot_origin()));
         impl->send_to(ws,
@@ -127,7 +127,7 @@ void WsServer::run() {
         try {
             ClientCommand cmd =
                 msgpack::unpack(message.data(), message.size()).get().as<ClientCommand>();
-            // 指示書: 受信したコマンドは直接シミュレーション状態を書き換えず、
+            // DETAILED_DESIGN.md 5.2節: 受信したコマンドは直接シミュレーション状態を書き換えず、
             // スレッドセーフなキューに積む(simスレッド側でstep()時に消費・適用する)。
             impl->simulation.enqueue_command(ws->getUserData()->client_id, std::move(cmd));
         } catch (const std::exception& e) {
@@ -144,7 +144,7 @@ void WsServer::run() {
     uWS::App app;
     app.ws<PerSocketData>("/sim", std::move(behavior));
 
-    // 地形データの静的配信(指示書: WebSocketの/simエンドポイントとは独立したHTTPルート)。
+    // 地形データの静的配信(DETAILED_DESIGN.md 5.4節: WebSocketの/simエンドポイントとは独立したHTTPルート)。
     // フロント(trunk serve)とは別オリジンからfetchされるためCORSヘッダーを付与する。
     app.get("/terrain/metadata.json", [](uWS::HttpResponse<false>* res, uWS::HttpRequest*) {
         serve_terrain_file(res, "assets/terrain/metadata.json", "application/json");

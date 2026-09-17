@@ -2,7 +2,7 @@
 
 // Sim3dView 通信プロトコル定義。
 // フレーミング: [1 byte: msg_type][MessagePack body]
-// 詳細: DESIGN.md 4節。C++側/Rust側で内容を一致させること。
+// 詳細: DETAILED_DESIGN.md 4節。C++側/Rust側で内容を一致させること。
 
 #include <cstdint>
 #include <string>
@@ -22,7 +22,7 @@ enum class MsgType : uint8_t {
 
 // --- Server -> Client ------------------------------------------------
 
-// シミュレーション状態(高頻度、約60Hz)。DESIGN.md 4.4節。
+// シミュレーション状態(高頻度、約60Hz)。DETAILED_DESIGN.md 4.3節。
 struct SimState {
     double t = 0.0;
     std::vector<float> positions;
@@ -33,7 +33,7 @@ struct SimState {
     MSGPACK_DEFINE(t, positions, frame_id, status_values);
 };
 
-// VAB(操作ボタン)1個分。ラベルが空文字のボタンは「未使用の穴」(DESIGN.md 6.2節)。
+// VAB(操作ボタン)1個分。ラベルが空文字のボタンは「未使用の穴」(DETAILED_DESIGN.md 7.4節)。
 struct VabButton {
     std::string id;
     std::string label;
@@ -51,7 +51,7 @@ struct VabConfig {
     MSGPACK_DEFINE(rows, cols, buttons);
 };
 
-// 基準位置(原点)。DESIGN.md 3節・4.1節。サーバーが保持する状態が正。
+// 基準位置(原点)。DETAILED_DESIGN.md 3節・4.3節。サーバーが保持する状態が正。
 struct OriginState {
     double lat_deg = 0.0;
     double lon_deg = 0.0;
@@ -59,7 +59,7 @@ struct OriginState {
     MSGPACK_DEFINE(lat_deg, lon_deg);
 };
 
-// 状況パネル項目1個分。DESIGN.md 4.4節。
+// 状況パネル項目1個分。DETAILED_DESIGN.md 4.3節・7.5節。
 struct StatusItem {
     std::string id;
     std::string label;
@@ -75,7 +75,7 @@ struct StatusPanelConfig {
     MSGPACK_DEFINE(items);
 };
 
-// コマンド拒否応答。要求元クライアントのみに送信する。DESIGN.md 4.3節。
+// コマンド拒否応答。要求元クライアントのみに送信する。DETAILED_DESIGN.md 4.3節。
 struct CommandError {
     std::string command_type; // 拒否された ClientCommand.type
     std::string message;      // エラー内容(人間可読)
@@ -85,7 +85,7 @@ struct CommandError {
 
 // --- Client -> Server --------------------------------------------------
 
-// クライアントからの操作コマンド。DESIGN.md 4.2節。
+// クライアントからの操作コマンド。DETAILED_DESIGN.md 4.3節。
 struct ClientCommand {
     std::string type; // "vab_press" / "pause" / "resume" / "set_param" / "set_origin"
     std::string button_id; // vab_press時のみ使用

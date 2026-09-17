@@ -1,4 +1,4 @@
-//! 全体レイアウト(AppLayout)。DESIGN.md 6.1節: 3カラムの横並びは崩さない。
+//! 全体レイアウト(AppLayout)。DETAILED_DESIGN.md 7.1節: 3カラムの横並びは崩さない。
 //! 左パネルは固定幅、地図・右パネルはレスポンシブ対応 + ドラッグでサイズ変更できる。
 
 use leptos::prelude::*;
@@ -11,7 +11,7 @@ use crate::components::vab::Vab;
 use crate::terrain::store::TerrainStore;
 use crate::ws::{default_ws_url, WsConnection, WsSignals};
 
-// 地図・右パネルの最小幅(DESIGN.md 6.1節: これを下回ったら外側コンテナを横スクロールさせる)。
+// 地図・右パネルの最小幅(DETAILED_DESIGN.md 7.2節: これを下回ったら外側コンテナを横スクロールさせる)。
 const MIN_CENTER_PX: f64 = 320.0;
 const MIN_RIGHT_PX: f64 = 260.0;
 
@@ -19,7 +19,8 @@ const MIN_RIGHT_PX: f64 = 260.0;
 pub fn App() -> impl IntoView {
     let signals = WsSignals::new();
     provide_context(signals);
-    // 地形データは中央の地図・右パネル下部の側面図で共有する(フェッチは1回だけ、DESIGN.md 5.2節)。
+    // 地形データは中央の地図・右パネル下部の側面図で共有する(フェッチは1回だけ、BASIC_DESIGN.md
+    // 6節フェーズ10: 同一の地形メッシュに異なるカメラを適用する構成)。
     provide_context(TerrainStore::new());
     // 接続はページの生存期間ずっと維持する(内部クロージャがselfを保持するため束縛は不要)。
     // WsConnectionはRc<RefCell<..>>を内部に持ちSend/Syncではないため、

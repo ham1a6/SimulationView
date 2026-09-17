@@ -1,9 +1,9 @@
 #pragma once
 
-// シミュレーション本体。DESIGN.md 9節フェーズ5:
+// シミュレーション本体。BASIC_DESIGN.md 6節フェーズ5:
 // 「実シミュレーションループとの結合、コマンドキュー実装、原点状態の保持・変更ガード実装」
 //
-// スレッドモデル(指示書 C++側実装要件 / DESIGN.md):
+// スレッドモデル(DETAILED_DESIGN.md 5.1節):
 // - .messageハンドラ(uWSイベントループスレッド)で受信したコマンドは、直接状態を書き換えず
 //   enqueue_command()でスレッドセーフなキューに積むだけにする。
 // - simスレッド側でstep()を呼ぶたびに、キューを消費してから物理状態を1ステップ進める。
@@ -39,9 +39,9 @@ struct OutgoingCommandError {
 
 // step()1回分の結果。ws_server側はこれを見て、必要な配信(defer経由)を行う。
 struct SimulationTickResult {
-    // 送信元クライアントだけに返すエラー(DESIGN.md 4.3節)。
+    // 送信元クライアントだけに返すエラー(DETAILED_DESIGN.md 4.3節)。
     std::vector<OutgoingCommandError> errors;
-    // trueなら新しいOriginStateを全クライアントへ再配信する(DESIGN.md 4.1節)。
+    // trueなら新しいOriginStateを全クライアントへ再配信する(DETAILED_DESIGN.md 4.3節)。
     bool origin_changed = false;
 };
 
@@ -76,8 +76,9 @@ private:
                            std::vector<OutgoingCommandError>& out_errors,
                            bool& out_origin_changed);
 
-    // 地形データの緯度経度範囲。前処理ツール未実装のため、DESIGN.md 1.2節の実測値を
-    // 暫定的にここへハードコードする(前処理ツール実装後はmetadata.jsonから読む想定)。
+    // 地形データの緯度経度範囲(DETAILED_DESIGN.md 1.2節)。geotiff_preprocess/main.cpp の
+    // kMosaicMinLat等と同じ値を独立にハードコードしている。値は現状一致しているが、
+    // metadata.jsonから読む形にはなっていない(既知の技術的負債。CLAUDE.md参照)。
     static constexpr double kMinLat = 35.0;
     static constexpr double kMaxLat = 40.0;
     static constexpr double kMinLon = 135.0;
@@ -85,8 +86,8 @@ private:
 
     mutable std::mutex state_mutex_; // origin_ / running_ / t_ / frame_id_ を保護
 
-    protocol::OriginState origin_{35.355556, 138.859722}; // DESIGN.md 3.1節: 試験用デフォルト原点
-    bool running_ = false; // DESIGN.md 3.4節: 原点変更ガード用
+    protocol::OriginState origin_{35.355556, 138.859722}; // DETAILED_DESIGN.md 3.1節: 試験用デフォルト原点
+    bool running_ = false; // DETAILED_DESIGN.md 3.4節: 原点変更ガード用
     double t_ = 0.0;
     uint32_t frame_id_ = 0;
 
