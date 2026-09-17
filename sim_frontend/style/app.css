@@ -307,7 +307,35 @@ body {
 .los-controls {
     flex: 0 0 auto;
     display: flex;
-    gap: 0.6rem;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.los-antenna-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.4rem;
+}
+
+.los-antenna-row .los-param-label {
+    min-width: 5.5ch;
+}
+
+.los-use-origin {
+    background: #234;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.3rem 0.5rem;
+    cursor: pointer;
+    font-size: 0.72rem;
+    white-space: nowrap;
+}
+
+.los-use-origin:hover {
+    background: #356;
+    border-color: var(--accent);
 }
 
 .los-param-label {
@@ -319,7 +347,8 @@ body {
     color: #999;
 }
 
-.los-param-label input[type="number"] {
+.los-param-label input[type="number"],
+.los-param-label input[type="text"] {
     width: 100%;
     background: #0d0d0d;
     border: 1px solid var(--border);

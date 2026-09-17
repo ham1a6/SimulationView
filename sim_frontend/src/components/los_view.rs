@@ -1,9 +1,14 @@
-//! ボトムステータスパネルの「見通し範囲」タブ。原点を観測点として、全方位角の
-//! 見通し限界距離(地形遮蔽 + 等価地球半径を考慮)を2D極座標図(レーダー覆域図)として表示する。
-//! アンテナ高・最大観測範囲はパラメータとして入力欄から指定できる。
+//! ボトムステータスパネルの「見通し範囲」タブ。任意の地点(既定はシミュレーション原点)を
+//! アンテナ位置として、全方位角の見通し限界距離(地形遮蔽 + 等価地球半径を考慮)を
+//! 2D極座標図(レーダー覆域図)として表示する。アンテナ位置(緯度経度)・アンテナ高・
+//! 最大観測範囲はいずれもパラメータとして入力欄から指定できる。
+//! アンテナ位置はシミュレーション本体の原点(`OriginState`)とは独立した、この画面だけの
+//! ローカルな状態(`set_origin`コマンドは送らない。地形は再計算しないため、原点変更と違い
+//! シミュレーション停止中でなくても自由に動かせる)。
 
 use leptos::prelude::*;
 
+use crate::terrain::loader::GeodeticBounds;
 use crate::terrain::los::{compute_los, LosParams, LosPoint};
 use crate::terrain::mesh::Origin;
 use crate::terrain::store::TerrainStore;
@@ -41,23 +46,74 @@ pub fn LosView() -> impl IntoView {
     let observer_height_m = RwSignal::new(10.0_f64);
     let max_range_km = RwSignal::new(50.0_f64);
 
+    // アンテナ位置(緯度経度、文字列入力)。既定ではシミュレーション原点に合わせておくが、
+    // ユーザーが手で編集したらそれ以降は原点変更による自動上書きを止める(origin_dialog.rsの
+    // dirtyフラグと同じ考え方)。
+    let antenna_lat_input = RwSignal::new(String::new());
+    let antenna_lon_input = RwSignal::new(String::new());
+    let antenna_dirty = RwSignal::new(false);
+
+    Effect::new(move |_| {
+        if antenna_dirty.get_untracked() {
+            return;
+        }
+        if let Some(o) = signals.origin.get() {
+            antenna_lat_input.set(format!("{:.6}", o.lat_deg));
+            antenna_lon_input.set(format!("{:.6}", o.lon_deg));
+        } else if let Some(data) = terrain_store.get() {
+            antenna_lat_input.set(format!("{:.6}", data.metadata.default_origin.lat_deg));
+            antenna_lon_input.set(format!("{:.6}", data.metadata.default_origin.lon_deg));
+        }
+    });
+
+    let use_origin = move |_| {
+        antenna_dirty.set(false);
+        if let Some(o) = signals.origin.get_untracked() {
+            antenna_lat_input.set(format!("{:.6}", o.lat_deg));
+            antenna_lon_input.set(format!("{:.6}", o.lon_deg));
+        }
+    };
+
+    // アンテナ位置の入力値を解析し、地形データ範囲内かを検証する。
+    let parsed_antenna = move |bounds: &GeodeticBounds| -> Result<Origin, String> {
+        let lat: f64 = antenna_lat_input
+            .get()
+            .trim()
+            .parse()
+            .map_err(|_| "アンテナ緯度は数値で入力してください".to_string())?;
+        let lon: f64 = antenna_lon_input
+            .get()
+            .trim()
+            .parse()
+            .map_err(|_| "アンテナ経度は数値で入力してください".to_string())?;
+        if lat < bounds.min_lat || lat > bounds.max_lat {
+            return Err(format!(
+                "アンテナ緯度は{:.1}〜{:.1}の範囲で入力してください",
+                bounds.min_lat, bounds.max_lat
+            ));
+        }
+        if lon < bounds.min_lon || lon > bounds.max_lon {
+            return Err(format!(
+                "アンテナ経度は{:.1}〜{:.1}の範囲で入力してください",
+                bounds.min_lon, bounds.max_lon
+            ));
+        }
+        Ok(Origin { lat_deg: lat, lon_deg: lon })
+    };
+
     let chart = move || {
         let Some(data) = terrain_store.get() else {
             return view! { <p class="placeholder los-status">"地形データを読み込み中..."</p> }
                 .into_any();
         };
-        let origin = signals
-            .origin
-            .get()
-            .map(|o| Origin { lat_deg: o.lat_deg, lon_deg: o.lon_deg })
-            .unwrap_or(Origin {
-                lat_deg: data.metadata.default_origin.lat_deg,
-                lon_deg: data.metadata.default_origin.lon_deg,
-            });
+        let antenna = match parsed_antenna(&data.metadata.geodetic_bounds) {
+            Ok(o) => o,
+            Err(msg) => return view! { <p class="placeholder los-status">{msg}</p> }.into_any(),
+        };
 
         let max_range_m = max_range_km.get().max(0.001) * 1000.0;
         let params = LosParams { observer_height_m: observer_height_m.get(), max_range_m };
-        let points = compute_los(&data, &origin, &params);
+        let points = compute_los(&data, &antenna, &params);
         if points.is_empty() {
             return view! { <p class="placeholder los-status">"計算できません"</p> }.into_any();
         }
@@ -107,34 +163,65 @@ pub fn LosView() -> impl IntoView {
         <div class="los-view">
             <div class="los-chart">{chart}</div>
             <div class="los-controls">
-                <label class="los-param-label">
-                    "アンテナ高(m)"
-                    <input
-                        type="number"
-                        min="0"
-                        step="1"
-                        prop:value=move || observer_height_m.get().to_string()
-                        on:input=move |ev| {
-                            if let Ok(v) = event_target_value(&ev).parse::<f64>() {
-                                observer_height_m.set(v.max(0.0));
+                <div class="los-antenna-row">
+                    <label class="los-param-label">
+                        "アンテナ緯度"
+                        <input
+                            type="text"
+                            inputmode="decimal"
+                            prop:value=move || antenna_lat_input.get()
+                            on:input=move |ev| {
+                                antenna_dirty.set(true);
+                                antenna_lat_input.set(event_target_value(&ev));
                             }
-                        }
-                    />
-                </label>
-                <label class="los-param-label">
-                    "最大観測範囲(km)"
-                    <input
-                        type="number"
-                        min="1"
-                        step="1"
-                        prop:value=move || max_range_km.get().to_string()
-                        on:input=move |ev| {
-                            if let Ok(v) = event_target_value(&ev).parse::<f64>() {
-                                max_range_km.set(v.max(1.0));
+                        />
+                    </label>
+                    <label class="los-param-label">
+                        "アンテナ経度"
+                        <input
+                            type="text"
+                            inputmode="decimal"
+                            prop:value=move || antenna_lon_input.get()
+                            on:input=move |ev| {
+                                antenna_dirty.set(true);
+                                antenna_lon_input.set(event_target_value(&ev));
                             }
-                        }
-                    />
-                </label>
+                        />
+                    </label>
+                    <button class="los-use-origin" title="原点の緯度経度に戻す" on:click=use_origin>
+                        "原点を使う"
+                    </button>
+                </div>
+                <div class="los-antenna-row">
+                    <label class="los-param-label">
+                        "アンテナ高(m)"
+                        <input
+                            type="number"
+                            min="0"
+                            step="1"
+                            prop:value=move || observer_height_m.get().to_string()
+                            on:input=move |ev| {
+                                if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+                                    observer_height_m.set(v.max(0.0));
+                                }
+                            }
+                        />
+                    </label>
+                    <label class="los-param-label">
+                        "最大観測範囲(km)"
+                        <input
+                            type="number"
+                            min="1"
+                            step="1"
+                            prop:value=move || max_range_km.get().to_string()
+                            on:input=move |ev| {
+                                if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+                                    max_range_km.set(v.max(1.0));
+                                }
+                            }
+                        />
+                    </label>
+                </div>
             </div>
         </div>
     }
