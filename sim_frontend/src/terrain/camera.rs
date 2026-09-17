@@ -7,6 +7,7 @@
 //!
 //! フェーズ10: 自由視点カメラ(ズーム・回転・視点プリセット)。DESIGN.md 5.2節。
 
+use glam::camera::rh::{proj::directx, view::look_at_mat4};
 use glam::{Mat4, Vec3};
 
 /// レンダラーに渡す、計算済みのカメラ(視点位置・注視点・レンズ設定)。
@@ -22,10 +23,10 @@ pub struct Camera {
 impl Camera {
     pub fn view_proj_matrix(&self) -> Mat4 {
         // ENU座標系のUp軸(Z)をそのまま「上」として渡す。
-        let view = Mat4::look_at_rh(self.eye, self.target, Vec3::Z);
+        let view = look_at_mat4(self.eye, self.target, Vec3::Z);
         // wgpuの正規化デバイス座標は深度[0,1](OpenGL流の[-1,1]ではない)なので
-        // perspective_rh(wgpu/Vulkan/Metal互換)を使う。perspective_rh_glは使わない。
-        let proj = Mat4::perspective_rh(self.fov_y_radians, self.aspect, self.z_near, self.z_far);
+        // directx::perspective(DirectX/WebGPU互換、深度[0,1])を使う。opengl::perspectiveは使わない。
+        let proj = directx::perspective(self.fov_y_radians, self.aspect, self.z_near, self.z_far);
         proj * view
     }
 }

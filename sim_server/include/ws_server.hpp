@@ -21,6 +21,12 @@ public:
     explicit WsServer(uint16_t port);
     ~WsServer();
 
+    // impl_は所有権を持つ生ポインタでコピー・ムーブ双方が二重解放を招くため禁止する。
+    WsServer(const WsServer&) = delete;
+    WsServer& operator=(const WsServer&) = delete;
+    WsServer(WsServer&&) = delete;
+    WsServer& operator=(WsServer&&) = delete;
+
     // イベントループを起動する(呼び出しスレッドをブロックする)。
     void run();
 
