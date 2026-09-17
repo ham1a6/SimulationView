@@ -1,5 +1,5 @@
-//! 左パネル上: 操作パネル(ステータス表示 + 原点入力フォーム)。DETAILED_DESIGN.md 7.1節参照。
-//! VAB(左パネル下)は`vab.rs`。
+//! 左パネル上: シミュレーションステータスパネル(接続状態表示 + 原点入力フォーム)。
+//! DETAILED_DESIGN.md 7.1節参照。VABパネル(左パネル下)は`vab.rs`。
 
 use leptos::prelude::*;
 
@@ -8,7 +8,7 @@ use crate::terrain::loader::{self, GeodeticBounds};
 use crate::ws::{ConnectionStatus, WsConnection, WsSignals};
 
 #[component]
-pub fn OperationPanel(
+pub fn SimulationStatusPanel(
     /// WsConnectionはRc<RefCell<..>>を含みSend/Syncでないため(vab.rsと同じ理由)、
     /// contextではなくpropとして受け取る。
     conn: WsConnection,
@@ -25,7 +25,7 @@ pub fn OperationPanel(
 
     view! {
         <div class="panel-section operation-panel">
-            <h2>"ステータス"</h2>
+            <h2>"シミュレーションステータスパネル"</h2>
             <p class=status_class>{status_text}</p>
 
             <dl class="kv-list">

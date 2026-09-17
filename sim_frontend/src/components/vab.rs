@@ -1,4 +1,4 @@
-//! 左パネル下: VAB(操作ボタングリッド)。DETAILED_DESIGN.md 7.4節。
+//! 左パネル下: VABパネル(操作ボタングリッド)。DETAILED_DESIGN.md 7.4節。
 //! - 配置・ラベル・有効/無効はサーバーの`VabConfig`が決める(ハードコードしない)
 //! - 操作は単純クリックのみ
 //! - ラベルが空文字のボタンは「未使用の穴」としてDOM要素自体を描画しない
@@ -14,7 +14,7 @@ use crate::ws::WsConnection;
 use crate::ws::WsSignals;
 
 #[component]
-pub fn Vab(
+pub fn VabPanel(
     /// WsConnectionはRc<RefCell<..>>を含みSend/Syncでないため、
     /// (Leptos 0.8のprovide_contextが要求する境界を満たせない)、propとして受け取る。
     conn: WsConnection,
@@ -23,7 +23,7 @@ pub fn Vab(
 
     view! {
         <div class="panel-section vab-panel">
-            <h2>"VAB"</h2>
+            <h2>"VABパネル"</h2>
             {move || {
                 let Some(cfg) = signals.vab_config.get() else {
                     return view! { <p class="placeholder">"(未受信)"</p> }.into_any();

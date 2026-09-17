@@ -42,7 +42,12 @@ pub enum CameraPreset {
     Side,
 }
 
-const MIN_DISTANCE: f32 = 300.0;
+// 現在のheightmapは5°四方(約555km)を1024×1024へダウンサンプリングしており、
+// 1グリッドセルが約542m(元のALOS 30mデータよりかなり粗い)。そのため現状は
+// MIN_DISTANCEまでズームしても地形の凹凸は見えず単色の面が広がるだけになるが、
+// 地形データの解像度向上(別タスク)後にカメラ側の再調整が要らないよう、
+// 余裕を持って近くまでズームできるようにしておく。
+const MIN_DISTANCE: f32 = 100.0;
 const MAX_DISTANCE: f32 = 400_000.0;
 // 真上・真下ぎりぎりまで見えるが、ちょうど90度だとlook_atのup方向と視線が一致し
 // 特異点になるため少し余裕を持たせる。
@@ -71,24 +76,28 @@ pub struct OrbitCamera {
 }
 
 impl OrbitCamera {
-    pub fn preset(preset: CameraPreset) -> Self {
+    /// `target_up`: 注視点のENU上座標(メートル)。原点の実際の地表標高を渡すこと
+    /// (`Vec3::ZERO`=楕円体高0mを渡すと、原点が高山の斜面にある場合に注視点が
+    /// 地表よりずっと下(地中)になってしまい、ズームインした際にカメラが地面に
+    /// 埋まって真っ黒になる。`components/terrain_view.rs`参照)。
+    pub fn preset(preset: CameraPreset, target_up: f32) -> Self {
         match preset {
             CameraPreset::Overview => Self {
-                target: Vec3::ZERO,
+                target: Vec3::new(0.0, 0.0, target_up),
                 distance: 35_000.0,
                 yaw: -std::f32::consts::FRAC_PI_4,
                 pitch: 0.6,
                 fov_y_radians: 50f32.to_radians(),
-                z_near: 10.0,
+                z_near: 1.0,
                 z_far: 400_000.0,
             },
             CameraPreset::Side => Self {
-                target: Vec3::ZERO,
+                target: Vec3::new(0.0, 0.0, target_up),
                 distance: 60_000.0,
                 yaw: 0.0,
                 pitch: 0.08,
                 fov_y_radians: 45f32.to_radians(),
-                z_near: 10.0,
+                z_near: 1.0,
                 z_far: 400_000.0,
             },
         }

@@ -81,6 +81,24 @@ body {
     height: 100%;
 }
 
+/* メインパネルの見出し。他パネルのh2と違い、canvas全面表示を崩さないよう
+   左上に控えめなオーバーレイラベルとして重ねる(右上の俯瞰/側面ボタンと対称の位置)。 */
+.main-panel-title {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 2;
+    background: rgba(20, 20, 20, 0.75);
+    color: var(--accent);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    pointer-events: none;
+}
+
 /* タブ付きパネル(右パネル上下段で共通、components/tabbed_panel.rs)。
    ヘッダー(タイトル+タブバー)の下に選択中タブの内容が残り高さいっぱいに広がる。 */
 .tabbed-panel {

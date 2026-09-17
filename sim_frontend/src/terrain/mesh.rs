@@ -128,6 +128,36 @@ fn elevation_to_color(elevation: f32, min: f32, max: f32) -> [f32; 3] {
     STOPS[STOPS.len() - 1].1
 }
 
+/// heightmapを双線形補間でサンプリングする。範囲外ならNone。
+/// `terrain/profile.rs`(断面図)・`components/terrain_view.rs`(カメラ注視点の高さ)から使う。
+pub fn sample_heightmap(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> Option<f32> {
+    let b = &data.metadata.geodetic_bounds;
+    if lat_deg < b.min_lat || lat_deg > b.max_lat || lon_deg < b.min_lon || lon_deg > b.max_lon {
+        return None;
+    }
+
+    let width = data.metadata.width as usize;
+    let height = data.metadata.height as usize;
+    // 行順は南→北(DETAILED_DESIGN.md 2.6節の座標復元式と同じ向き。build_meshも同様)。
+    let fx = (lon_deg - b.min_lon) / (b.max_lon - b.min_lon) * (width - 1) as f64;
+    let fy = (lat_deg - b.min_lat) / (b.max_lat - b.min_lat) * (height - 1) as f64;
+
+    let x0 = fx.floor().clamp(0.0, (width - 1) as f64) as usize;
+    let y0 = fy.floor().clamp(0.0, (height - 1) as f64) as usize;
+    let x1 = (x0 + 1).min(width - 1);
+    let y1 = (y0 + 1).min(height - 1);
+    let tx = (fx - x0 as f64) as f32;
+    let ty = (fy - y0 as f64) as f32;
+
+    let h00 = data.heightmap[y0 * width + x0];
+    let h10 = data.heightmap[y0 * width + x1];
+    let h01 = data.heightmap[y1 * width + x0];
+    let h11 = data.heightmap[y1 * width + x1];
+    let h0 = h00 + (h10 - h00) * tx;
+    let h1 = h01 + (h11 - h01) * tx;
+    Some(h0 + (h1 - h0) * ty)
+}
+
 /// heightmap全体からメッシュを構築する。原点変更時にも呼び直す(DETAILED_DESIGN.md 3.3節)。
 pub fn build_mesh(data: &TerrainData, origin: &Origin) -> TerrainMesh {
     let width = data.metadata.width as usize;

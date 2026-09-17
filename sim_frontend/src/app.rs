@@ -1,13 +1,13 @@
 //! 全体レイアウト(AppLayout)。DETAILED_DESIGN.md 7.1節: 3カラムの横並びは崩さない。
-//! 左パネルは固定幅、地図・右パネルはレスポンシブ対応 + ドラッグでサイズ変更できる。
+//! 左パネルは固定幅、メインパネル・右パネルはレスポンシブ対応 + ドラッグでサイズ変更できる。
 
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
-use crate::components::map_view::MapView;
-use crate::components::operation_panel::OperationPanel;
+use crate::components::main_panel::MainPanel;
+use crate::components::operation_panel::SimulationStatusPanel;
 use crate::components::right_panel::{BottomStatusPanel, TopStatusPanel};
-use crate::components::vab::Vab;
+use crate::components::vab::VabPanel;
 use crate::terrain::store::TerrainStore;
 use crate::ws::{default_ws_url, WsConnection, WsSignals};
 
@@ -19,8 +19,8 @@ const MIN_RIGHT_PX: f64 = 260.0;
 pub fn App() -> impl IntoView {
     let signals = WsSignals::new();
     provide_context(signals);
-    // 地形データは中央の地図・右パネル下部の側面図で共有する(フェッチは1回だけ、BASIC_DESIGN.md
-    // 6節フェーズ10: 同一の地形メッシュに異なるカメラを適用する構成)。
+    // 地形データはメインパネル・ボトムステータスパネル(断面図タブ)で共有する(フェッチは
+    // 1回だけ、BASIC_DESIGN.md 6節フェーズ10: 同一の地形メッシュに異なるカメラを適用する構成)。
     provide_context(TerrainStore::new());
     // 接続はページの生存期間ずっと維持する(内部クロージャがselfを保持するため束縛は不要)。
     // WsConnectionはRc<RefCell<..>>を内部に持ちSend/Syncではないため、
@@ -65,7 +65,7 @@ pub fn App() -> impl IntoView {
         dragging.set(false);
     };
 
-    // 4列: 左パネル(固定) / 地図 / リサイザー / 右パネル。
+    // 4列: 左パネル(固定) / メインパネル / リサイザー / 右パネル。
     // minmaxの下限により、収まらない場合はグリッド自体が広がり、
     // 親(.app-shell)のoverflow-x:autoで横スクロールになる(縦積みへの再レイアウトはしない)。
     let grid_columns = move || {
@@ -80,12 +80,12 @@ pub fn App() -> impl IntoView {
         <div class="app-shell">
             <div class="app-layout" style:grid-template-columns=grid_columns>
                 <div class="left-panel">
-                    <OperationPanel conn=conn.clone()/>
-                    <Vab conn=conn.clone()/>
+                    <SimulationStatusPanel conn=conn.clone()/>
+                    <VabPanel conn=conn.clone()/>
                 </div>
 
                 <div class="center-panel">
-                    <MapView/>
+                    <MainPanel/>
                 </div>
 
                 <div

@@ -612,9 +612,9 @@ classDiagram
 ```mermaid
 graph TD
     App["App (app.rs)<br/>3カラムCSS Gridレイアウト・リサイザー"]
-    App --> OperationPanel["OperationPanel<br/>接続状態・原点・フレーム表示"]
-    App --> Vab["Vab<br/>4列ボタングリッド(1+4+1行)"]
-    App --> MapView["MapView<br/>地形描画canvas(3D, TerrainView)"]
+    App --> SimulationStatusPanel["SimulationStatusPanel<br/>(operation_panel.rs) 接続状態・原点・フレーム表示"]
+    App --> VabPanel["VabPanel<br/>(vab.rs) 4列ボタングリッド(1+4+1行)"]
+    App --> MainPanel["MainPanel<br/>(main_panel.rs) 地形描画canvas(3D, TerrainView)"]
     App --> TopStatusPanel["TopStatusPanel<br/>TabbedPanel: [各種情報]タブ=StatusPanel"]
     App --> BottomStatusPanel["BottomStatusPanel<br/>TabbedPanel: [断面図]タブ=CrossSectionView"]
 
@@ -622,12 +622,12 @@ graph TD
     App -.provide_context.-> TerrainStore["TerrainStore<br/>(heightmap/metadataを両パネルで共有)"]
     App -.propとして渡す.-> WsConnection["WsConnection<br/>(Rc<RefCell<...>>、Send/Sync境界回避のためcontext不使用)"]
 
-    MapView --> Loader["terrain::loader<br/>heightmap.bin/metadata.json取得"]
-    MapView --> Mesh["terrain::mesh<br/>ENU変換・頂点/インデックス生成"]
-    MapView --> Renderer["terrain::renderer::TerrainRenderer<br/>wgpu Device/Queue/Pipeline"]
-    MapView --> Camera["terrain::camera::Camera<br/>view_proj行列"]
+    MainPanel --> Loader["terrain::loader<br/>heightmap.bin/metadata.json取得"]
+    MainPanel --> Mesh["terrain::mesh<br/>ENU変換・頂点/インデックス生成"]
+    MainPanel --> Renderer["terrain::renderer::TerrainRenderer<br/>wgpu Device/Queue/Pipeline"]
+    MainPanel --> Camera["terrain::camera::Camera<br/>view_proj行列"]
     BottomStatusPanel --> Profile["terrain::profile::build_profile<br/>原点から方位角方向へ地表をサンプリング"]
-    TerrainStore -.共有データ.-> MapView
+    TerrainStore -.共有データ.-> MainPanel
     TerrainStore -.共有データ.-> BottomStatusPanel
 ```
 
@@ -847,6 +847,9 @@ flowchart LR
 - `EnuTransform::inverse`は`transform`(緯度経度→ENU)の近似逆変換。原点緯度における
   子午線曲率半径Mと卯酉線曲率半径Nを使ったローカル接平面近似(`lat = lat0 + north/M`,
   `lon = lon0 + east/(N・cos(lat0))`)
+- heightmapの双線形補間サンプリング(`mesh::sample_heightmap`)は断面図専用ではなく
+  `terrain/mesh.rs`にある共通関数。メインパネルのカメラ注視点の高さ算出(6.5節注記・
+  下記コードレビュー節参照)にも使う
 - 原点(`WsSignals.origin`)・方位角(`azimuth`)のどちらが変わってもLeptosの反応性により
   自動的に再計算・再描画される(明示的なEffectは不要、`chart`クロージャ内で両方を`.get()`
   しているため)
@@ -858,19 +861,26 @@ flowchart LR
 ### 7.1 レイアウト
 
 ```
-┌─────────────┬───────────────────┬───────────────────┐
-│ 操作パネル(上) │                   │ トップステータスパネル │
-│  ステータス    │                   │  [各種情報]タブ      │
-├─────────────┤     地図(3D地形)    ├───────────────────┤
-│ 操作パネル(下) │                   │ ボトムステータスパネル │
-│    VAB       │                   │  [断面図]タブ        │
-└─────────────┴───────────────────┴───────────────────┘
+┌───────────────────────┬───────────────────┬───────────────────┐
+│ シミュレーション          │                   │ トップステータスパネル │
+│ ステータスパネル(上)      │                   │  [各種情報]タブ      │
+├───────────────────────┤     メインパネル     ├───────────────────┤
+│ VABパネル(下)            │    (3D地形)        │ ボトムステータスパネル │
+│                         │                   │  [断面図]タブ        │
+└───────────────────────┴───────────────────┴───────────────────┘
 ```
 
-- CSS Gridで4列(左パネル固定 / 地図 / リサイザー(6px) / 右パネル)を構成する
-- 左パネルは`display:grid; grid-template-rows: 1fr auto;`で上下2分割(操作パネル/VAB)。
-  VAB側は`auto`で内容の高さにぴったり合わせ、余った分は操作パネル側(`1fr`)が吸収する
-  (固定`1fr 1fr`だと、VABの実寸と半分の高さがずれた際に一方に余白/スクロールが生じるため)
+パネル名は全て位置ベースの汎用名で統一している(シミュレーションステータスパネル/VABパネル/
+メインパネル/トップステータスパネル/ボトムステータスパネル)。表示内容そのものを指す旧称
+(「操作パネル」「VAB」「地図」「各種情報パネル」「側面図パネル」)は、トップ/ボトムステータス
+パネルではタブラベルとして残るのみで、パネル自体の名前としては使わない。
+
+- CSS Gridで4列(左パネル固定 / メインパネル / リサイザー(6px) / 右パネル)を構成する
+- 左パネルは`display:grid; grid-template-rows: 1fr auto;`で上下2分割
+  (シミュレーションステータスパネル/VABパネル)。VABパネル側は`auto`で内容の高さに
+  ぴったり合わせ、余った分はシミュレーションステータスパネル側(`1fr`)が吸収する
+  (固定`1fr 1fr`だと、VABパネルの実寸と半分の高さがずれた際に一方に余白/スクロールが
+  生じるため)
 - 右パネルは`grid-template-rows: 1fr 1fr;`で上下2分割(トップ/ボトムステータスパネル、
   こちらは両方とも内容量の変動が小さいため固定分割のままでよい)。両パネルとも
   `TabbedPanel`(7.6節)で実装しており、現状は1タブのみだが後から同じ枠に別タブを追加できる

@@ -2,7 +2,7 @@
 //! 地表をサンプリングし、(距離, 標高)の点列を作る(2D表示用、`components/cross_section_view.rs`)。
 
 use super::loader::TerrainData;
-use super::mesh::{EnuTransform, Origin};
+use super::mesh::{sample_heightmap, EnuTransform, Origin};
 
 pub struct ProfilePoint {
     pub distance_m: f64,
@@ -14,35 +14,6 @@ const NUM_SAMPLES: usize = 300;
 /// 二分探索で「地形データの範囲内かどうか」を調べる際の初期上限距離。
 /// 地形データの外接矩形(5度四方、対角線で約780km)より確実に大きい値にしておく。
 const SEARCH_UPPER_BOUND_M: f64 = 1_000_000.0;
-
-/// heightmapを双線形補間でサンプリングする。範囲外ならNone。
-fn sample_heightmap(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> Option<f32> {
-    let b = &data.metadata.geodetic_bounds;
-    if lat_deg < b.min_lat || lat_deg > b.max_lat || lon_deg < b.min_lon || lon_deg > b.max_lon {
-        return None;
-    }
-
-    let width = data.metadata.width as usize;
-    let height = data.metadata.height as usize;
-    // 行順は南→北(DETAILED_DESIGN.md 2.6節の座標復元式と同じ向き。mesh.rs::build_meshも同様)。
-    let fx = (lon_deg - b.min_lon) / (b.max_lon - b.min_lon) * (width - 1) as f64;
-    let fy = (lat_deg - b.min_lat) / (b.max_lat - b.min_lat) * (height - 1) as f64;
-
-    let x0 = fx.floor().clamp(0.0, (width - 1) as f64) as usize;
-    let y0 = fy.floor().clamp(0.0, (height - 1) as f64) as usize;
-    let x1 = (x0 + 1).min(width - 1);
-    let y1 = (y0 + 1).min(height - 1);
-    let tx = (fx - x0 as f64) as f32;
-    let ty = (fy - y0 as f64) as f32;
-
-    let h00 = data.heightmap[y0 * width + x0];
-    let h10 = data.heightmap[y0 * width + x1];
-    let h01 = data.heightmap[y1 * width + x0];
-    let h11 = data.heightmap[y1 * width + x1];
-    let h0 = h00 + (h10 - h00) * tx;
-    let h1 = h01 + (h11 - h01) * tx;
-    Some(h0 + (h1 - h0) * ty)
-}
 
 /// 方位角方向(東=dir_east, 北=dir_north の単位ベクトル)に、地形データの範囲内でいられる
 /// 最大距離を二分探索で求める。原点自体は必ず範囲内にある前提(サーバー側の`set_origin`

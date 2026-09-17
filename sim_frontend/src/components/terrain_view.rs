@@ -24,6 +24,10 @@ struct ViewState {
     /// 現在GPUにアップロードされているメッシュが基づいている原点。
     mesh_origin: Option<Origin>,
     camera: OrbitCamera,
+    /// 現在の注視点の地表標高(ENU上座標、メートル)。原点の緯度経度における
+    /// heightmapの値。カメラの`target`はここではなく`Vec3::new(0,0,target_up)`に
+    /// 置くことで、ズームインしても地表に埋まらないようにする(camera.rs参照)。
+    target_up: f32,
     initializing: bool,
     dragging: bool,
     last_x: f64,
@@ -68,10 +72,18 @@ fn try_init(
             lon_deg: data.metadata.default_origin.lon_deg,
         });
     let terrain_mesh = mesh::build_mesh(&data, &origin);
+    // 注視点は原点の実際の地表標高に置く(Vec3::ZEROのままだと、原点が高山の
+    // 斜面にある場合にズームインした際カメラが地面に埋まって真っ黒になる)。
+    let target_up = mesh::sample_heightmap(&data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0);
 
     wasm_bindgen_futures::spawn_local(async move {
         match TerrainRenderer::new(canvas, &terrain_mesh).await {
             Ok(renderer) => {
+                {
+                    let mut s = state.borrow_mut();
+                    s.target_up = target_up;
+                    s.camera.target.z = target_up;
+                }
                 let camera = state.borrow().camera.to_camera(renderer.aspect_ratio());
                 if let Err(e) = renderer.render(&camera) {
                     log::error!("[terrain] initial render failed: {e}");
@@ -115,7 +127,9 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         renderer: None,
         terrain: None,
         mesh_origin: None,
-        camera: OrbitCamera::preset(preset),
+        // target_upは地形データ取得後(try_init)に実際の標高で上書きする。
+        camera: OrbitCamera::preset(preset, 0.0),
+        target_up: 0.0,
         initializing: false,
         dragging: false,
         last_x: 0.0,
@@ -213,13 +227,22 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             };
 
             let mut s = state.borrow_mut();
-            let (Some(terrain), Some(renderer)) = (s.terrain.as_ref(), s.renderer.as_ref()) else {
+            let Some(terrain) = s.terrain.clone() else {
                 return;
             };
+            if s.renderer.is_none() {
+                return;
+            }
             if s.mesh_origin == Some(new_origin) {
                 return;
             }
-            let new_mesh = mesh::build_mesh(terrain, &new_origin);
+            let new_mesh = mesh::build_mesh(&terrain, &new_origin);
+            // 注視点の高さも新しい原点の地表標高へ更新する(古い標高のままだと、
+            // 原点移動後にズームインした際カメラが地面に埋まって真っ黒になりうる)。
+            s.target_up =
+                mesh::sample_heightmap(&terrain, new_origin.lat_deg, new_origin.lon_deg).unwrap_or(0.0);
+            s.camera.target.z = s.target_up;
+            let renderer = s.renderer.as_ref().expect("checked is_some above");
             renderer.update_vertices(&new_mesh);
             let camera = s.camera.to_camera(renderer.aspect_ratio());
             if let Err(e) = renderer.render(&camera) {
@@ -284,12 +307,14 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
 
     let state_overview = state.clone();
     let on_preset_overview = move |_| {
-        state_overview.borrow_mut().camera = OrbitCamera::preset(CameraPreset::Overview);
+        let target_up = state_overview.borrow().target_up;
+        state_overview.borrow_mut().camera = OrbitCamera::preset(CameraPreset::Overview, target_up);
         render_now(&state_overview);
     };
     let state_side = state.clone();
     let on_preset_side = move |_| {
-        state_side.borrow_mut().camera = OrbitCamera::preset(CameraPreset::Side);
+        let target_up = state_side.borrow().target_up;
+        state_side.borrow_mut().camera = OrbitCamera::preset(CameraPreset::Side, target_up);
         render_now(&state_side);
     };
 
