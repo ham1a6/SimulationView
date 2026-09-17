@@ -155,10 +155,12 @@ void WsServer::run() {
         serve_terrain_file(res, "assets/terrain/heightmap.bin", "application/octet-stream");
     });
 
-    app.listen(impl->port, [impl](us_listen_socket_t* token) {
+    // "0.0.0.0"を明示し、全ネットワークインターフェースでバインドする
+    // (LAN上の別端末からもsim_frontendで接続できるようにするため)。
+    app.listen("0.0.0.0", impl->port, [impl](us_listen_socket_t* token) {
         if (token) {
-            std::cout << "[ws_server] listening on ws://localhost:" << impl->port << "/sim"
-                       << std::endl;
+            std::cout << "[ws_server] listening on ws://0.0.0.0:" << impl->port
+                       << "/sim (all interfaces)" << std::endl;
         } else {
             std::cerr << "[ws_server] failed to listen on port " << impl->port << std::endl;
         }
