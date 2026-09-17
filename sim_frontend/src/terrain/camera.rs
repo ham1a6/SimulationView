@@ -48,7 +48,12 @@ pub enum CameraPreset {
 // 地形データの解像度向上(別タスク)後にカメラ側の再調整が要らないよう、
 // 余裕を持って近くまでズームできるようにしておく。
 const MIN_DISTANCE: f32 = 100.0;
-const MAX_DISTANCE: f32 = 400_000.0;
+const MAX_DISTANCE: f32 = 500_000.0;
+// z_farはMAX_DISTANCEちょうどだと、カメラが最大までズームアウトした際に地形データの
+// 外接矩形(5°四方、対角線で約785km)の遠い側がクリッピングされて見えなくなってしまう
+// (カメラ自体がMAX_DISTANCE分target から離れているため、そこからさらに785km先までを
+// 描画範囲に含める必要がある)。MAX_DISTANCE + 対角線長に十分な余裕を持たせておく。
+const Z_FAR: f32 = 1_500_000.0;
 // 真上・真下ぎりぎりまで見えるが、ちょうど90度だとlook_atのup方向と視線が一致し
 // 特異点になるため少し余裕を持たせる。
 const MIN_PITCH: f32 = -1.5;
@@ -84,12 +89,14 @@ impl OrbitCamera {
         match preset {
             CameraPreset::Overview => Self {
                 target: Vec3::new(0.0, 0.0, target_up),
-                distance: 35_000.0,
+                // データが存在する領域(5°四方、対角線で約785km)全体が画面内に収まる距離
+                // (実機で確認して調整した値。MAX_DISTANCE=500,000mとの間に少し余裕を残す)。
+                distance: 400_000.0,
                 yaw: -std::f32::consts::FRAC_PI_4,
                 pitch: 0.6,
                 fov_y_radians: 50f32.to_radians(),
                 z_near: 1.0,
-                z_far: 400_000.0,
+                z_far: Z_FAR,
             },
             CameraPreset::Side => Self {
                 target: Vec3::new(0.0, 0.0, target_up),
@@ -98,7 +105,7 @@ impl OrbitCamera {
                 pitch: 0.08,
                 fov_y_radians: 45f32.to_radians(),
                 z_near: 1.0,
-                z_far: 400_000.0,
+                z_far: Z_FAR,
             },
         }
     }
