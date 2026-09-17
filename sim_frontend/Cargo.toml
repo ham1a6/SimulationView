@@ -40,6 +40,8 @@ features = [
     "ResizeObserver",
     "ResizeObserverEntry",
     "DomRectReadOnly",
+    "DomRect",
+    "MouseEvent",
 ]
 
 [profile.release]

@@ -651,16 +651,21 @@ graph TD
 
     App -.provide_context.-> WsSignals["WsSignals<br/>(接続状態・受信データのシグナル群)"]
     App -.provide_context.-> TerrainStore["TerrainStore<br/>(heightmap/metadataを両パネルで共有)"]
+    App -.provide_context.-> RadarMarkersState["RadarMarkersState<br/>(観測点一覧・選択状態、全パネル共有)"]
     App -.propとして渡す.-> WsConnection["WsConnection<br/>(Rc<RefCell<...>>、Send/Sync境界回避のためcontext不使用)"]
 
     MainPanel --> Loader["terrain::loader<br/>heightmap.bin/metadata.json取得"]
     MainPanel --> Mesh["terrain::mesh<br/>ENU変換・頂点/インデックス生成"]
-    MainPanel --> Renderer["terrain::renderer::TerrainRenderer<br/>wgpu Device/Queue/Pipeline"]
-    MainPanel --> Camera["terrain::camera::Camera<br/>view_proj行列"]
+    MainPanel --> Renderer["terrain::renderer::TerrainRenderer<br/>wgpu Device/Queue/Pipeline(地形)+line_pipeline(観測点/覆域)"]
+    MainPanel --> Camera["terrain::camera::Camera<br/>view_proj行列・screen_to_ray"]
+    MainPanel --> Pick["terrain::pick::pick_lat_lon<br/>右クリック→レイキャストで緯度経度取得"]
+    MainPanel --> Markers["terrain::markers::build_marker_geometry<br/>観測点・覆域リングの3D頂点生成"]
     BottomStatusPanel --> Profile["terrain::profile::build_profile<br/>原点から方位角方向へ地表をサンプリング"]
-    BottomStatusPanel --> Los["terrain::los::compute_los<br/>全方位角の見通し限界距離(等価地球半径考慮)"]
+    BottomStatusPanel --> Los["terrain::los::compute_los / is_visible<br/>全方位角の見通し限界距離・点対点の遮蔽判定"]
     TerrainStore -.共有データ.-> MainPanel
     TerrainStore -.共有データ.-> BottomStatusPanel
+    RadarMarkersState -.共有データ.-> MainPanel
+    RadarMarkersState -.共有データ.-> BottomStatusPanel
 ```
 
 ### 6.2 WebSocket接続管理のクラス図
@@ -892,29 +897,50 @@ flowchart LR
   自動的に再計算・再描画される(明示的なEffectは不要、`chart`クロージャ内で両方を`.get()`
   しているため)
 
-### 6.10 見通し範囲(ボトムステータスパネルの「見通し範囲」タブ、`terrain::los` / `LosView`)
+### 6.10 見通し範囲(レーダー観測点、`terrain::los` / `terrain::markers` / `terrain::pick` / `LosView`)
 
-任意の地点(アンテナ位置)を観測点として、全方位角(1度刻み・360方向)の見通し限界距離を
-計算し、2D極座標図(レーダー覆域図)として表示する。断面図と同じくwgpuは使わずSVGで描画する。
-パラメータ(アンテナ位置・アンテナ高・最大観測範囲)は入力欄からいつでも変更でき、変更のたびに
-反応的に再計算される。
+任意の地点(レーダー観測点)を観測点として、全方位角(1度刻み・360方向)の見通し限界距離を
+計算し、(a) メインパネル(3D地形)上に覆域境界の輪郭線、(b) ボトムステータスパネルの
+「見通し範囲」タブに2D極座標図(レーダー覆域図)、(c) 断面図タブに覆域区間の色分け、の3か所で
+表示する。観測点自体は**メインパネル上での右クリックで追加する**(タブからの手入力ではない)。
 
-**アンテナ位置は任意の地点に置ける**: 既定ではシミュレーション原点(`OriginState`)の緯度経度に
-一致させておくが、緯度・経度の入力欄から地形データ範囲内の任意の地点へ自由に変更できる
-(範囲外はエラーメッセージを表示しブロックする、`origin_dialog.rs`と同じ検証方式)。
-「原点を使う」ボタンで、いつでも現在の原点の緯度経度に戻せる。**アンテナ位置はシミュレーション
-本体の原点(`OriginState`)とは独立したこの画面だけのローカル状態**で、`set_origin`コマンドは
-一切送らない。地形メッシュの再計算も発生しないため、原点変更とは異なり**シミュレーション実行中
-でも自由に動かせる**(3.4節の「原点変更はシミュレーション停止中のみ」という制約は`OriginState`
-自体の変更にのみ適用され、見通し範囲タブの観測点には適用されない)。
+**観測点の追加(右クリック→レイキャスト)**: メインパネルのcanvasで右クリックすると
+(ブラウザ既定のコンテキストメニューは`prevent_default`で抑止)、クリックされた画面座標から
+カメラの逆ビュー射影行列でENU座標系のレイを求め(`Camera::screen_to_ray`)、そのレイを
+CPU側のheightmapに対して直接マーチングして地表との交点を探す(`terrain::pick::pick_lat_lon`。
+GPU側の読み戻しは行わない)。交点が見つかり、かつ地形データ範囲内であれば、その緯度経度に
+既定パラメータ(アンテナ高10m・最大観測範囲50km)の観測点(`RadarMarker`)を追加し、選択状態にする。
+観測点は**複数個**追加でき、一覧は`ui_state::RadarMarkersState`(全パネル共有のcontext)が保持する。
+
+**選択・削除・パラメータ編集**: ボトムステータスパネルの「見通し範囲」タブが観測点一覧を
+リスト表示する。各行をクリックすると選択状態になり(3D側のハイライト色・極座標図の対象が
+連動して切り替わる)、行内の入力欄でアンテナ高・最大観測範囲をその場で編集でき、「削除」
+ボタンで一覧から取り除ける(選択中の観測点を削除すると選択状態はクリアされる)。
+
+**3D描画(メインパネル)**: `terrain::markers::build_marker_geometry`が観測点一覧・選択状態から
+LineList用の頂点列を作り、`TerrainRenderer`の専用パイプライン(`line_pipeline`。地形本体の
+`pipeline`とは別だが、頂点レイアウト・カメラバインドグループ・シェーダーは共用)で描画する。
+各観測点は地表にわずかに(25m)浮かせた四角い枠として描く(選択中は黄色、非選択はオレンジ)。
+**覆域の輪郭線は選択中の観測点についてのみ**描く(複数観測点の覆域を同時に重ねると見づらいため。
+360方位角の境界点を地表に沿わせて閉ループのLineListにする)。原点変更時(メッシュ再構築後)・
+観測点の追加/削除/選択変更のたびに頂点データを作り直す。
+
+**観測点は地形メッシュの原点(`OriginState`)とは独立**: 緯度経度の絶対値で保持しており、
+`set_origin`コマンドは一切送らない。原点(メッシュ)が変わっても、観測点自体の緯度経度は
+変わらず、描画側が新しい原点基準のENU座標へ再変換するだけ。地形メッシュの再計算も発生しない
+ため、原点変更とは異なり**シミュレーション実行中でも自由に追加・編集できる**(3.4節の
+「原点変更はシミュレーション停止中のみ」という制約は`OriginState`自体の変更にのみ適用され、
+観測点には適用されない)。
 
 ```mermaid
 flowchart LR
-    A["パラメータ入力<br/>antenna(lat/lon), observer_height_m, max_range_m"] --> B["los::compute_los(data, antenna, params)"]
-    B --> C["方位角ごとにprofile::max_valid_distanceで<br/>データ範囲内の最大距離を求め、max_range_mとの小さい方を採用"]
-    C --> D["各方位角: 外側へサンプリングしながら<br/>等価地球半径による見かけの仰角を計算し、<br/>手前の地形に遮蔽されない最遠点を求める"]
-    D --> E["Vec&lt;LosPoint&gt;(azimuth_deg, range_m)"]
-    E --> F["LosView: SVGの極座標図(塗りつぶし多角形)へ変換して描画"]
+    A["メインパネル右クリック<br/>(screen x,y)"] --> B["Camera::screen_to_ray<br/>ENU座標系のレイ"]
+    B --> C["pick::pick_lat_lon<br/>heightmapに対してレイマーチング"]
+    C --> D["RadarMarkersState::add<br/>(lat,lon)→RadarMarker追加・選択"]
+    D --> E["los::compute_los(data, marker, params)"]
+    E --> F["markers::build_marker_geometry<br/>LineList頂点(枠+選択中のみ覆域リング)"]
+    F --> G["TerrainRenderer::update_markers<br/>→ line_pipelineで描画"]
+    E --> H["LosView: SVGの極座標図へ変換して描画"]
 ```
 
 **等価地球半径(equivalent earth radius)**: 標準大気中では電波が幾何学的な直線よりわずかに
@@ -933,14 +959,25 @@ flowchart LR
 「最初の遮蔽物で打ち切り」より実際のレーダー覆域に近い近似)。
 
 **パラメータ**:
-- アンテナ位置(緯度・経度): 観測点の地表座標。UI入力欄(テキスト、`origin-form-row`と同じ
-  バリデーション方式)、既定はシミュレーション原点。ユーザー要望により任意の地点に置けるようにした
-- アンテナ高(`observer_height_m`): 観測点の地表(heightmapから取得)からの高さ。UI入力欄、既定10m
-- 最大観測範囲(`max_range_m`): この距離とデータ範囲内の距離の小さい方までを計算対象とする。
-  UI入力欄(km単位で表示、内部でmに変換)、既定50km。ユーザー要望により必ずパラメータ化してある
+- 観測点位置(緯度・経度): メインパネル上の右クリック位置から`pick_lat_lon`で決まる
+  (`RadarMarker::lat_deg/lon_deg`)。タブ側では読み取り専用表示のみで編集はできない
+- アンテナ高(`RadarMarker::height_m`): 観測点の地表(heightmapから取得)からの高さ。
+  一覧の行内で編集可、既定10m
+- 最大観測範囲(`RadarMarker::max_range_m`): この距離とデータ範囲内の距離の小さい方までを
+  計算対象とする。一覧の行内でkm単位表示・編集(内部ではmで保持)、既定50km
 
-**計算コスト**: 360方位角 × 200サンプル/方位角 = 72,000回の`heightmap`双線形補間。
-断面図(301点×1方向)よりは重いが、ブラウザで実測しても体感遅延なく反応的に再計算できる
+**計算コスト**: 観測点1つあたり360方位角 × 200サンプル/方位角 = 72,000回の`heightmap`双線形補間
+(3D描画・極座標図とも選択中の観測点のみ計算するため、観測点の総数には比例しない)。
+断面図の覆域表示は別経路で、`terrain::los::is_visible`(単一方位への点対点遮蔽判定)を
+断面上の各点×配置済み観測点の数だけ呼ぶ(301点×観測点数、1回あたり最大200サンプル)。
+いずれもブラウザで実測して体感遅延なく反応的に再計算できることを確認済み。
+
+**断面図タブでの覆域表示**: 断面図(6.9節、`CrossSectionView`)の折れ線の上に、断面上の各点が
+「配置済み観測点のいずれか1つからでも見える(=遮蔽されない)」区間だけをつないだ緑色の
+オーバーレイ線(`cs-coverage`)を重ねて描く。判定は観測点ごとの見通し限界距離(360方位角の
+サンプリング)ではなく、断面上の各点への**点対点の遮蔽判定**(`terrain::los::is_visible`。
+`compute_los`と同じマスク角アルゴリズムを対象点までの1本のレイに絞って適用)で行う。
+観測点が1つも配置されていなければオーバーレイ自体を描かない。
 
 ---
 

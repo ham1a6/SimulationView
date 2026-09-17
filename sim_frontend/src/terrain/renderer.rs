@@ -26,6 +26,12 @@ pub struct TerrainRenderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
+    // レーダー観測点マーカー・見通し範囲の覆域リング用(LineList)。地形本体とは別パイプライン
+    // だが、頂点レイアウト・カメラバインドグループは共用する(terrain.wgslのシェーダーは
+    // 位置をview_projで変換して色をそのまま出すだけの汎用的な内容のため、線描画にもそのまま使える)。
+    line_pipeline: wgpu::RenderPipeline,
+    marker_vertex_buffer: Option<wgpu::Buffer>,
+    num_marker_vertices: u32,
 }
 
 impl TerrainRenderer {
@@ -137,7 +143,7 @@ impl TerrainRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Some(vertex_layout)],
+                buffers: &[Some(vertex_layout.clone())],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -157,6 +163,46 @@ impl TerrainRenderer {
                 // フェーズ8時点では巻き順(ワインディング)の検証よりも描画確認を優先し、
                 // カリングを無効化しておく(誤った巻き順でも常に地形が見える)。
                 // 自由視点カメラ実装(フェーズ10)時に正しい巻き順を確認して有効化する。
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("marker_line_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[Some(vertex_layout)],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::LineList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
                 unclipped_depth: false,
                 polygon_mode: wgpu::PolygonMode::Fill,
@@ -198,7 +244,27 @@ impl TerrainRenderer {
             camera_buffer,
             camera_bind_group,
             depth_view,
+            line_pipeline,
+            marker_vertex_buffer: None,
+            num_marker_vertices: 0,
         })
+    }
+
+    /// レーダー観測点マーカー・見通し範囲の覆域リングの頂点データを更新する。
+    /// 原点変更・マーカー追加/削除/選択変更のたびに呼び直す想定(`terrain/markers.rs`が
+    /// 頂点データを作る)。
+    pub fn update_markers(&mut self, vertices: &[super::mesh::TerrainVertex]) {
+        if vertices.is_empty() {
+            self.marker_vertex_buffer = None;
+            self.num_marker_vertices = 0;
+            return;
+        }
+        self.marker_vertex_buffer = Some(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("marker_vertex_buffer"),
+            contents: bytemuck::cast_slice(vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        }));
+        self.num_marker_vertices = vertices.len() as u32;
     }
 
     /// 原点変更時など、頂点数は変わらないまま座標(位置)だけを更新したいときに使う。
@@ -279,6 +345,15 @@ impl TerrainRenderer {
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+
+            if let Some(marker_buffer) = self.marker_vertex_buffer.as_ref() {
+                if self.num_marker_vertices > 0 {
+                    render_pass.set_pipeline(&self.line_pipeline);
+                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, marker_buffer.slice(..));
+                    render_pass.draw(0..self.num_marker_vertices, 0..1);
+                }
+            }
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

@@ -13,9 +13,12 @@ use wasm_bindgen::JsCast;
 
 use crate::terrain::camera::{CameraPreset, OrbitCamera};
 use crate::terrain::loader::TerrainData;
+use crate::terrain::markers;
 use crate::terrain::mesh::{self, Origin};
+use crate::terrain::pick;
 use crate::terrain::renderer::TerrainRenderer;
 use crate::terrain::store::TerrainStore;
+use crate::ui_state::RadarMarkersState;
 use crate::ws::WsSignals;
 
 struct ViewState {
@@ -43,6 +46,7 @@ fn try_init(
     data: Option<Rc<TerrainData>>,
     signals: WsSignals,
     status: RwSignal<String>,
+    radar_markers: RadarMarkersState,
 ) {
     let width = canvas.width();
     let height = canvas.height();
@@ -94,6 +98,9 @@ fn try_init(
                 s.mesh_origin = Some(origin);
                 s.initializing = false;
                 status.set(String::new());
+                drop(s);
+                rebuild_markers(&state, radar_markers);
+                render_now(&state);
             }
             Err(e) => {
                 log::error!("[terrain] {e}");
@@ -114,12 +121,31 @@ fn render_now(state: &Rc<RefCell<ViewState>>) {
     }
 }
 
+/// レーダー観測点マーカー・見通し範囲の覆域リングのジオメトリを、現在の地形・原点・
+/// マーカー一覧・選択状態から作り直してGPUバッファへ反映する。原点変更時
+/// (メッシュ再構築後)・マーカー追加/削除/選択変更時に呼ぶ。描画自体は呼び出し側で
+/// `render_now`すること。
+fn rebuild_markers(state: &Rc<RefCell<ViewState>>, radar_markers: RadarMarkersState) {
+    let mut s = state.borrow_mut();
+    let (Some(terrain), Some(mesh_origin)) = (s.terrain.clone(), s.mesh_origin) else {
+        return;
+    };
+    let Some(renderer) = s.renderer.as_mut() else {
+        return;
+    };
+    let marker_list = radar_markers.markers.get_untracked();
+    let selected = radar_markers.selected.get_untracked();
+    let vertices = markers::build_marker_geometry(&terrain, &mesh_origin, &marker_list, selected);
+    renderer.update_markers(&vertices);
+}
+
 #[component]
 pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let canvas_ref: NodeRef<leptos::html::Canvas> = NodeRef::new();
     let status = RwSignal::new("地形データを読み込み中...".to_string());
     let signals = use_context::<WsSignals>().expect("WsSignals context not found");
     let terrain_store = use_context::<TerrainStore>().expect("TerrainStore context not found");
+    let radar_markers = use_context::<RadarMarkersState>().expect("RadarMarkersState context not found");
 
     terrain_store.ensure_loaded();
 
@@ -182,6 +208,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                         terrain_store.get_untracked(),
                         signals,
                         status,
+                        radar_markers,
                     );
                 }
             });
@@ -210,7 +237,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 .clone()
                 .dyn_into()
                 .expect("canvas node_ref should be an HtmlCanvasElement");
-            try_init(state.clone(), canvas, Some(data), signals, status);
+            try_init(state.clone(), canvas, Some(data), signals, status, radar_markers);
         });
     }
 
@@ -249,6 +276,21 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 log::error!("[terrain] re-render after origin change failed: {e}");
             }
             s.mesh_origin = Some(new_origin);
+            drop(s);
+            // マーカー・覆域リングも新しい原点基準のENU座標へ再変換する。
+            rebuild_markers(&state, radar_markers);
+            render_now(&state);
+        });
+    }
+
+    // --- Effect 4: レーダー観測点(一覧・選択状態)の変化に追従して3D描画を更新する ---
+    {
+        let state = state.clone();
+        Effect::new(move |_| {
+            let _ = radar_markers.markers.get();
+            let _ = radar_markers.selected.get();
+            rebuild_markers(&state, radar_markers);
+            render_now(&state);
         });
     }
 
@@ -305,6 +347,37 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         render_now(&state_wheel);
     };
 
+    // 地図上への右クリックでレーダー観測点(見通し範囲)を追加する。ブラウザ既定の
+    // コンテキストメニューは出さない。
+    let state_ctx = state.clone();
+    let on_context_menu = move |ev: leptos::ev::MouseEvent| {
+        ev.prevent_default();
+        let Some(target) = ev.target() else {
+            return;
+        };
+        let Ok(canvas) = target.dyn_into::<web_sys::HtmlCanvasElement>() else {
+            return;
+        };
+        let rect = canvas.get_bounding_client_rect();
+        let x = ev.client_x() as f32 - rect.left() as f32;
+        let y = ev.client_y() as f32 - rect.top() as f32;
+        let canvas_w = canvas.width() as f32;
+        let canvas_h = canvas.height() as f32;
+
+        let s = state_ctx.borrow();
+        let (Some(terrain), Some(mesh_origin), Some(renderer)) =
+            (s.terrain.clone(), s.mesh_origin, s.renderer.as_ref())
+        else {
+            return;
+        };
+        let camera = s.camera.to_camera(renderer.aspect_ratio());
+        let hit = pick::pick_lat_lon(&terrain, &mesh_origin, &camera, x, y, canvas_w, canvas_h);
+        drop(s);
+        if let Some((lat, lon)) = hit {
+            radar_markers.add(lat, lon);
+        }
+    };
+
     let state_overview = state.clone();
     let on_preset_overview = move |_| {
         let target_up = state_overview.borrow().target_up;
@@ -328,6 +401,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 on:pointerup=on_pointer_up.clone()
                 on:pointercancel=on_pointer_up
                 on:wheel=on_wheel
+                on:contextmenu=on_context_menu
             ></canvas>
             <div class="terrain-view-controls">
                 <button on:click=on_preset_overview title="俯瞰視点に切り替え">"俯瞰"</button>

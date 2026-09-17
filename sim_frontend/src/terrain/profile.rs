@@ -7,6 +7,8 @@ use super::mesh::{sample_heightmap, EnuTransform, Origin};
 pub struct ProfilePoint {
     pub distance_m: f64,
     pub elevation_m: f32,
+    pub lat_deg: f64,
+    pub lon_deg: f64,
 }
 
 /// 方位角方向1本につき何点サンプリングするか。
@@ -64,7 +66,7 @@ pub fn build_profile(data: &TerrainData, origin: &Origin, azimuth_deg: f64) -> V
             let distance = max_distance * (i as f64) / (NUM_SAMPLES as f64);
             let (lat, lon) = transform.inverse(dir_east * distance, dir_north * distance);
             let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0);
-            ProfilePoint { distance_m: distance, elevation_m: elevation }
+            ProfilePoint { distance_m: distance, elevation_m: elevation, lat_deg: lat, lon_deg: lon }
         })
         .collect()
 }

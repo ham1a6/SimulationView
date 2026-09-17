@@ -11,7 +11,7 @@ use crate::components::origin_dialog::OriginDialog;
 use crate::components::right_panel::{BottomStatusPanel, TopStatusPanel};
 use crate::components::vab::VabPanel;
 use crate::terrain::store::TerrainStore;
-use crate::ui_state::OriginDialogState;
+use crate::ui_state::{OriginDialogState, RadarMarkersState};
 use crate::ws::{default_ws_url, WsConnection, WsSignals};
 
 // 地図・右パネルの最小幅(DETAILED_DESIGN.md 7.2節: これを下回ったら外側コンテナを横スクロールさせる)。
@@ -27,6 +27,9 @@ pub fn App() -> impl IntoView {
     // 地形データはメインパネル・ボトムステータスパネル(断面図タブ)で共有する(フェッチは
     // 1回だけ、BASIC_DESIGN.md 6節フェーズ10: 同一の地形メッシュに異なるカメラを適用する構成)。
     provide_context(TerrainStore::new());
+    // 見通し範囲(レーダー観測点)の一覧・選択状態。メインパネル上の右クリックで追加し、
+    // ボトムステータスパネルの「見通し範囲」タブで一覧表示・編集・削除する。
+    provide_context(RadarMarkersState::new());
     // 接続はページの生存期間ずっと維持する(内部クロージャがselfを保持するため束縛は不要)。
     // WsConnectionはRc<RefCell<..>>を内部に持ちSend/Syncではないため、
     // provide_context(Leptos 0.8はSend+Sync境界を要求する)には乗せず、propとして子へ渡す。

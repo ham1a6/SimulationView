@@ -9,7 +9,7 @@
 //! フェーズ10: 自由視点カメラ(ズーム・回転・視点プリセット)。BASIC_DESIGN.md 6節フェーズ10。
 
 use glam::camera::rh::{proj::directx, view::look_at_mat4};
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Vec3, Vec4};
 
 /// レンダラーに渡す、計算済みのカメラ(視点位置・注視点・レンズ設定)。
 pub struct Camera {
@@ -29,6 +29,19 @@ impl Camera {
         // directx::perspective(DirectX/WebGPU互換、深度[0,1])を使う。opengl::perspectiveは使わない。
         let proj = directx::perspective(self.fov_y_radians, self.aspect, self.z_near, self.z_far);
         proj * view
+    }
+
+    /// 画面上の点(canvas内のCSSピクセル座標、左上原点)を通る視線をENU座標系のレイ
+    /// (origin, direction)として返す。地図上での右クリック→緯度経度変換(`terrain/pick.rs`)に使う。
+    pub fn screen_to_ray(&self, x: f32, y: f32, width: f32, height: f32) -> (Vec3, Vec3) {
+        let ndc_x = (x / width) * 2.0 - 1.0;
+        let ndc_y = 1.0 - (y / height) * 2.0;
+        let inv_vp = self.view_proj_matrix().inverse();
+        let near = inv_vp * Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+        let far = inv_vp * Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        let near = near.truncate() / near.w;
+        let far = far.truncate() / far.w;
+        (near, far - near)
     }
 }
 

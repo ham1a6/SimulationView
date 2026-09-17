@@ -207,6 +207,12 @@ body {
     stroke-width: 1.5;
 }
 
+/* 覆域(いずれかのレーダーから見える区間)のオーバーレイ。cs-lineの上に重ねて描く。 */
+.cs-coverage {
+    stroke: #4be0a0;
+    stroke-width: 2.5;
+}
+
 .cs-label {
     fill: #999;
     font-size: 9px;
@@ -246,7 +252,8 @@ body {
 }
 
 /* 見通し範囲(レーダー覆域図、components/los_view.rs)。断面図と同じ骨組み:
-   上=SVGの極座標図(残り高さいっぱい)、下=アンテナ高・最大観測範囲の入力欄。 */
+   上=選択中レーダーのSVG極座標図(残り高さいっぱい)、下=レーダー一覧(選択・削除・
+   アンテナ高/最大観測範囲の編集)。レーダー自体の追加はメインパネル上の右クリックで行う。 */
 .los-view {
     display: flex;
     flex-direction: column;
@@ -309,21 +316,50 @@ body {
     display: flex;
     flex-direction: column;
     gap: 0.4rem;
+    min-height: 0;
 }
 
-.los-antenna-row {
+/* レーダー観測点一覧(メインパネル上の右クリックで追加。ここでは選択・パラメータ編集・削除のみ)。
+   一覧自体の高さを上限で頭打ちにし、マーカーが増えても上のSVG覆域図の表示領域を圧迫しない
+   ようにする(超えた分は一覧内だけでスクロール)。 */
+.los-marker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    max-height: 9.5rem;
+    overflow-y: auto;
+}
+
+.los-marker-row {
     display: flex;
     flex-wrap: wrap;
     align-items: flex-end;
     gap: 0.4rem;
+    padding: 0.3rem 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
 }
 
-.los-antenna-row .los-param-label {
+.los-marker-row-selected {
+    border-color: var(--accent);
+    background: rgba(255, 200, 60, 0.08);
+}
+
+.los-marker-label {
+    flex: 1 1 auto;
+    font-size: 0.72rem;
+    color: #ccc;
+    align-self: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.los-marker-row .los-param-label {
     min-width: 5.5ch;
 }
 
-.los-use-origin {
-    background: #234;
+.los-delete-btn {
+    background: #422;
     color: var(--fg);
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -333,9 +369,9 @@ body {
     white-space: nowrap;
 }
 
-.los-use-origin:hover {
-    background: #356;
-    border-color: var(--accent);
+.los-delete-btn:hover {
+    background: #633;
+    border-color: #e77;
 }
 
 .los-param-label {
