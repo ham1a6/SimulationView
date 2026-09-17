@@ -1,9 +1,11 @@
 // GeoTIFF前処理ツール(単発実行CLI)。DETAILED_DESIGN.md 2節・5.5節。
 //
 // map_data/ 内の *_DSM.tif を機械的に列挙し(DETAILED_DESIGN.md 2.1節)、緯度経度グリッド上の
-// ピクセル位置にそのまま敷き詰めてモザイクする(北緯35〜40度・東経135〜140度、
-// 18000×18000px)。データが存在しない領域(実在しない8タイル分 + 各タイル内のNODATA画素、
-// 主に海域)はNaNで埋め、標高0mとは区別する(海の色で塗るための目印。1.4節・2.3節)。
+// ピクセル位置にそのまま敷き詰めてモザイクする。モザイクの外接矩形は**固定値ではなく、
+// 実際に見つかったタイルの緯度経度範囲から実行時に自動的に決める**(1.2節・2.3節)。
+// そのため map_data/ に別の場所のタイルを追加/削除しても、コード変更なしに追従する。
+// データが存在しない領域(モザイクの外接矩形内でタイルが見つからないセル + 各タイル内の
+// NODATA画素、主に海域)はNaNで埋め、標高0mとは区別する(海の色で塗るための目印。1.4節)。
 // 再投影は行わない: 入力GeoTIFF(ALOS DSM)は既にEPSG:4326の緯度経度グリッドに
 // 1タイル=1度×1度ちょうどで整列しているため、単純に読み取って敷き詰め、
 // 平均法でダウンサンプリングするだけでよい(2.2節)。
@@ -41,14 +43,9 @@ constexpr double kEllipsoidInvF = 298.257222101;
 constexpr double kDefaultOriginLat = 35.355556;
 constexpr double kDefaultOriginLon = 138.859722;
 
-// モザイク対象の外接矩形(DETAILED_DESIGN.md 1.2節・2.3節)。
+// 1タイルあたりの画素数(DETAILED_DESIGN.md 1.2節)。モザイクの外接矩形自体は固定値を
+// 持たず、実際に見つかったタイル群から実行時に計算する(下記MosaicBounds参照)。
 constexpr int kTileFullPx = 3600; // 1タイル = 1度 × 3600px/度(1秒角)
-constexpr int kMosaicMinLat = 35;
-constexpr int kMosaicMaxLat = 40;
-constexpr int kMosaicMinLon = 135;
-constexpr int kMosaicMaxLon = 140;
-constexpr int kMosaicWidth = (kMosaicMaxLon - kMosaicMinLon) * kTileFullPx;  // 18000
-constexpr int kMosaicHeight = (kMosaicMaxLat - kMosaicMinLat) * kTileFullPx; // 18000
 
 struct GeodeticBounds {
     double min_lat = 0.0;
@@ -156,14 +153,17 @@ std::optional<TileId> parse_tile_filename(const std::string& filename) {
     }
 }
 
-// map_dataディレクトリ内の*_DSM.tifを機械的に列挙してモザイクする(DETAILED_DESIGN.md 2.1節・2.3節)。
-// 見つからないタイル分はNaNのまま(「データなし」=海域の目印。0mで埋めると実際の海抜0m付近の
-// 陸地と区別がつかなくなるため)。
-std::vector<float> build_mosaic(const std::string& map_data_dir) {
-    std::vector<float> canvas(static_cast<size_t>(kMosaicWidth) * static_cast<size_t>(kMosaicHeight),
-                               std::numeric_limits<float>::quiet_NaN());
+// 見つかったタイル1枚分(タイルID + ファイルパス)。
+struct DiscoveredTile {
+    TileId id;
+    fs::path path;
+};
 
-    int tiles_found = 0;
+// map_dataディレクトリ内の*_DSM.tifを機械的に列挙する(DETAILED_DESIGN.md 2.1節)。
+// この時点ではファイル名からタイルIDを読むだけで、GDALでの読み込みはまだ行わない
+// (後段のcompute_mosaic_bounds()が先にモザイク全体のサイズを決める必要があるため)。
+std::vector<DiscoveredTile> discover_tiles(const std::string& map_data_dir) {
+    std::vector<DiscoveredTile> tiles;
     for (const auto& entry : fs::directory_iterator(map_data_dir)) {
         if (!entry.is_regular_file()) {
             continue;
@@ -172,22 +172,54 @@ std::vector<float> build_mosaic(const std::string& map_data_dir) {
         if (filename.find("_DSM.tif") == std::string::npos) {
             continue;
         }
-
         const auto tile_id = parse_tile_filename(filename);
         if (!tile_id) {
             std::cerr << "[geotiff_preprocess] skip (cannot parse tile id): " << filename
                        << std::endl;
             continue;
         }
-        if (tile_id->lat < kMosaicMinLat || tile_id->lat >= kMosaicMaxLat ||
-            tile_id->lon < kMosaicMinLon || tile_id->lon >= kMosaicMaxLon) {
-            std::cerr << "[geotiff_preprocess] skip (outside mosaic bounds): " << filename
-                       << std::endl;
-            continue;
-        }
+        tiles.push_back(DiscoveredTile{*tile_id, entry.path()});
+    }
+    return tiles;
+}
 
+// モザイクの外接矩形(整数度)。タイルの南西角IDの最小/最大から、実際に見つかったタイル群
+// 全体を覆う範囲を求める(1.2節)。固定のハードコード値は持たない: map_data/に別の場所の
+// タイルが追加/削除されても、この関数の結果だけが変わりモザイクが自動的に追従する。
+struct MosaicBounds {
+    int min_lat = 0;
+    int max_lat = 0; // 外接矩形の北端(タイル南西角緯度の最大値+1)
+    int min_lon = 0;
+    int max_lon = 0; // 外接矩形の東端(タイル南西角経度の最大値+1)
+};
+
+MosaicBounds compute_mosaic_bounds(const std::vector<DiscoveredTile>& tiles) {
+    if (tiles.empty()) {
+        throw std::runtime_error("no *_DSM.tif tiles found");
+    }
+    MosaicBounds bounds{tiles[0].id.lat, tiles[0].id.lat + 1, tiles[0].id.lon, tiles[0].id.lon + 1};
+    for (const auto& tile : tiles) {
+        bounds.min_lat = std::min(bounds.min_lat, tile.id.lat);
+        bounds.max_lat = std::max(bounds.max_lat, tile.id.lat + 1);
+        bounds.min_lon = std::min(bounds.min_lon, tile.id.lon);
+        bounds.max_lon = std::max(bounds.max_lon, tile.id.lon + 1);
+    }
+    return bounds;
+}
+
+// 見つかったタイル群を、computed_mosaic_bounds()が決めた外接矩形のcanvas上に敷き詰める
+// (DETAILED_DESIGN.md 2.3節)。タイルが存在しないセル・各タイル内のNODATA画素はNaNのまま
+// (「データなし」=海域の目印。0mで埋めると実際の海抜0m付近の陸地と区別がつかなくなるため)。
+std::vector<float> build_mosaic(const std::vector<DiscoveredTile>& tiles,
+                                 const MosaicBounds& bounds, int mosaic_w, int mosaic_h) {
+    std::vector<float> canvas(static_cast<size_t>(mosaic_w) * static_cast<size_t>(mosaic_h),
+                               std::numeric_limits<float>::quiet_NaN());
+
+    int tiles_found = 0;
+    for (const auto& tile : tiles) {
+        const std::string filename = tile.path.filename().string();
         std::cout << "[geotiff_preprocess] loading tile: " << filename << std::endl;
-        const SourceGrid grid = load_dsm_tile(entry.path().string());
+        const SourceGrid grid = load_dsm_tile(tile.path.string());
         if (grid.width != kTileFullPx || grid.height != kTileFullPx) {
             std::cerr << "[geotiff_preprocess] skip (unexpected size " << grid.width << "x"
                        << grid.height << ", expected " << kTileFullPx << "x" << kTileFullPx
@@ -195,14 +227,14 @@ std::vector<float> build_mosaic(const std::string& map_data_dir) {
             continue;
         }
 
-        // タイル南西角(tile_id)から、モザイクcanvas上の配置位置(北→南、西→東)を求める。
-        const int row_offset = (kMosaicMaxLat - (tile_id->lat + 1)) * kTileFullPx;
-        const int col_offset = (tile_id->lon - kMosaicMinLon) * kTileFullPx;
+        // タイル南西角(tile.id)から、モザイクcanvas上の配置位置(北→南、西→東)を求める。
+        const int row_offset = (bounds.max_lat - (tile.id.lat + 1)) * kTileFullPx;
+        const int col_offset = (tile.id.lon - bounds.min_lon) * kTileFullPx;
 
         for (int ty = 0; ty < kTileFullPx; ++ty) {
             const float* src_row = grid.elevation.data() + static_cast<size_t>(ty) * kTileFullPx;
             float* dst_row = canvas.data() +
-                              static_cast<size_t>(row_offset + ty) * static_cast<size_t>(kMosaicWidth) +
+                              static_cast<size_t>(row_offset + ty) * static_cast<size_t>(mosaic_w) +
                               static_cast<size_t>(col_offset);
             std::copy(src_row, src_row + kTileFullPx, dst_row);
         }
@@ -210,8 +242,8 @@ std::vector<float> build_mosaic(const std::string& map_data_dir) {
     }
 
     std::cout << "[geotiff_preprocess] composited " << tiles_found << " tile(s) into "
-               << kMosaicWidth << "x" << kMosaicHeight
-               << " mosaic (missing tiles left as NaN = ocean)" << std::endl;
+               << mosaic_w << "x" << mosaic_h << " mosaic (missing cells left as NaN = ocean)"
+               << std::endl;
     return canvas;
 }
 
@@ -327,13 +359,22 @@ int main(int argc, char** argv) {
 
     try {
         std::cout << "[geotiff_preprocess] scanning: " << map_data_dir << std::endl;
-        std::vector<float> mosaic = build_mosaic(map_data_dir);
+        const std::vector<DiscoveredTile> tiles = discover_tiles(map_data_dir);
+        const MosaicBounds mosaic_bounds = compute_mosaic_bounds(tiles);
+        const int mosaic_w = (mosaic_bounds.max_lon - mosaic_bounds.min_lon) * kTileFullPx;
+        const int mosaic_h = (mosaic_bounds.max_lat - mosaic_bounds.min_lat) * kTileFullPx;
+        std::cout << "[geotiff_preprocess] found " << tiles.size() << " tile(s), mosaic bounds: "
+                   << "lat " << mosaic_bounds.min_lat << ".." << mosaic_bounds.max_lat << ", lon "
+                   << mosaic_bounds.min_lon << ".." << mosaic_bounds.max_lon << " (" << mosaic_w
+                   << "x" << mosaic_h << "px)" << std::endl;
+
+        std::vector<float> mosaic = build_mosaic(tiles, mosaic_bounds, mosaic_w, mosaic_h);
 
         std::cout << "[geotiff_preprocess] downsampling to " << kTargetWidth << "x"
                    << kTargetHeight << " (average)" << std::endl;
         const std::vector<float> downsampled =
-            downsample_average(mosaic, kMosaicWidth, kMosaicHeight, kTargetWidth, kTargetHeight);
-        // 巨大な中間canvas(18000x18000)はもう不要なので明示的に解放する。
+            downsample_average(mosaic, mosaic_w, mosaic_h, kTargetWidth, kTargetHeight);
+        // 巨大な中間canvas(モザイク全体)はもう不要なので明示的に解放する。
         mosaic.clear();
         mosaic.shrink_to_fit();
 
@@ -352,7 +393,9 @@ int main(int argc, char** argv) {
             elevation_max = std::max(elevation_max, v);
         }
 
-        const GeodeticBounds bounds{kMosaicMinLat, kMosaicMaxLat, kMosaicMinLon, kMosaicMaxLon};
+        const GeodeticBounds bounds{
+            static_cast<double>(mosaic_bounds.min_lat), static_cast<double>(mosaic_bounds.max_lat),
+            static_cast<double>(mosaic_bounds.min_lon), static_cast<double>(mosaic_bounds.max_lon)};
 
         const fs::path out_dir(output_dir);
         fs::create_directories(out_dir);

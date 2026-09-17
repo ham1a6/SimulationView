@@ -110,12 +110,15 @@ $toolchain = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\vcpkg\s
 sim_server\build\tools\geotiff_preprocess\Debug\geotiff_preprocess.exe
 ```
 
-`map_data/`内の17枚のGeoTIFFタイルを自動検出し、モザイク→ダウンサンプリングして
-`sim_server/assets/terrain/heightmap.bin`と`metadata.json`を書き出す(数秒〜数十秒)。
+`map_data/`内のGeoTIFFタイル(現在17枚同梱済み)を自動検出し、モザイク→ダウンサンプリング
+して`sim_server/assets/terrain/heightmap.bin`と`metadata.json`を書き出す(数秒〜数十秒)。
+モザイクの対象範囲(外接矩形)はハードコードではなく、実際に見つかったタイルの緯度経度から
+毎回自動計算されるため、`map_data/`に別の場所のタイルを追加/削除してもコード変更は不要。
 成功すると以下のようなログが出る:
 
 ```
-[geotiff_preprocess] composited 17 tile(s) into 18000x18000 mosaic (missing tiles left as NaN = ocean)
+[geotiff_preprocess] found 17 tile(s), mosaic bounds: lat 35..40, lon 135..140 (18000x18000px)
+[geotiff_preprocess] composited 17 tile(s) into 18000x18000 mosaic (missing cells left as NaN = ocean)
 [geotiff_preprocess] wrote sim_server/assets/terrain\heightmap.bin and sim_server/assets/terrain\metadata.json
 [geotiff_preprocess] elevation range: -11.5... .. 3677.9...
 ```
