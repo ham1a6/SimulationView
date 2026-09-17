@@ -123,8 +123,9 @@ sim_server\build\tools\geotiff_preprocess\Debug\geotiff_preprocess.exe
 [geotiff_preprocess] elevation range: -11.5... .. 3677.9...
 ```
 
-存在しないタイル・各タイル内のNODATA画素(主に海域)はNaNとして出力され、Web UI側で
-地形グラデーションとは別の水色として塗り分けられる(標高0mとは区別される)。
+存在しないタイル・各タイル内のNODATA画素・マスクファイル(`*_MSK.tif`、同梱)が海と示す画素は
+NaNとして出力され、Web UI側で地形グラデーションとは別の水色として塗り分けられる(標高0mとは
+区別される)。
 
 ---
 

@@ -5,7 +5,9 @@
 // 実際に見つかったタイルの緯度経度範囲から実行時に自動的に決める**(1.2節・2.3節)。
 // そのため map_data/ に別の場所のタイルを追加/削除しても、コード変更なしに追従する。
 // データが存在しない領域(モザイクの外接矩形内でタイルが見つからないセル + 各タイル内の
-// NODATA画素、主に海域)はNaNで埋め、標高0mとは区別する(海の色で塗るための目印。1.4節)。
+// NODATA画素 + マスクファイル(*_MSK.tif)が海と示す画素)はNaNで埋め、標高0mとは区別する
+// (海の色で塗るための目印。1.4節)。タイル内部の海域はDSM側では単に標高0mとして格納されて
+// おりNODATAセンチネルでは検出できないため、マスクファイルを別途読んで補っている。
 // 再投影は行わない: 入力GeoTIFF(ALOS DSM)は既にEPSG:4326の緯度経度グリッドに
 // 1タイル=1度×1度ちょうどで整列しているため、単純に読み取って敷き詰め、
 // 平均法でダウンサンプリングするだけでよい(2.2節)。
@@ -63,6 +65,67 @@ struct SourceGrid {
     GeodeticBounds bounds;
 };
 
+// タイルの海域マスク(例: "ALPSMLC30_N035E135_DSM.tif" に対応する
+// "ALPSMLC30_N035E135_MSK.tif")を読み込み、画素値が3(海)の位置をtrueとするビットマップを
+// 返す。ALOS World 3D-30mのマスクファイル画素値は 0=有効データ・3=海・4/12=代替データソースで
+// 補完(海ではない、代替DEMからの標高値で埋められた陸地)で、map_data/内の全17タイルの実測値
+// (QAI.txtのMASK_NUM_SEA等の統計値との突き合わせ)で確認済み。DSM側は海域でも標高0mという
+// 「有効に見える」値が入っており(NODATAセンチネルではない)、GetNoDataValue()だけでは
+// 検出できないため、マスクファイルを別途読んで補う。マスクファイルが存在しない・サイズが
+// 一致しないなど何らかの理由で読めない場合は、警告を出してNODATAベースの判定のみに
+// フォールバックする(空のビットマップを返す)。
+std::vector<bool> load_sea_mask(const std::string& dsm_path, int expected_w, int expected_h) {
+    constexpr const char* kDsmSuffix = "_DSM.tif";
+    const size_t pos = dsm_path.rfind(kDsmSuffix);
+    if (pos == std::string::npos) {
+        return {};
+    }
+    const std::string msk_path = dsm_path.substr(0, pos) + "_MSK.tif";
+    if (!fs::exists(msk_path)) {
+        std::cerr << "[geotiff_preprocess] warning: mask file not found, sea detection falls back "
+                     "to NODATA only: "
+                   << msk_path << std::endl;
+        return {};
+    }
+
+    GDALDataset* dataset = static_cast<GDALDataset*>(GDALOpen(msk_path.c_str(), GA_ReadOnly));
+    if (dataset == nullptr) {
+        std::cerr << "[geotiff_preprocess] warning: failed to open mask file: " << msk_path
+                   << std::endl;
+        return {};
+    }
+    const int width = dataset->GetRasterXSize();
+    const int height = dataset->GetRasterYSize();
+    if (width != expected_w || height != expected_h) {
+        std::cerr << "[geotiff_preprocess] warning: mask size mismatch (" << width << "x" << height
+                   << ", expected " << expected_w << "x" << expected_h << "): " << msk_path
+                   << std::endl;
+        GDALClose(dataset);
+        return {};
+    }
+    GDALRasterBand* band = dataset->GetRasterBand(1);
+    if (band == nullptr) {
+        GDALClose(dataset);
+        return {};
+    }
+    std::vector<uint8_t> raw(static_cast<size_t>(width) * static_cast<size_t>(height));
+    const CPLErr err = band->RasterIO(GF_Read, 0, 0, width, height, raw.data(), width, height,
+                                       GDT_Byte, 0, 0);
+    GDALClose(dataset);
+    if (err != CE_None) {
+        std::cerr << "[geotiff_preprocess] warning: failed to read mask data: " << msk_path
+                   << std::endl;
+        return {};
+    }
+
+    constexpr uint8_t kSeaMaskValue = 3;
+    std::vector<bool> is_sea(raw.size());
+    for (size_t i = 0; i < raw.size(); ++i) {
+        is_sea[i] = (raw[i] == kSeaMaskValue);
+    }
+    return is_sea;
+}
+
 // GeoTIFF(DSM)を1枚読み込む。再投影は行わない。
 SourceGrid load_dsm_tile(const std::string& path) {
     GDALDataset* dataset = static_cast<GDALDataset*>(GDALOpen(path.c_str(), GA_ReadOnly));
@@ -108,6 +171,17 @@ SourceGrid load_dsm_tile(const std::string& path) {
         for (float& v : elevation) {
             if (v == nodata_f) {
                 v = std::numeric_limits<float>::quiet_NaN();
+            }
+        }
+    }
+
+    // マスクファイル(*_MSK.tif)ベースの海域検出で追加で補う(NODATAセンチネルでは
+    // 検出できない、タイル内部の海域=標高0mだが有効データに見える画素への対応)。
+    const std::vector<bool> sea_mask = load_sea_mask(path, width, height);
+    if (!sea_mask.empty()) {
+        for (size_t i = 0; i < elevation.size(); ++i) {
+            if (sea_mask[i]) {
+                elevation[i] = std::numeric_limits<float>::quiet_NaN();
             }
         }
     }

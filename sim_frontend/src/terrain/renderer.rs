@@ -318,12 +318,10 @@ impl TerrainRenderer {
                     resolve_target: None,
                     depth_slice: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.02,
-                            g: 0.02,
-                            b: 0.05,
-                            a: 1.0,
-                        }),
+                        // 空(地形・背景水平面のどちらも描かれない領域)は黒。地平線から下は
+                        // mesh.rsが追加する背景スカート(水色の大きな水平面)が覆うため、
+                        // ここに映るのは実質的に真上方向のみになる。
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],

@@ -210,5 +210,25 @@ pub fn build_mesh(data: &TerrainData, origin: &Origin) -> TerrainMesh {
         }
     }
 
-    TerrainMesh { vertices, indices }
+    let mut mesh = TerrainMesh { vertices, indices };
+    append_background_skirt(&mut mesh, data.metadata.elevation_min);
+    mesh
+}
+
+/// メインパネルの背景(実データの外接矩形の外側)を「地平線から下は水色」に見せるための、
+/// 実データよりずっと広い水平な板(スカート)。カメラの最大ズームアウト距離・遠方クリップ距離
+/// (`terrain/camera.rs`のMAX_DISTANCE/Z_FAR)のどこから見ても端が視野内に入らない大きさに
+/// しておく。標高は実データの最低標高より確実に低い位置に置き、実際の地形(海面=標高0m付近を
+/// 含む)が常に手前に描画されるようにする(同じ高さだとZファイティングで点滅しうるため)。
+const BACKGROUND_HALF_SIZE_M: f32 = 4_000_000.0;
+const BACKGROUND_MARGIN_BELOW_MIN_M: f32 = 500.0;
+
+fn append_background_skirt(mesh: &mut TerrainMesh, elevation_min: f32) {
+    let up = elevation_min - BACKGROUND_MARGIN_BELOW_MIN_M;
+    let s = BACKGROUND_HALF_SIZE_M;
+    let base = mesh.vertices.len() as u32;
+    for position in [[-s, -s, up], [s, -s, up], [s, s, up], [-s, s, up]] {
+        mesh.vertices.push(TerrainVertex { position, color: WATER_COLOR });
+    }
+    mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
