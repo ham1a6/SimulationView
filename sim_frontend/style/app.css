@@ -38,10 +38,20 @@ body {
 .left-panel,
 .right-panel {
     display: grid;
-    grid-template-rows: 1fr 1fr;
     gap: 1px;
     background: var(--border);
     overflow: hidden;
+}
+
+/* VAB(下段)は内容の高さ(auto)にぴったり合わせ、余った分は操作パネル(上段, 1fr)を
+   広げて吸収する(固定1fr/1frで割ると、VABの実寸と半分の高さがずれた際に余白が
+   残ってしまうため)。 */
+.left-panel {
+    grid-template-rows: 1fr auto;
+}
+
+.right-panel {
+    grid-template-rows: 1fr 1fr;
 }
 
 .center-panel {
@@ -53,7 +63,7 @@ body {
 /* 各パネル内は縦方向に収まらなければスクロール(6.1節)。 */
 .panel-section {
     background: var(--bg-panel);
-    padding: 0.75rem 1rem;
+    padding: 0.5rem 1rem;
     overflow-y: auto;
     min-height: 0;
 }
@@ -202,8 +212,8 @@ body {
 }
 
 .origin-form {
-    margin-top: 0.75rem;
-    padding-top: 0.75rem;
+    margin-top: 0.5rem;
+    padding-top: 0.5rem;
     border-top: 1px solid var(--border);
 }
 

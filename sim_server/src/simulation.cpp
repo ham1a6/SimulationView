@@ -8,9 +8,12 @@ namespace sim3dview {
 namespace {
 
 protocol::VabConfig make_dummy_vab_config() {
-    // DETAILED_DESIGN.md 7.4節: 開発用ダミー値は縦4行×横6列。
-    constexpr uint32_t kRows = 4;
-    constexpr uint32_t kCols = 6;
+    // DETAILED_DESIGN.md 7.4節: 開発用ダミー値は縦6行(1行+4行+1行のグループ分け)×横4列。
+    // フロント側(vab.rs)が「最初の行・最後の行」を汎用的に離して描画するため、
+    // rows=6にするだけで見た目上は1+4+1のグループ構成になる(グループ数自体を
+    // サーバー側で持つ必要はない)。
+    constexpr uint32_t kRows = 6;
+    constexpr uint32_t kCols = 4;
 
     protocol::VabConfig config;
     config.rows = kRows;
@@ -20,8 +23,10 @@ protocol::VabConfig make_dummy_vab_config() {
         for (uint32_t col = 0; col < kCols; ++col) {
             protocol::VabButton button;
             button.id = "btn_" + std::to_string(row) + "_" + std::to_string(col);
-            // 6.2節: 空ラベルのボタンは「未使用の穴」。ダミーとして右下の1個を穴にしておく。
-            const bool is_hole = (row == kRows - 1) && (col == kCols - 1);
+            // DETAILED_DESIGN.md 7.4節: 空ラベルのボタンは「未使用の穴」。ダミーとして
+            // 中央4行ブロックの右下1個を穴にしておく(先頭行・末尾行は単独ボタン行として
+            // 常に埋めておいたほうが見た目が自然なため)。
+            const bool is_hole = (row == kRows - 2) && (col == kCols - 1);
             button.label = is_hole ? "" : ("B" + std::to_string(row * kCols + col + 1));
             button.enabled = !is_hole;
             config.buttons.push_back(std::move(button));

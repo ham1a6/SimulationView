@@ -3,6 +3,9 @@
 //! - 操作は単純クリックのみ
 //! - ラベルが空文字のボタンは「未使用の穴」としてDOM要素自体を描画しない
 //!   (グリッド位置がずれないよう、各ボタンにrow/columnを明示的に指定する)
+//! - 先頭行・最終行は、間の行群から少し離して描画する(特定の行数を前提とせず、
+//!   `rows`が何であっても「最初と最後は独立したボタン行」という見た目になる汎用ルール。
+//!   例えばrows=6なら結果的に1行+4行+1行のグループ構成に見える)
 
 use leptos::prelude::*;
 
@@ -26,6 +29,7 @@ pub fn Vab(
                     return view! { <p class="placeholder">"(未受信)"</p> }.into_any();
                 };
                 let cols = cfg.cols.max(1) as usize;
+                let last_row0 = cfg.rows.saturating_sub(1) as usize;
                 let grid_style = format!(
                     "grid-template-columns: repeat({}, 1fr); grid-template-rows: repeat({}, auto);",
                     cfg.cols, cfg.rows
@@ -40,9 +44,19 @@ pub fn Vab(
                             // ラベルが空文字のボタンは「未使用の穴」: DOM要素を一切生成しない。
                             .filter(|(_, btn)| !btn.label.is_empty())
                             .map(|(i, btn)| {
-                                let row = i / cols + 1;
+                                let row0 = i / cols;
+                                let row = row0 + 1;
                                 let col = i % cols + 1;
-                                let pos_style = format!("grid-row: {row}; grid-column: {col};");
+                                // 先頭行の下・最終行の上に余分な余白を入れ、間の行群と視覚的に分離する。
+                                let group_gap = if row0 == 0 {
+                                    "margin-bottom: 10px;"
+                                } else if row0 == last_row0 {
+                                    "margin-top: 10px;"
+                                } else {
+                                    ""
+                                };
+                                let pos_style =
+                                    format!("grid-row: {row}; grid-column: {col}; {group_gap}");
                                 let button_id = btn.id.clone();
                                 let enabled = btn.enabled;
                                 let conn = conn.clone();

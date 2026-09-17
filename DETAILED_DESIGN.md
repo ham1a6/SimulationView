@@ -839,8 +839,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 ```
 
 - CSS Gridで4列(左パネル固定 / 地図 / リサイザー(6px) / 右パネル)を構成する
-- 左パネルは`display:grid; grid-template-rows: 1fr 1fr;`で上下2分割(操作パネル/VAB)
-- 右パネルも同様に上下2分割(状況パネル/側面図)
+- 左パネルは`display:grid; grid-template-rows: 1fr auto;`で上下2分割(操作パネル/VAB)。
+  VAB側は`auto`で内容の高さにぴったり合わせ、余った分は操作パネル側(`1fr`)が吸収する
+  (固定`1fr 1fr`だと、VABの実寸と半分の高さがずれた際に一方に余白/スクロールが生じるため)
+- 右パネルは`grid-template-rows: 1fr 1fr;`で上下2分割(状況パネル/側面図、こちらは両方とも
+  内容量の変動が小さいため固定分割のままでよい)
 - 左パネル幅は`--panel-width`(CSS変数、既定320px)で固定
 - 地図・右パネルの幅は`grid-template-columns`の`minmax(下限px, Nfr)`で指定し、`N`(fr値)を
   Leptosの`RwSignal<f64>`で保持する。ドラッグ量(スクリーン座標のpx)をそのままfr値に加減算する
@@ -866,12 +869,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 ### 7.4 VAB仕様
 
-- 開発用ダミー`VabConfig`の初期値: rows=4, cols=6(24ボタン)
+- 開発用ダミー`VabConfig`の初期値: rows=6, cols=4(24ボタン)
 - ボタンの操作種別: 単純クリックのみ
 - ラベルが空文字の`VabButton`は「未使用の穴」として、**DOM要素自体を生成しない**
 - 実装上の注意: 穴を`filter()`で除外すると自動配置(auto-placement)がずれるため、各ボタンに
   `grid-row`/`grid-column`を配列インデックスから明示的に計算して指定する
   (`row = i / cols + 1; col = i % cols + 1;`)
+- 先頭行・最終行は、間の行群から視覚的に離して描画する(先頭行の下・最終行の上に追加の
+  `margin`を入れるだけの汎用ルールで、特定の`rows`数を前提としない)。rows=6のときは結果として
+  1行+4行+1行のグループ構成に見える
 
 ### 7.5 状況パネル仕様
 
