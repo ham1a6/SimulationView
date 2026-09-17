@@ -17,8 +17,8 @@ const SEARCH_UPPER_BOUND_M: f64 = 1_000_000.0;
 
 /// 方位角方向(東=dir_east, 北=dir_north の単位ベクトル)に、地形データの範囲内でいられる
 /// 最大距離を二分探索で求める。原点自体は必ず範囲内にある前提(サーバー側の`set_origin`
-/// バリデーション済み)。
-fn max_valid_distance(
+/// バリデーション済み)。`terrain::los`(見通し範囲)でも使うため`pub(super)`にしてある。
+pub(super) fn max_valid_distance(
     data: &TerrainData,
     transform: &EnuTransform,
     dir_east: f64,

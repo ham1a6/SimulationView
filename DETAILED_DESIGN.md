@@ -623,10 +623,14 @@ classDiagram
 |---|---|
 | `TileId` | ファイル名から抽出した`(lat, lon)`整数度 |
 | `parse_tile_filename()` | `"ALPSMLC30_N035E138_DSM.tif"` → `TileId{35, 138}` |
+| `DiscoveredTile` | `TileId` + ファイルパス(まだGDAL読み込みはしていない) |
+| `discover_tiles()` | map_dataディレクトリをglobし、ファイル名からタイルIDだけを列挙(1段階目) |
+| `MosaicBounds` | モザイクの外接矩形(整数度)。ハードコードではなく実行時に計算する値 |
+| `compute_mosaic_bounds()` | 見つかった全タイルIDの緯度・経度の最小/最大から外接矩形を求める |
 | `SourceGrid` | GDALで読み込んだ1タイル分の標高グリッド + 地理範囲 |
-| `load_dsm_tile()` | GDALでGeoTIFFを1枚読み込む(再投影しない) |
-| `build_mosaic()` | map_dataディレクトリをglobし、18000×18000キャンバスへ配置 |
-| `downsample_average()` | 平均法によるダウンサンプリング |
+| `load_dsm_tile()` | GDALでGeoTIFFを1枚読み込む(再投影しない)。NODATA画素はNaNへ置換 |
+| `build_mosaic()` | 外接矩形サイズのキャンバスへ各タイルを配置(2段階目) |
+| `downsample_average()` | 平均法によるダウンサンプリング(NaNは平均から除外) |
 | `flip_rows_north_to_south()` | GDAL標準の行順(北→南)を南→北へ反転(2.5節の注意参照) |
 | `write_heightmap_bin()` / `write_metadata_json()` | 出力ファイル書き出し |
 
@@ -643,7 +647,7 @@ graph TD
     App --> VabPanel["VabPanel<br/>(vab.rs) 4列ボタングリッド(1+4+1行)"]
     App --> MainPanel["MainPanel<br/>(main_panel.rs) 地形描画canvas(3D, TerrainView)"]
     App --> TopStatusPanel["TopStatusPanel<br/>TabbedPanel: [各種情報]タブ=StatusPanel"]
-    App --> BottomStatusPanel["BottomStatusPanel<br/>TabbedPanel: [断面図]タブ=CrossSectionView"]
+    App --> BottomStatusPanel["BottomStatusPanel<br/>TabbedPanel: [断面図]=CrossSectionView, [見通し範囲]=LosView"]
 
     App -.provide_context.-> WsSignals["WsSignals<br/>(接続状態・受信データのシグナル群)"]
     App -.provide_context.-> TerrainStore["TerrainStore<br/>(heightmap/metadataを両パネルで共有)"]
@@ -654,6 +658,7 @@ graph TD
     MainPanel --> Renderer["terrain::renderer::TerrainRenderer<br/>wgpu Device/Queue/Pipeline"]
     MainPanel --> Camera["terrain::camera::Camera<br/>view_proj行列"]
     BottomStatusPanel --> Profile["terrain::profile::build_profile<br/>原点から方位角方向へ地表をサンプリング"]
+    BottomStatusPanel --> Los["terrain::los::compute_los<br/>全方位角の見通し限界距離(等価地球半径考慮)"]
     TerrainStore -.共有データ.-> MainPanel
     TerrainStore -.共有データ.-> BottomStatusPanel
 ```
@@ -887,6 +892,45 @@ flowchart LR
   自動的に再計算・再描画される(明示的なEffectは不要、`chart`クロージャ内で両方を`.get()`
   しているため)
 
+### 6.10 見通し範囲(ボトムステータスパネルの「見通し範囲」タブ、`terrain::los` / `LosView`)
+
+原点を観測点(レーダー等のアンテナ位置)として、全方位角(1度刻み・360方向)の見通し
+限界距離を計算し、2D極座標図(レーダー覆域図)として表示する。断面図と同じくwgpuは
+使わずSVGで描画する。パラメータ(アンテナ高・最大観測範囲)は入力欄からいつでも変更でき、
+変更のたびに反応的に再計算される。
+
+```mermaid
+flowchart LR
+    A["パラメータ入力<br/>observer_height_m, max_range_m"] --> B["los::compute_los(data, origin, params)"]
+    B --> C["方位角ごとにprofile::max_valid_distanceで<br/>データ範囲内の最大距離を求め、max_range_mとの小さい方を採用"]
+    C --> D["各方位角: 外側へサンプリングしながら<br/>等価地球半径による見かけの仰角を計算し、<br/>手前の地形に遮蔽されない最遠点を求める"]
+    D --> E["Vec&lt;LosPoint&gt;(azimuth_deg, range_m)"]
+    E --> F["LosView: SVGの極座標図(塗りつぶし多角形)へ変換して描画"]
+```
+
+**等価地球半径(equivalent earth radius)**: 標準大気中では電波が幾何学的な直線よりわずかに
+下向きに屈折するため、実際の見通し距離は真球上の幾何学的な地平線より遠くなる。この効果を
+「実際の地球半径(平均6,371km)をk倍した仮想的に大きい球面上で電波が直進する」近似で表した
+ものが等価地球半径で、標準大気ではk=4/3が広く使われる(レーダー・無線工学の標準的な近似、
+`terrain/los.rs::K_FACTOR`に定数として実装。v1では固定値で、UIパラメータ化はしていない)。
+距離`d`における地球曲率分の見かけの高度低下量は`d² / (2 * R_eff)`(`R_eff = R_earth * k`)。
+
+**遮蔽判定(マスク角アルゴリズム)**: 方位角ごとに観測点から外側へサンプリングしながら、
+各サンプル点の「見かけの仰角」(等価地球半径による曲率低下を差し引いた角度)を計算する。
+それまでの最大仰角を`max_angle`として保持し、`angle(d) >= max_angle`を満たす点だけを
+「観測点から直接見える点」とみなす(満たさない点は、より手前にある高い地形に遮蔽されて
+見えない)。その方位角の見通し限界距離は、この条件を満たした点のうち最も遠いものの距離とする
+(手前の尾根の陰でも、その先で地形が十分高くなれば再び見えるケースを許容する。単純な
+「最初の遮蔽物で打ち切り」より実際のレーダー覆域に近い近似)。
+
+**パラメータ**:
+- アンテナ高(`observer_height_m`): 観測点の地表(heightmapから取得)からの高さ。UI入力欄、既定10m
+- 最大観測範囲(`max_range_m`): この距離とデータ範囲内の距離の小さい方までを計算対象とする。
+  UI入力欄(km単位で表示、内部でmに変換)、既定50km。ユーザー要望により必ずパラメータ化してある
+
+**計算コスト**: 360方位角 × 200サンプル/方位角 = 72,000回の`heightmap`双線形補間。
+断面図(301点×1方向)よりは重いが、ブラウザで実測しても体感遅延なく反応的に再計算できる
+
 ---
 
 ## 7. UI詳細設計
@@ -901,7 +945,7 @@ flowchart LR
 │ ステータスパネル(上)      │                   │  [各種情報]タブ      │
 ├───────────────────────┤     メインパネル     ├───────────────────┤
 │ VABパネル(下)            │    (3D地形)        │ ボトムステータスパネル │
-│                         │                   │  [断面図]タブ        │
+│                         │                   │ [断面図][見通し範囲]  │
 └───────────────────────┴───────────────────┴───────────────────┘
 ```
 
@@ -989,12 +1033,16 @@ classDiagram
     }
     class BottomStatusPanel {
         title = "ボトムステータスパネル"
-        tabs = [("断面図", CrossSectionView)]
+        tabs = [("断面図", CrossSectionView), ("見通し範囲", LosView)]
     }
     TabbedPanel o-- Tab
     TopStatusPanel ..> TabbedPanel : 使う
     BottomStatusPanel ..> TabbedPanel : 使う
 ```
+
+ボトムステータスパネルへ「見通し範囲」タブ(6.10節)を追加したのが、複数タブ構成の最初の
+実例(それまではどちらのパネルも1タブのみだった)。タブ配列に`tab(...)`のエントリを
+1行足すだけで、`TabbedPanel`側の変更は一切不要だった(設計意図通りの拡張性)。
 
 - `active: RwSignal<usize>`で選択中タブのインデックスを保持する
 - 各タブの中身(`AnyView`)は初回描画時に全タブぶん一度だけ生成してDOMに残し、

@@ -245,6 +245,90 @@ body {
     font-size: 0.85rem;
 }
 
+/* 見通し範囲(レーダー覆域図、components/los_view.rs)。断面図と同じ骨組み:
+   上=SVGの極座標図(残り高さいっぱい)、下=アンテナ高・最大観測範囲の入力欄。 */
+.los-view {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    gap: 0.5rem;
+}
+
+.los-chart {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    justify-content: center;
+}
+
+.los-svg {
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    aspect-ratio: 1 / 1;
+}
+
+.los-grid-circle {
+    fill: none;
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.los-axis {
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.los-area {
+    fill: var(--accent);
+    fill-opacity: 0.25;
+    stroke: none;
+}
+
+.los-outline {
+    stroke: var(--accent);
+    stroke-width: 1.5;
+}
+
+.los-observer {
+    fill: #fca;
+}
+
+.los-label {
+    fill: #999;
+    font-size: 9px;
+}
+
+.los-status {
+    margin: auto;
+}
+
+.los-controls {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 0.6rem;
+}
+
+.los-param-label {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.72rem;
+    color: #999;
+}
+
+.los-param-label input[type="number"] {
+    width: 100%;
+    background: #0d0d0d;
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 0.3rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
 .terrain-view {
     position: relative;
     width: 100%;

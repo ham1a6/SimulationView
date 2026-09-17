@@ -1,4 +1,5 @@
 pub mod cross_section_view;
+pub mod los_view;
 pub mod main_panel;
 pub mod menu_bar;
 pub mod operation_panel;
