@@ -144,55 +144,89 @@ GDALをリンクしない。
 
 ## 5. ディレクトリ構成
 
+3D地形描画・レーダー覆域/見通し計算・レーダー観測点管理・汎用UI部品は`sim3dview`ライブラリ
+(Rust crate)として切り出してあり、VAB・状況パネル・メニュー・通信プロトコルのような
+アプリ固有部分とは別クレートになっている(「本swをライブラリとして使えるように整理したい」
+との要望による。詳細な対応関係はDETAILED_DESIGN.md 6節冒頭の表を参照)。C++サーバー・
+ライブラリを使うサンプルアプリは、どちらも「サンプルである」ことが分かるよう`sample/`配下に
+まとめてある。
+
 ```
 Sim3dView/
 ├── BASIC_DESIGN.md            # 本書
 ├── DETAILED_DESIGN.md         # 詳細設計書(数式・プロトコル・UML)
 ├── CLAUDE.md                  # 開発環境・ビルド手順・セッション間の申し送り事項
+├── Cargo.toml                  # ワークスペースルート(members: sim3dview, sample/sim_frontend)
 ├── map_data/                  # 入力: ALOS DSM GeoTIFFタイル(17枚、既存・変更しない)
 │   └── ALPSMLC30_N###E###_DSM.tif ...
-├── sim_server/                 # C++側
-│   ├── CMakeLists.txt
-│   ├── vcpkg.json               # libuv/zlib/gdal(前処理ツール専用)
-│   ├── third_party/
-│   │   ├── uWebSockets/          # git submodule (uSockets含む)
-│   │   └── msgpack-cxx/          # git submodule (msgpack-c cpp_masterブランチ)
-│   ├── include/
-│   │   ├── protocol.hpp           # メッセージ定義・シリアライズ処理
-│   │   ├── simulation.hpp         # シミュレーション本体(状態・コマンドキュー)
-│   │   └── ws_server.hpp
-│   ├── src/
-│   │   ├── main.cpp
-│   │   ├── simulation.cpp
-│   │   └── ws_server.cpp
-│   ├── tools/
-│   │   └── geotiff_preprocess/     # GDAL依存はここに限定
-│   │       ├── CMakeLists.txt
-│   │       └── main.cpp
-│   └── assets/
-│       └── terrain/                 # 前処理ツールの出力(heightmap.bin/metadata.json)
-├── sim_frontend/                # Rust(Leptos/WASM)側
+├── sim3dview/                   # ライブラリ本体(Rust/Leptos/WASM)。使い方はsim3dview/README.md参照
 │   ├── Cargo.toml
-│   ├── index.html
-│   ├── src/
-│   │   ├── main.rs
-│   │   ├── app.rs                 # AppLayout(全体レイアウト、3カラムグリッド)
-│   │   ├── protocol.rs            # SimState/VabConfig/ClientCommand等の定義
-│   │   ├── ws.rs                  # WebSocket接続・再接続・受信処理
-│   │   ├── components/
-│   │   │   ├── operation_panel.rs
-│   │   │   ├── vab.rs
-│   │   │   ├── map_view.rs         # 地形描画の呼び出し
-│   │   │   └── status_panel.rs
-│   │   └── terrain/
-│   │       ├── mod.rs
-│   │       ├── loader.rs            # heightmap.bin/metadata.json取得
-│   │       ├── mesh.rs              # ENU変換・メッシュ生成
-│   │       ├── camera.rs            # カメラ(ビュー・射影行列)
-│   │       ├── renderer.rs          # wgpu描画パイプライン
-│   │       └── terrain.wgsl         # 頂点/フラグメントシェーダ
-│   └── style/
-│       └── app.css
+│   ├── README.md                 # 開発者向け使い方ドキュメント
+│   ├── style/
+│   │   └── sim3dview.css
+│   └── src/
+│       ├── lib.rs
+│       ├── terrain/                # データ取得・座標変換・カメラ・wgpu描画・覆域/見通し計算
+│       │   ├── mod.rs
+│       │   ├── loader.rs             # heightmap.bin/metadata.json取得(base_urlは呼び出し側が指定)
+│       │   ├── mesh.rs                # ENU変換・メッシュ生成
+│       │   ├── camera.rs              # カメラ(ビュー・射影行列、2D/3D)
+│       │   ├── renderer.rs            # wgpu描画パイプライン
+│       │   ├── store.rs               # TerrainStore(地形データの共有キャッシュ)
+│       │   ├── origin.rs              # OriginState(現在の原点、プロトコル非依存)
+│       │   ├── markers.rs             # RadarMarker/RadarMarkersState・覆域ジオメトリ生成
+│       │   ├── los.rs                 # 見通し/覆域計算
+│       │   ├── pick.rs                # 画面クリック→緯度経度のレイキャスト
+│       │   └── terrain.wgsl           # 頂点/フラグメントシェーダ
+│       └── ui/                       # 上記を使うLeptosコンポーネント一式
+│           ├── mod.rs
+│           ├── terrain_view.rs         # 3D/2D地形描画canvas
+│           ├── los_view.rs             # 見通し範囲タブ(観測点一覧+極座標図)
+│           ├── tabbed_panel.rs         # 汎用タブ付きパネル
+│           ├── floating_panel.rs       # 汎用フローティングウインドウ
+│           ├── origin_dialog.rs        # 原点設定フローティングパネル
+│           └── coverage_altitude_dialog.rs # 覆域高度設定フローティングパネル
+└── sample/                       # 「これはサンプルです」という位置づけのディレクトリ
+    ├── sim_server/                 # C++側(sim3dviewのデータ契約を満たす参照実装サーバー)
+    │   ├── CMakeLists.txt
+    │   ├── vcpkg.json               # libuv/zlib/gdal(前処理ツール専用)
+    │   ├── third_party/
+    │   │   ├── uWebSockets/          # git submodule (uSockets含む)
+    │   │   └── msgpack-cxx/          # git submodule (msgpack-c cpp_masterブランチ)
+    │   ├── include/
+    │   │   ├── protocol.hpp           # メッセージ定義・シリアライズ処理
+    │   │   ├── simulation.hpp         # シミュレーション本体(状態・コマンドキュー)
+    │   │   └── ws_server.hpp
+    │   ├── src/
+    │   │   ├── main.cpp
+    │   │   ├── simulation.cpp
+    │   │   └── ws_server.cpp
+    │   ├── tools/
+    │   │   └── geotiff_preprocess/     # GDAL依存はここに限定
+    │   │       ├── CMakeLists.txt
+    │   │       └── main.cpp
+    │   └── assets/
+    │       └── terrain/                 # 前処理ツールの出力(heightmap.bin/metadata.json)
+    └── sim_frontend/                # sim3dviewライブラリを使うサンプルアプリ(Rust)
+        ├── Cargo.toml                 # sim3dviewをpath依存として使う
+        ├── index.html                  # sim3dview.css・app.cssの両方を読み込む
+        ├── Trunk.toml
+        ├── src/
+        │   ├── main.rs
+        │   ├── app.rs                   # AppLayout。sim3dviewのcontext類をprovide_contextし、
+        │   │                             # protocol::OriginState→sim3dview::terrain::origin::OriginState
+        │   │                             # の橋渡しEffectを持つ
+        │   ├── protocol.rs              # SimState/VabConfig/ClientCommand等の定義
+        │   ├── ws.rs                    # WebSocket接続・再接続・受信処理
+        │   └── components/
+        │       ├── main_panel.rs         # sim3dview::ui::terrain_view::TerrainViewのラッパー
+        │       ├── right_panel.rs        # sim3dview::ui::{tabbed_panel,los_view}を使う
+        │       ├── menu_bar.rs           # sim3dviewのダイアログ開閉トリガー
+        │       ├── operation_panel.rs
+        │       ├── vab.rs
+        │       └── status_panel.rs
+        └── style/
+            └── app.css                    # アプリ固有(全体レイアウト・VAB・メニュー等)のみ
 ```
 
 ---

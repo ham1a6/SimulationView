@@ -26,13 +26,24 @@ C++シミュレータ + Rust/Leptos(WASM) Web UI + ALOS DEMベースの3D地形�
 
 ## ディレクトリ構成
 
+「本swをライブラリとして使えるように整理したい」との要望を受け、3D地形描画・レーダー覆域/
+見通し計算・汎用UI部品を`sim3dview`ライブラリcrateへ分離し、VAB・状況パネル・メニュー・
+通信プロトコルのようなアプリ固有部分は`sample/sim_frontend`(サンプルアプリ)に残した
+(git履歴参照)。C++サーバーも「サンプルである」ことが分かるよう`sample/`配下へ移動した。
+
 ```
-sim_server/       # C++側(シミュレーション本体 + WebSocketサーバー + GeoTIFF前処理ツール)
-sim_frontend/     # Rust/Leptos/WASM側(Web UI + 3D地形描画)
-map_data/         # 入力: ALOS DSM GeoTIFFタイル(17枚、既存・変更しない)
+sim3dview/            # ライブラリ本体(Rust/Leptos/WASM)。terrain/(データ取得・カメラ・
+                       # wgpu描画・覆域/見通し計算)+ ui/(TerrainView等のLeptosコンポーネント)。
+                       # 使い方はsim3dview/README.md参照
+sample/
+  sim_server/            # C++側(シミュレーション本体 + WebSocketサーバー + GeoTIFF前処理ツール)
+  sim_frontend/          # sim3dviewを使うサンプルアプリ(Rust/Leptos/WASM)。VAB・状況パネル・
+                         # メニュー・通信プロトコルなど、アプリ固有部分を実装する
+map_data/             # 入力: ALOS DSM GeoTIFFタイル(17枚、既存・変更しない)
+Cargo.toml             # ワークスペースルート(members: sim3dview, sample/sim_frontend)
 ```
 
-詳細はBASIC_DESIGN.md 5節参照。
+詳細はBASIC_DESIGN.md 5節、DETAILED_DESIGN.md 6節冒頭の対応関係表を参照。
 
 ## 主要な設計判断(要約。詳細はDETAILED_DESIGN.md参照)
 
@@ -44,27 +55,27 @@ map_data/         # 入力: ALOS DSM GeoTIFFタイル(17枚、既存・変更し
 - 状況パネル項目はC++側から`StatusPanelConfig`で動的配信(ハードコードしない)
 - WebSocket自動再接続: 指数バックオフ+ジッター、タブ非表示中は一時停止(Page Visibility API)
 
-## ビルド方法(sim_server)
+## ビルド方法(sample/sim_server)
 
-依存関係: `sim_server/third_party/uWebSockets`(uSockets含む、gitサブモジュール)、
-`sim_server/third_party/msgpack-cxx`(msgpack-c の `cpp_master` ブランチ、gitサブモジュール、ヘッダオンリー)、
-`libuv`/`zlib`/`gdal`(vcpkg経由、`sim_server/vcpkg.json`のmanifestで管理)。
+依存関係: `sample/sim_server/third_party/uWebSockets`(uSockets含む、gitサブモジュール)、
+`sample/sim_server/third_party/msgpack-cxx`(msgpack-c の `cpp_master` ブランチ、gitサブモジュール、ヘッダオンリー)、
+`libuv`/`zlib`/`gdal`(vcpkg経由、`sample/sim_server/vcpkg.json`のmanifestで管理)。
 `gdal`は`tools/geotiff_preprocess`専用(`sim_server`本体はリンクしない。BASIC_DESIGN.md 3.1節の要件通り)。
 
 初回チェックアウト時(`--recursive`は使わない。下記のuSockets配下のboringssl/lsquic注記を参照):
 ```
-git submodule update --init sim_server/third_party/uWebSockets sim_server/third_party/msgpack-cxx
-git -C sim_server/third_party/uWebSockets submodule update --init uSockets libdeflate
+git submodule update --init sample/sim_server/third_party/uWebSockets sample/sim_server/third_party/msgpack-cxx
+git -C sample/sim_server/third_party/uWebSockets submodule update --init uSockets libdeflate
 ```
 
 ビルド(Windows / Visual Studio 2022同梱のCMake・vcpkgを使用する例):
 ```
-cmake -S sim_server -B sim_server/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="C:/Program Files/Microsoft Visual Studio/2022/Community/VC/vcpkg/scripts/buildsystems/vcpkg.cmake"
-cmake --build sim_server/build --config Debug
+cmake -S sample/sim_server -B sample/sim_server/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="C:/Program Files/Microsoft Visual Studio/2022/Community/VC/vcpkg/scripts/buildsystems/vcpkg.cmake"
+cmake --build sample/sim_server/build --config Debug
 ```
 初回はvcpkgが`libuv`/`zlib`を自動ビルドする(バイナリキャッシュ済みなら数秒)。
 
-生成物: `sim_server/build/Debug/sim_server.exe`(引数でポート指定可、既定9001。`/sim`パスでWebSocket待受)。
+生成物: `sample/sim_server/build/Debug/sim_server.exe`(引数でポート指定可、既定9001。`/sim`パスでWebSocket待受)。
 このマシンではアプリケーション制御ポリシーにより`Start-Process`でのexe起動はブロックされるが、
 PowerShellから`& "build\Debug\sim_server.exe" > out.log 2> err.log`のように直接起動(`Start-Process`を経由しない)
 すればブロックされない。この方法でsim_frontendとの接続まで動作確認済み(フェーズ2)。
@@ -77,16 +88,17 @@ third_party/uWebSockets配下の`boringssl`/`lsquic`/`fuzzing`/`h1spec`等の重
 
 ### GeoTIFF前処理ツール(geotiff_preprocess、フェーズ6+7)
 
-`sim_server/tools/geotiff_preprocess/`に実装。`sim_server`本体とは別ターゲット(GDAL依存はこのツール限定)。
-`sim_server/CMakeLists.txt`が`add_subdirectory(tools/geotiff_preprocess)`で取り込むため、上記の通常ビルドで一緒に生成される。
-成果物: `sim_server/build/tools/geotiff_preprocess/Debug/geotiff_preprocess.exe`(sim_server.exeとは出力先が違う点に注意)。
+`sample/sim_server/tools/geotiff_preprocess/`に実装。`sim_server`本体とは別ターゲット(GDAL依存はこのツール限定)。
+`sample/sim_server/CMakeLists.txt`が`add_subdirectory(tools/geotiff_preprocess)`で取り込むため、上記の通常ビルドで一緒に生成される。
+成果物: `sample/sim_server/build/tools/geotiff_preprocess/Debug/geotiff_preprocess.exe`(sim_server.exeとは出力先が違う点に注意)。
 
 実行(リポジトリルートから。map_data/を自動でglobし、17タイルをモザイク→2048×2048へ平均法でダウンサンプリング。
 解像度は当初1024×1024だったが「マップの解像度を上げてほしい」との要望により引き上げた):
 ```
-geotiff_preprocess.exe
+sample\sim_server\build\tools\geotiff_preprocess\Debug\geotiff_preprocess.exe
 ```
-引数なしの既定値は `map_data`(入力ディレクトリ)と `sim_server/assets/terrain`(出力先)。
+引数なしの既定値は `map_data`(入力ディレクトリ)と `sample/sim_server/assets/terrain`(出力先。
+ライブラリ化に伴いsim_serverがsample/配下へ移動したため、この既定値もそれに合わせて更新済み)。
 出力: `heightmap.bin`(f32 2048×2048、南→北の行順。DETAILED_DESIGN.md 2.6節の座標復元式に合わせて
 GDAL標準の北→南から反転させている)と `metadata.json`。実データでの動作確認済み(17タイル全て検出、
 elevation_min/max ≈ -22.0〜3710.8m、平均法による丸めで単一ピクセルの実測値-102.0〜3771/3776mより
@@ -98,29 +110,39 @@ vcpkgの`gdal`portは既定featureのままだと`libxml2`(GML/KML用、Windows�
 引き込むため、`vcpkg.json`で`"default-features": false`にして回避している(GeoTIFF/TIFF読み込みはGDALのコア機能で
 featureフラグ不要)。GDALのフルビルドはvcpkgで15分前後かかる(バイナリキャッシュがあれば数秒)。
 
-## ビルド方法(sim_frontend)
+## ビルド方法(sim3dviewライブラリ + sample/sim_frontend)
 
 Rustツールチェーン(`rustup`, `wasm32-unknown-unknown`ターゲット)と`trunk`が必要。このマシンには
-winget(`Rustlang.Rustup`)と`cargo install trunk`で導入済み。
+winget(`Rustlang.Rustup`)と`cargo install trunk`で導入済み。リポジトリルートがCargoワークスペース
+(members: `sim3dview`, `sample/sim_frontend`)になっているため、`cargo check`系はルートから
+`-p`オプションで両方操作できる。`trunk serve`(開発サーバー)は必ず`sample/sim_frontend`
+ディレクトリ内で実行すること(Trunk.toml/index.htmlがそこにあるため)。
 
 ```
-cd sim_frontend
-cargo check --target wasm32-unknown-unknown   # コンパイル確認のみ
-trunk serve                                     # 開発サーバー起動(ポート・待受アドレスはTrunk.toml参照)
+cargo check -p sim3dview --target wasm32-unknown-unknown      # ライブラリ単体のコンパイル確認
+cargo check -p sim_frontend --target wasm32-unknown-unknown   # サンプルアプリの統合コンパイル確認
+cd sample/sim_frontend
+trunk serve                                                     # 開発サーバー起動(ポート・待受アドレスはTrunk.toml参照)
 ```
 
-`sim_frontend/Trunk.toml`でポート8081(既定の8080はDocker/WSLが使用中のため)・待受アドレス
+`sample/sim_frontend/Trunk.toml`でポート8081(既定の8080はDocker/WSLが使用中のため)・待受アドレス
 `0.0.0.0`(LAN上の別端末からもアクセスできるよう全インターフェースで待ち受ける。sim_server側も
 `ws_server.cpp`で同様に`0.0.0.0`を明示している)・`disable_address_lookup = true`(このマシンでは
 起動時のネットワークインターフェース・ホスト名列挙処理がDocker関連の仮想ネットワーク環境で
 ハングし、実際には`server listening at:`ログの後も接続できない状態が続く問題があったため無効化。
 `trunk serve --help`の`--disable-address-lookup`参照)を設定済み。コマンドラインでの指定は不要。
+`index.html`は`sim3dview/style/sim3dview.css`(ライブラリのUI部品用)と`style/app.css`
+(このサンプルアプリ固有)の両方を`data-trunk rel="css"`で読み込む(相対パスでライブラリ
+crateの外を参照する形。ライブラリ化の際にTrunkがこの参照に対応していることを確認済み)。
 
 注意: このマシンでは環境変数`NO_COLOR=1`が設定されており、trunkの`--no-color`引数パーサ(clapが`true`/`false`を期待)と
 衝突してエラーになる。`trunk`実行前に `$env:NO_COLOR = "true"` を設定すること(PowerShell)。
 
-`sim_frontend`は起動時に `ws://<ページのhostname>:9001/sim` へ接続する(`src/ws.rs::default_ws_url()`)。
-`sim_server.exe`を先に起動してから`trunk serve`でページを開くこと。
+`sample/sim_frontend`は起動時に `ws://<ページのhostname>:9001/sim` へ接続する
+(`src/ws.rs::default_ws_url()`)。地形データは`ws::default_terrain_base_url()`が組み立てる
+`http://<ページのhostname>:9001/terrain`から取得する(sim3dviewライブラリ自体はサーバーの
+ホスト名・ポートを知らないため、この2つのURL組み立てはサンプルアプリ側の責務。
+`sim3dview/README.md`参照)。`sim_server.exe`を先に起動してから`trunk serve`でページを開くこと。
 
 フェーズ2で実施した動作確認: `sim_server`起動→ブラウザで`OriginState`/`VabConfig`/`StatusPanelConfig`/`SimState`が
 表示されること、`sim_server`を強制終了→フロント側が指数バックオフで再接続を試み続けること、
@@ -153,7 +175,7 @@ C++/Rust全ソースを通読し、`cargo check`(警告ゼロ化)・CMakeビル�
 - C++: `main.cpp`のポート引数パース(`std::stoi`)が非数値入力で未処理例外crashしていたのをtry/catchで修正
 
 **見つけたが未修正**(設計判断が絡むため、次回着手前に方針確認を推奨):
-- `sim_server/include/simulation.hpp`の`kMinLat`等(35/40/135/140)が、依然としてハードコードの
+- `sample/sim_server/include/simulation.hpp`の`kMinLat`等(35/40/135/140)が、依然としてハードコードの
   ままになっている。**`geotiff_preprocess/main.cpp`側は既にタイル構成から外接矩形を自動計算する
   よう修正済み**(「他のタイルも表示範囲内であれば表示してほしい」対応)なので、`map_data/`に
   別の場所のタイルを追加すればフロント側の地形範囲は自動的に広がるが、simulation.hppの原点
@@ -162,7 +184,7 @@ C++/Rust全ソースを通読し、`cargo check`(警告ゼロ化)・CMakeビル�
   片方だけ動的化されたことでこの食い違いがより顕在化しやすくなっている)。
   根本修正にはsim_serverがmetadata.jsonを起動時に読む仕組みが必要(GDAL非依存でJSONの
   4つのdouble値を読むだけなので、簡易パーサ手書きでもnlohmann/json追加でも対応可能)。
-- `sim_frontend/src/terrain/renderer.rs`のパイプライン設定で`cull_mode: None`(裏面カリング無効)のまま。
+- `sim3dview/src/terrain/renderer.rs`のパイプライン設定で`cull_mode: None`(裏面カリング無効)のまま。
   コメントは「フェーズ10(自由視点カメラ)で正しい巻き順を確認して有効化する」としていたが、
   フェーズ10完了後も未着手。深度バッファがあるため描画結果自体に誤りはない(裏面描画がGPU時間を
   余分に使うだけ)が、コメントと実装が食い違っている。
@@ -997,3 +1019,77 @@ DETAILED_DESIGN.md 1.3節の記載通り。0という画素値も実は全てマ
 される、下段のボタン(例: 「B1A2」)も同様、先頭行のカテゴリを切り替えると
 (例: B1→B2)中段・下段の有効化表示は正しくクリアされる(前カテゴリの状態を
 引き継がない)、先頭行自体の選択ハイライトは従来通り動作する、をスクリーンショットで確認。
+
+### sim_frontendをライブラリ(sim3dview)とサンプルアプリ(sample/sim_frontend)に分離
+
+「本swをライブラリとして使えるように整理したい/ライブラリはフロントエンドのみとし、C++側は
+サンプルコードということが明確にわかるようなディレクトリ構成にして残す/vabやステータス
+パネルやメニューについてはライブラリを使用する側でrust等を用いて使用する想定/フローティング
+ウインドウ等も使う側から実装やカスタマイズできるようにする(既存の基準位置や覆域に関する
+機能はライブラリ側に残す)/開発者向けの使い方をドキュメントとして残すこと」という、これまでの
+セッションの中でも最大規模の要望を受けて実施した。この規模の作業だったため、実装前に
+Explore調査→設計案の作成→ユーザー承認(plan mode)という手順を踏んだ。詳細は
+DETAILED_DESIGN.md 6節冒頭の対応関係表・`sim3dview/README.md`(開発者向け使い方ドキュメント、
+本要望の必須成果物)を参照。
+
+**リポジトリ構成の変更**: `sim_server/`→`sample/sim_server/`、`sim_frontend/`は
+「ライブラリ化する部分」と「アプリ固有として残す部分」に分割し、後者を`sample/sim_frontend/`
+へ移動した。新設のリポジトリルート`Cargo.toml`がworkspace(members: `sim3dview`,
+`sample/sim_frontend`)としてこの2つを束ねる。ディレクトリ移動はgit mvで行い、
+`sim_server/third_party/`配下のサブモジュール2つ(uWebSockets, msgpack-cxx)も
+`.gitmodules`のpathごと正しく移動されることを確認した。`.gitignore`のパスも合わせて更新
+(特に、workspace化によりCargoのビルド出力`target/`はリポジトリ直下1箇所にまとまる
+点に注意。以前の`sim_frontend/target/`のような per-crate 表記ではなく`/target/`とした)。
+
+**sim3dviewライブラリの切り分け方針**: 調査の結果、`terrain/`配下(camera/loader/los/markers/
+mesh/pick/profile/renderer/store)は元々アプリ固有コードへの依存がゼロで、ライブラリ化に
+理想的な状態だった。実際に手を入れたのは3点:
+- `terrain::loader`/`terrain::store::TerrainStore`が地形データ配信元のURLを`http://<hostname>:9001/terrain`と
+  ハードコードしていたのを、`base_url`引数(`TerrainStore::new(base_url)`)として呼び出し側が
+  明示的に渡す形にした(ライブラリが特定のサンプルサーバーのポート番号を知っているのは
+  誤りのため)
+- `ui::terrain_view::TerrainView`が原点変更検知のために`WsSignals`(アプリのプロトコル型)を
+  `use_context`していたのを、新設した`terrain::origin::OriginState`(`RwSignal<Option<terrain::
+  mesh::Origin>>`の薄いラッパー、プロトコル非依存)に置き換えた。アプリ側
+  (`sample/sim_frontend/src/app.rs`)が`protocol::OriginState`受信のたびにこちらへミラーする
+  Effectを持つことで橋渡しする
+- `ui::origin_dialog::OriginDialog`が`WsConnection`を直接受け取り`ClientCommand::set_origin`を
+  送信していたのを、`on_submit: Callback<(f64, f64)>`propに変更(実際の送信方法はアプリに委ねる)。
+  `Callback`が`Copy`であることを`reactive_graph`のソース(`impl Copy for Callback`)で確認した上で、
+  従来`WsConnection`(非Copy)のために必要だった「開閉のたびにクロージャを作り直す」パターンを
+  単純化できた
+- `ui_state.rs`の`OriginDialogState`/`CoverageAltitudeDialogState`(開閉フラグ)は各ダイアログの
+  モジュールへ、`RadarMarkersState`(観測点一覧・選択・覆域高度)は`terrain::markers`へ移設した
+
+**「フローティングウインドウ等も使う側からカスタマイズできるように」への対応**: 新設した
+`ui::floating_panel::FloatingPanel`(半透明バックドロップ+中央パネル、背景クリックか✕で閉じる
+汎用コンポーネント)を公開し、`OriginDialog`/`CoverageAltitudeDialog`も内部でこれを使うよう
+リファクタした(ダミーデータではなく実際に自分自身が使うことで抽象化の妥当性を検証する、
+いわゆるdogfooding)。副産物として、常時マウントして`display`だけ切り替える方式(`TabbedPanel`の
+タブ切り替えと同じ考え方)に変わり、従来の「開閉のたびにDOMを作り直す」条件付き描画より
+シンプルになった。VAB等の「使う側で実装する」UIも、このFloatingPanelを使えば同じ見た目で
+作れる(基準位置・覆域関連の機能自体は要望通りライブラリ側に残している)。
+
+**CSS分割**: `style/app.css`を、移動したコンポーネントが使うクラス(タブ・見通し範囲・
+地形描画canvas・フローティングパネル等)は`sim3dview/style/sim3dview.css`へ、VAB・メニュー・
+全体レイアウトのようなアプリ固有のクラスは`sample/sim_frontend/style/app.css`に残す形で
+分割した。`.placeholder`/`.panel-section`のように両方から参照される基底クラスは、
+どちらか一方のCSSだけでも自己完結して動くよう、あえて重複定義した。ライブラリのCSSは
+`--bg-panel`/`--fg`/`--border`/`--accent`というCSSカスタムプロパティ(アプリ側の`:root`で
+定義される前提)を参照する「テーマ契約」として設計し、`sim3dview/README.md`に明記した。
+Trunkの`data-trunk rel="css"`が`sample/sim_frontend/index.html`から
+`../../sim3dview/style/sim3dview.css`という、crateディレクトリの外を指す相対パスを正しく
+解決できることを実機ビルドで確認済み。
+
+**C++側の追従**: `sim_server`が`sample/`配下へ移動したことに伴い、`geotiff_preprocess`の既定
+出力先パス定数を`sample/sim_server/assets/terrain`に更新した(入力側の既定`map_data`は
+リポジトリ直下のままなので変更不要)。CMakeの古いビルドキャッシュ(`build/`、絶対パスを
+含む)は移動後そのままでは使えないため削除して再configureした(vcpkgのバイナリキャッシュは
+再利用されるため大きな再ビルドコストは発生しなかった)。
+
+ブラウザ実機で全面的な回帰確認を実施済み: 3D/2D地形描画、原点設定ダイアログ
+(開く→緯度経度編集→設定→実際に原点が変わり別の山岳地形に切り替わることを確認)、
+覆域高度設定ダイアログ、2Dモードでの覆域表示(輪郭線+塗り)、メインパネル上の右クリックに
+よる観測点追加とLosViewタブへの反映、VABの有効化状態表示(先頭行・中段)、各種情報タブ、
+メニューバー全項目。`cargo check -p sim3dview`・`cargo check -p sim_frontend`とも警告ゼロで
+通過し、C++側もsample/sim_server配下で問題なくビルド・地形データ生成・起動できることを確認した。

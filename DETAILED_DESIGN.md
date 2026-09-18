@@ -681,6 +681,26 @@ classDiagram
 
 ## 6. Rust側詳細設計
 
+> **注記(ライブラリ/サンプル分離後の対応関係)**: 「本swをライブラリとして使えるように
+> 整理したい」との要望を受け、Rust側は`sim3dview`ライブラリcrateと`sample/sim_frontend`
+> サンプルアプリcrateに分割した(git履歴・sim3dview/README.md参照)。以下6節・7節で
+> `components/xxx.rs`・`terrain/xxx.rs`と書いている箇所は、分割前(単一crateだった当時)の
+> パスをそのまま残している。現在の実際の置き場所は:
+> - **`sim3dview`ライブラリへ移動**: 6.2〜6.9節が説明する地形描画パイプライン・カメラ・
+>   座標軸・標高配色・シェーダ・LOS/覆域計算・markers・pick・LosView、7.6節のTabbedPanel、
+>   7.7節のフローティングパネルのうち原点設定・覆域高度設定の実装本体(トリガーのメニュー
+>   項目自体は除く)。旧`components/`配下は`sim3dview/src/ui/`、旧`terrain/`配下は
+>   `sim3dview/src/terrain/`に対応する
+> - **`sample/sim_frontend`サンプルアプリに残留**: 7.4節のVAB、7.5節の状況パネル、7.7節の
+>   メニューバー自体(トリガーのみ)、4節の通信プロトコル(`protocol.rs`/`ws.rs`)、
+>   `app.rs`(全体レイアウト)
+>
+> 旧`WsSignals.origin`への依存は、ライブラリ側では`terrain::origin::OriginState`
+> (プロトコル非依存の`RwSignal<Option<Origin>>`)に置き換わっており、`app.rs`が
+> protocol⇔ライブラリの橋渡しEffectを持つ。`terrain::loader`/`terrain::store::TerrainStore`が
+> 参照するURLも、旧実装のようにポート9001をハードコードせず、呼び出し側(`app.rs`)が
+> `base_url`として明示的に渡す形に変わっている。
+
 ### 6.1 コンポーネント構成図
 
 ```mermaid
