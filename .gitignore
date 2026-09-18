@@ -1,15 +1,15 @@
-# C++ (sim_server)
-sim_server/build/
-sim_server/third_party/vcpkg_installed/
-sim_server/vcpkg-configuration.json
+# C++ (sample/sim_server)
+sample/sim_server/build/
+sample/sim_server/third_party/vcpkg_installed/
+sample/sim_server/vcpkg-configuration.json
 # geotiff_preprocessの生成物(map_data/から再生成可能なのでコミットしない)
-sim_server/assets/terrain/*.bin
-sim_server/assets/terrain/*.json
-sim_server/assets/terrain/*.png
+sample/sim_server/assets/terrain/*.bin
+sample/sim_server/assets/terrain/*.json
+sample/sim_server/assets/terrain/*.png
 
-# Rust (sim_frontend)
-sim_frontend/target/
-sim_frontend/dist/
+# Rust (workspace: sim3dview ライブラリ + sample/sim_frontend サンプルアプリ)
+/target/
+sample/sim_frontend/dist/
 
 # エディタ・OS
 .vs/

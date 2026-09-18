@@ -1,0 +1,33 @@
+[package]
+name = "sim3dview"
+version = "0.1.0"
+edition = "2021"
+description = "ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し計算・レーダー観測点管理を提供するLeptos(WASM)向けライブラリ。詳細はREADME.md参照。"
+
+[dependencies]
+leptos = { version = "0.8", features = ["csr"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+gloo-net = "0.7"
+log = "0.4"
+wgpu = "30"
+bytemuck = { version = "1", features = ["derive"] }
+glam = "0.33"
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "Event",
+    "EventTarget",
+    "PointerEvent",
+    "WheelEvent",
+    "MouseEvent",
+    "HtmlCanvasElement",
+    "ResizeObserver",
+    "ResizeObserverEntry",
+    "DomRectReadOnly",
+    "DomRect",
+    "Element",
+]

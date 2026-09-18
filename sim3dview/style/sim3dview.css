@@ -1,0 +1,401 @@
+/* sim3dviewライブラリのUI部品(terrain_view.rs / los_view.rs / tabbed_panel.rs /
+   floating_panel.rs / origin_dialog.rs / coverage_altitude_dialog.rs)が使うスタイル。
+
+   テーマ契約: 以下のCSSカスタムプロパティを呼び出し側(アプリ)の:rootで定義すること
+   (未定義でも動作はするが、配色が付かない)。推奨値はsim3dview/README.md参照。
+     --bg-panel  パネル背景色
+     --fg        通常の文字色
+     --border    枠線色
+     --accent    強調色(選択中・フォーカス等)
+*/
+
+.placeholder {
+    color: #777;
+    font-style: italic;
+}
+
+.panel-section {
+    background: var(--bg-panel);
+    padding: 0.5rem 1rem;
+    overflow-y: auto;
+    min-height: 0;
+}
+
+.panel-section h2 {
+    font-size: 0.85rem;
+    margin: 0 0 0.5rem 0;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+/* タブ付きパネル(ui::tabbed_panel::TabbedPanel)。
+   ヘッダー(タイトル+タブバー)の下に選択中タブの内容が残り高さいっぱいに広がる。 */
+.tabbed-panel {
+    display: flex;
+    flex-direction: column;
+}
+
+.tabbed-panel-header {
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.4rem;
+}
+
+.tabbed-panel-header h2 {
+    margin: 0;
+}
+
+.tab-bar {
+    display: flex;
+    gap: 4px;
+}
+
+.tab-button {
+    background: transparent;
+    color: #999;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.15rem 0.55rem;
+    font-size: 0.72rem;
+    cursor: pointer;
+}
+
+.tab-button:hover {
+    color: var(--fg);
+    border-color: var(--accent);
+}
+
+.tab-button.active {
+    background: #234;
+    color: var(--fg);
+    border-color: var(--accent);
+}
+
+.tabbed-panel-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    margin-top: 0.5rem;
+}
+
+.tab-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+}
+
+/* 見通し範囲(レーダー覆域図、ui::los_view::LosView)。上=選択中レーダーのSVG極座標図
+   (残り高さいっぱい)、下=レーダー一覧(選択・削除・アンテナ高/最大観測範囲の編集)。
+   レーダー自体の追加はTerrainView上の右クリックで行う。 */
+.los-view {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    gap: 0.5rem;
+}
+
+.los-chart {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    justify-content: center;
+}
+
+.los-svg {
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    aspect-ratio: 1 / 1;
+}
+
+.los-grid-circle {
+    fill: none;
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.los-axis {
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.los-area {
+    fill: var(--accent);
+    fill-opacity: 0.25;
+    stroke: none;
+}
+
+.los-outline {
+    stroke: var(--accent);
+    stroke-width: 1.5;
+}
+
+.los-observer {
+    fill: #fca;
+}
+
+.los-label {
+    fill: #999;
+    font-size: 9px;
+}
+
+.los-status {
+    margin: auto;
+}
+
+.los-controls {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    min-height: 0;
+}
+
+/* レーダー観測点一覧(TerrainView上の右クリックで追加。ここでは選択・パラメータ編集・削除のみ)。
+   一覧自体の高さを上限で頭打ちにし、マーカーが増えても上のSVG覆域図の表示領域を圧迫しない
+   ようにする(超えた分は一覧内だけでスクロール)。 */
+.los-marker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    max-height: 9.5rem;
+    overflow-y: auto;
+}
+
+.los-marker-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.4rem;
+    padding: 0.3rem 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.los-marker-row-selected {
+    border-color: var(--accent);
+    background: rgba(255, 200, 60, 0.08);
+}
+
+.los-marker-label {
+    flex: 1 1 auto;
+    font-size: 0.72rem;
+    color: #ccc;
+    align-self: center;
+    font-variant-numeric: tabular-nums;
+}
+
+.los-marker-row .los-param-label {
+    min-width: 5.5ch;
+}
+
+.los-delete-btn {
+    background: #422;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.3rem 0.5rem;
+    cursor: pointer;
+    font-size: 0.72rem;
+    white-space: nowrap;
+}
+
+.los-delete-btn:hover {
+    background: #633;
+    border-color: #e77;
+}
+
+.los-param-label {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.72rem;
+    color: #999;
+}
+
+.los-param-label input[type="number"],
+.los-param-label input[type="text"] {
+    width: 100%;
+    background: #0d0d0d;
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 0.3rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
+/* ui::terrain_view::TerrainView(3D/2D地形描画canvas)。 */
+.terrain-view {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.terrain-canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    cursor: grab;
+    touch-action: none;
+}
+
+.terrain-canvas:active {
+    cursor: grabbing;
+}
+
+.terrain-view-controls {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    z-index: 2;
+    display: flex;
+    gap: 6px;
+}
+
+.terrain-view-controls button {
+    background: rgba(20, 20, 20, 0.75);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.3rem 0.6rem;
+    font-size: 0.78rem;
+    cursor: pointer;
+}
+
+.terrain-view-controls button:hover {
+    background: rgba(40, 60, 70, 0.85);
+    border-color: var(--accent);
+}
+
+.map-status {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    margin: 0;
+    z-index: 1;
+}
+
+/* 汎用フローティングパネル(ui::floating_panel::FloatingPanel)。
+   ui::origin_dialog::OriginDialog / ui::coverage_altitude_dialog::CoverageAltitudeDialogが
+   これを使う。呼び出し側が独自のフローティングウインドウを作る際にも流用できる。 */
+.floating-panel-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 20;
+    align-items: center;
+    justify-content: center;
+    /* 既定は非表示。FloatingPanelが`display:flex`/`none`を都度切り替える。 */
+    display: none;
+}
+
+.floating-panel {
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    min-width: 280px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+}
+
+.floating-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.6rem;
+}
+
+.floating-panel-header h3 {
+    font-size: 0.85rem;
+    margin: 0;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.floating-panel-close {
+    background: transparent;
+    color: #999;
+    border: none;
+    font-size: 0.9rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0.2rem;
+}
+
+.floating-panel-close:hover {
+    color: var(--fg);
+}
+
+.dialog-description {
+    margin: 0 0 0.6rem;
+    font-size: 0.78rem;
+    color: #999;
+    max-width: 32ch;
+}
+
+/* OriginDialog / CoverageAltitudeDialogのフォーム行(緯度経度・高度の入力欄+ボタン)。 */
+.origin-form-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.5rem;
+}
+
+.origin-form-row label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.75rem;
+    color: #999;
+}
+
+.origin-form-row input {
+    width: 9ch;
+    background: #0d0d0d;
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 0.3rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
+.origin-form-row button {
+    background: #234;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.35rem 0.7rem;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+.origin-form-row button:hover:not(:disabled) {
+    background: #356;
+    border-color: var(--accent);
+}
+
+.origin-form-row button:disabled {
+    background: #1a1a1a;
+    color: #555;
+    cursor: not-allowed;
+}
+
+.field-error {
+    margin: 0.4rem 0 0;
+    font-size: 0.78rem;
+    color: #fca;
+}
