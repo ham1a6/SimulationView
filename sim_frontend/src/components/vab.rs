@@ -11,6 +11,14 @@
 //!   将来の課題(CLAUDE.md参照)
 //! - ラベルが空文字のボタン(先頭行側)は「未使用の穴」としてDOM要素自体を描画しない
 //!   (グリッド位置がずれないよう、各ボタンにrow/columnを明示的に指定する)
+//!
+//! **有効化状態(`.vab-button-active`、通常状態の色を反転させた見た目)**: 「B1〜B4は
+//! フロント側で現在の選択状況を有効化表示する」との要望により、先頭行は選択中カテゴリを
+//! 有効化表示する(既存の`selected_category`をそのまま使う)。中段・下段は元々C++側の
+//! ステータスで有効化を切り替える想定だったが、この2区画は現状C++側に存在自体を
+//! 知らせていないダミーボタンのため紐づけようがなく、「フロントエンド側で制御する方針に
+//! 変更する」との回答を受け、区画ごとに直近クリックしたボタンをローカルに記憶して
+//! 有効化表示する(`selected_mid`/`selected_bottom`。カテゴリ切り替え時はどちらもリセット)。
 
 use leptos::prelude::*;
 
@@ -49,6 +57,11 @@ pub fn VabPanel(
     let selected_category = RwSignal::new(0usize);
     // 中段の現在表示中ページ(0始まり)。カテゴリを切り替えたら先頭ページに戻す。
     let current_page = RwSignal::new(0usize);
+    // 中段・下段それぞれの区画で直近にクリックされたダミーボタン(絶対インデックス、
+    // mid_button/bottom_buttonの`index`引数と同じ体系)。有効化表示(色反転)に使う。
+    // カテゴリを切り替えたらどちらもリセットする(前カテゴリでの押下状態を引き継がない)。
+    let selected_mid = RwSignal::new(None::<usize>);
+    let selected_bottom = RwSignal::new(None::<usize>);
 
     view! {
         <div class="panel-section vab-panel">
@@ -87,13 +100,16 @@ pub fn VabPanel(
                                         conn.send_command(&ClientCommand::vab_press(button_id.clone()));
                                         selected_category.set(i);
                                         current_page.set(0);
+                                        // 前カテゴリでの中段・下段の有効化状態は引き継がない。
+                                        selected_mid.set(None);
+                                        selected_bottom.set(None);
                                     }
                                 };
                                 let is_selected = move || selected_category.get() == i;
                                 view! {
                                     <button
                                         class="vab-button"
-                                        class:vab-button-selected=is_selected
+                                        class:vab-button-active=is_selected
                                         style=pos_style
                                         disabled=!enabled
                                         on:click=on_click
@@ -129,9 +145,15 @@ pub fn VabPanel(
                                 let conn = conn_mid.clone();
                                 let on_click = move |_| {
                                     conn.send_command(&ClientCommand::vab_press(id.clone()));
+                                    selected_mid.set(Some(i));
                                 };
+                                let is_active = move || selected_mid.get() == Some(i);
                                 view! {
-                                    <button class="vab-button vab-button-dummy" on:click=on_click>
+                                    <button
+                                        class="vab-button vab-button-dummy"
+                                        class:vab-button-active=is_active
+                                        on:click=on_click
+                                    >
                                         {label}
                                     </button>
                                 }
@@ -187,9 +209,15 @@ pub fn VabPanel(
                                 let conn = conn_bottom.clone();
                                 let on_click = move |_| {
                                     conn.send_command(&ClientCommand::vab_press(id.clone()));
+                                    selected_bottom.set(Some(i));
                                 };
+                                let is_active = move || selected_bottom.get() == Some(i);
                                 view! {
-                                    <button class="vab-button vab-button-dummy" on:click=on_click>
+                                    <button
+                                        class="vab-button vab-button-dummy"
+                                        class:vab-button-active=is_active
+                                        on:click=on_click
+                                    >
                                         {label}
                                     </button>
                                 }

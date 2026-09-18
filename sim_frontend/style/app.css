@@ -415,13 +415,6 @@ body {
     cursor: not-allowed;
 }
 
-/* 先頭行で選択中のカテゴリボタン(中段・下段のダミー内容がこのカテゴリのもの)。 */
-.vab-button-selected {
-    background: var(--accent);
-    color: #003;
-    border-color: var(--accent);
-}
-
 /* 中段・下段のダミーボタン(サーバーVabConfigとは独立、選択中カテゴリのプレースホルダ)。
    通常のvab-buttonより少し控えめな配色にして「本物のB1〜B4」と区別しやすくする。 */
 .vab-button-dummy {
@@ -431,6 +424,16 @@ body {
 
 .vab-button-dummy:hover:not(:disabled) {
     background: #2a4456;
+}
+
+/* VABボタンの「有効化状態」(通常状態の色を反転させた見た目)。先頭行(B1〜B4)は選択中の
+   カテゴリに、中段・下段はそれぞれの区画内で直近に押されたダミーボタンに付与する
+   (どちらもフロント側のRwSignalで管理。vab.rs参照)。`.vab-button-dummy`より後ろに
+   置くことで、詳細度が同じ場合でもソース順で確実にダミーの配色を上書きする。 */
+.vab-button-active {
+    background: var(--accent);
+    color: #003;
+    border-color: var(--accent);
 }
 
 /* 中段(ページ送りするボタン群)全体。グリッドの下にページ送りコントロールを積む。 */
