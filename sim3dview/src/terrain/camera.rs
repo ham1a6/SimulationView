@@ -73,11 +73,20 @@ impl Camera {
         let ndc_x = (x / width) * 2.0 - 1.0;
         let ndc_y = 1.0 - (y / height) * 2.0;
         let inv_vp = self.view_proj_matrix().inverse();
-        let near = inv_vp * Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
-        let far = inv_vp * Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
-        let near = near.truncate() / near.w;
-        let far = far.truncate() / far.w;
-        (near, far - near)
+        let unproject = |ndc_z: f32| -> Vec3 {
+            let p = inv_vp * Vec4::new(ndc_x, ndc_y, ndc_z, 1.0);
+            p.truncate() / p.w
+        };
+        // 反転Z(camera.rs冒頭のview_proj_matrix参照): NDC z=1がnear、z=0がfarに対応する
+        // (透視投影はさらにfarを無限遠として扱っている)。NDC z=0をそのまま逆変換すると
+        // 無限遠点の座標を求めることになり数学的に特異点(w=0近辺での除算、Inf/NaN)になるため、
+        // near(z=1、有限)と、無限遠でない適当な中間点(z=0.5、有限)の2点を取り、
+        // その差からレイの向きを求める(直線上の異なる2点があれば方向は定まるため、
+        // 厳密にnear/farである必要はない)。正射影(2Dモード)はfarも有限だが、同じ実装で
+        // 問題なく動作する。
+        let near = unproject(1.0);
+        let mid = unproject(0.5);
+        (near, mid - near)
     }
 }
 
