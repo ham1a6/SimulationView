@@ -419,26 +419,6 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     // 条件分岐(見た目の切り替え)にはリアクティブなsignalが必要なので、ここで複製して持つ。
     let view_mode = RwSignal::new(ViewMode::ThreeD);
 
-    // 俯瞰/側面プリセットボタンは2D/3Dどちらでも常に表示する(3Dモードへの切り替えを兼ねる)。
-    // `OrbitCamera::preset`は必ずmode=ThreeDにするため、2Dモード中にクリックした場合は
-    // view_modeも合わせて更新し、覆域表示(3Dドーム/2D覆域領域)のジオメトリも切り替える。
-    let state_overview = state.clone();
-    let on_preset_overview = move |_| {
-        let target_up = state_overview.borrow().target_up;
-        state_overview.borrow_mut().camera = OrbitCamera::preset(CameraPreset::Overview, target_up);
-        view_mode.set(ViewMode::ThreeD);
-        rebuild_markers(&state_overview, radar_markers);
-        render_now(&state_overview);
-    };
-    let state_side = state.clone();
-    let on_preset_side = move |_| {
-        let target_up = state_side.borrow().target_up;
-        state_side.borrow_mut().camera = OrbitCamera::preset(CameraPreset::Side, target_up);
-        view_mode.set(ViewMode::ThreeD);
-        rebuild_markers(&state_side, radar_markers);
-        render_now(&state_side);
-    };
-
     let state_toggle = state.clone();
     let on_toggle_view_mode = move |_| {
         let new_mode = match view_mode.get_untracked() {
@@ -467,8 +447,6 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 <button on:click=on_toggle_view_mode title="2D/3D表示切り替え">
                     {move || if view_mode.get() == ViewMode::ThreeD { "2D表示に切替" } else { "3D表示に切替" }}
                 </button>
-                <button on:click=on_preset_overview title="俯瞰視点に切り替え">"俯瞰"</button>
-                <button on:click=on_preset_side title="側面視点に切り替え">"側面"</button>
             </div>
             {move || {
                 let s = status.get();

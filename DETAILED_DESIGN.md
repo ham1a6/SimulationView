@@ -690,7 +690,7 @@ graph TD
     App --> VabPanel["VabPanel<br/>(vab.rs) 4列ボタングリッド(1+4+1行)"]
     App --> MainPanel["MainPanel<br/>(main_panel.rs) 地形描画canvas(3D, TerrainView)"]
     App --> TopStatusPanel["TopStatusPanel<br/>TabbedPanel: [各種情報]タブ=StatusPanel"]
-    App --> BottomStatusPanel["BottomStatusPanel<br/>TabbedPanel: [断面図]=CrossSectionView, [見通し範囲]=LosView"]
+    App --> BottomStatusPanel["BottomStatusPanel<br/>TabbedPanel: [見通し範囲]=LosView"]
 
     App -.provide_context.-> WsSignals["WsSignals<br/>(接続状態・受信データのシグナル群)"]
     App -.provide_context.-> TerrainStore["TerrainStore<br/>(heightmap/metadataを両パネルで共有)"]
@@ -703,8 +703,7 @@ graph TD
     MainPanel --> Camera["terrain::camera::Camera<br/>view_proj行列・screen_to_ray"]
     MainPanel --> Pick["terrain::pick::pick_lat_lon<br/>右クリック→レイキャストで緯度経度取得"]
     MainPanel --> Markers["terrain::markers::build_marker_geometry<br/>観測点・覆域リングの3D頂点生成"]
-    BottomStatusPanel --> Profile["terrain::profile::build_profile<br/>原点から方位角方向へ地表をサンプリング"]
-    BottomStatusPanel --> Los["terrain::los::compute_los / is_visible<br/>全方位角の見通し限界距離・点対点の遮蔽判定"]
+    BottomStatusPanel --> Los["terrain::los::compute_los<br/>全方位角の見通し限界距離"]
     TerrainStore -.共有データ.-> MainPanel
     TerrainStore -.共有データ.-> BottomStatusPanel
     RadarMarkersState -.共有データ.-> MainPanel
@@ -884,8 +883,8 @@ ENU座標系(東=X, 北=Y, 上=Z)は右手系(East×North=Up)。wgpu/glamの一�
 各タイル内のNODATA画素 + マスクファイルが海と示す画素)は、上記のグラデーション計算を行わず
 固定色`WATER_COLOR = (0.55, 0.78, 0.92)`(水色)を使う。頂点position自体はNaNだと破綻するため、
 標高0mの平面として配置する(`terrain/mesh.rs::build_mesh`)。`terrain::mesh::sample_heightmap`
-(カメラ注視点の高さ・断面図のサンプリングで共用)も同様に、双線形補間の結果がNaNなら標高0mへ
-丸める。
+(カメラ注視点の高さ・見通し範囲のサンプリングで共用)も同様に、双線形補間の結果がNaNなら
+標高0mへ丸める。
 
 **背景(実データ範囲の外側)**: メインパネルをズームアウト・回転すると、実データの外接矩形
 (5°四方)の外側に出る。ここを「地平線から下は水色・空は黒」に見せるため、2つの仕組みを
@@ -903,7 +902,7 @@ ENU座標系(東=X, 北=Y, 上=Z)は右手系(East×North=Up)。wgpu/glamの一�
   triangle-listパイプライン・同じ描画コールに乗るため、レンダラー側の変更はクリア色のみで済む
 
 この仕組みにより、俯瞰プリセットでズームアウトすると外接矩形の外側全体が水色になり、
-側面プリセット(ほぼ水平視点)では地平線を境に上=黒空・下=水色という自然な見た目になる。
+ほぼ水平の視点まで回転すると地平線を境に上=黒空・下=水色という自然な見た目になる。
 
 ### 6.8 頂点シェーダ・フラグメントシェーダ(WGSL概要)
 
@@ -932,7 +931,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 ```
 
 覆域ドーム用に、同じ`vs_main`を再利用しつつ固定の半透明アルファを返す`fs_dome`エントリ
-ポイントも定義している(6.10節)。
+ポイントも定義している(6.9節)。
 
 **MSAA(マルチサンプルアンチエイリアシング、4x)**: メッシュ解像度を2048×2048に引き上げた後、
 遠景で多数の細かい三角形(陸地・海のNaN色を含む)が1画素に収まりきらずエイリアシング
@@ -944,39 +943,11 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 (MSAAテクスチャ自体は解決後不要なので`store: Discard`)。`resize()`のたびに深度テクスチャと
 同様にMSAAテクスチャも作り直す。
 
-### 6.9 断面図(ボトムステータスパネルの「断面図」タブ、`terrain::profile` / `CrossSectionView`)
-
-ボトムステータスパネルは3D視点ではなく、**原点を起点に方位角スライダーで指定した方向の地表断面を
-2D(距離 vs 標高の折れ線)で表示する**。wgpuは使わずSVGで描画するため、中央地図用の
-`TerrainRenderer`とは完全に独立(GPUリソースを消費しない)。
-
-```mermaid
-flowchart LR
-    A["スライダー操作<br/>azimuth: RwSignal&lt;f64&gt;(度、北=0・東=90・時計回り)"] --> B["profile::build_profile(data, origin, azimuth)"]
-    B --> C["EnuTransform::inverse(east, north)<br/>ローカル接平面近似でENUオフセット→緯度経度"]
-    C --> D["heightmapを双線形補間でサンプリング<br/>範囲外に出たら二分探索で打ち切り距離を確定"]
-    D --> E["Vec&lt;ProfilePoint&gt;(distance_m, elevation_m)"]
-    E --> F["CrossSectionView: SVG折れ線・塗りつぶしへ変換して描画"]
-```
-
-- 方位角0本につき301点(`NUM_SAMPLES=300`)を、原点から「地形データの範囲内にいられる
-  最大距離」まで均等にサンプリングする。最大距離は二分探索(30回)で求める
-  (`EnuTransform::inverse`で緯度経度に変換し、`geodetic_bounds`内かどうかを判定する)
-- `EnuTransform::inverse`は`transform`(緯度経度→ENU)の近似逆変換。原点緯度における
-  子午線曲率半径Mと卯酉線曲率半径Nを使ったローカル接平面近似(`lat = lat0 + north/M`,
-  `lon = lon0 + east/(N・cos(lat0))`)
-- heightmapの双線形補間サンプリング(`mesh::sample_heightmap`)は断面図専用ではなく
-  `terrain/mesh.rs`にある共通関数。メインパネルのカメラ注視点の高さ算出(6.5節注記・
-  下記コードレビュー節参照)にも使う
-- 原点(`WsSignals.origin`)・方位角(`azimuth`)のどちらが変わってもLeptosの反応性により
-  自動的に再計算・再描画される(明示的なEffectは不要、`chart`クロージャ内で両方を`.get()`
-  しているため)
-
-### 6.10 見通し範囲(レーダー観測点、`terrain::los` / `terrain::markers` / `terrain::pick` / `LosView`)
+### 6.9 見通し範囲(レーダー観測点、`terrain::los` / `terrain::markers` / `terrain::pick` / `LosView`)
 
 任意の地点(レーダー観測点)を観測点として、全方位角(1度刻み・360方向)の見通し限界距離を
 計算し、(a) メインパネル(3D地形)上に覆域境界の輪郭線、(b) ボトムステータスパネルの
-「見通し範囲」タブに2D極座標図(レーダー覆域図)、(c) 断面図タブに覆域区間の色分け、の3か所で
+「見通し範囲」タブに2D極座標図(レーダー覆域図)、の2か所で
 表示する。観測点自体は**メインパネル上での右クリックで追加する**(タブからの手入力ではない)。
 
 **観測点の追加(右クリック→レイキャスト)**: メインパネルのcanvasで右クリックすると
@@ -1079,28 +1050,7 @@ flowchart LR
 
 **計算コスト**: 観測点1つあたり360方位角 × 200サンプル/方位角 = 72,000回の`heightmap`双線形補間
 (3D描画・極座標図とも選択中の観測点のみ計算するため、観測点の総数には比例しない)。
-断面図の覆域表示は別経路で、`terrain::los::is_visible`(単一方位への点対点遮蔽判定)を
-断面上の各点×配置済み観測点の数だけ呼ぶ(301点×観測点数、1回あたり最大200サンプル)。
-いずれもブラウザで実測して体感遅延なく反応的に再計算できることを確認済み。
-
-**断面図タブでの覆域表示**: 断面図(6.9節、`CrossSectionView`)に、地表トラックの覆域(従来通り)
-と**上空を含めた覆域**(要望により追加)の2種類を重ねて描く。観測点が1つも配置されていなければ
-どちらも描かない。
-
-- 地表トラックの覆域: 断面上の各点が「配置済み観測点のいずれか1つからでも見える(=遮蔽
-  されない)」区間だけをつないだ緑色のオーバーレイ線(`cs-coverage`)。判定は断面上の各点への
-  **点対点の遮蔽判定**(`terrain::los::is_visible`。`compute_los`と同じマスク角アルゴリズムを
-  対象点までの1本のレイに絞って適用)
-- **上空を含めた覆域**: 断面上の各点(距離)ごとに「これ以上の高度(標高)なら、配置済み
-  観測点のいずれかから見える」という下限高度を求め(`terrain::los::min_visible_altitude`。
-  仰角の式が対象の高度について線形であることを利用し、`is_visible`のように対象の実標高と
-  比較するのではなく、可視となる最小高度を直接逆算する)、その下限高度から表示上の上限
-  (地表断面の最高標高+`SKY_MARGIN_M`=10,000m、v1では固定値)までを緑の半透明な塗りつぶし
-  (`cs-airspace`)で示す。複数の観測点があるときは各点ごとの下限高度の最小値(=最も緩い
-  条件、いずれか1つでも見えれば覆域内)を採用する。地表トラックの覆域(`is_visible`)より
-  緩やかな条件になりうるため(例: 地表そのものはわずかに遮蔽されていても、少し上空なら
-  見える)、上空を含めた覆域の方が地表トラックの覆域より広く出ることがある(実機で確認済み。
-  地表トラックの緑線が途切れていても塗りつぶしだけは連続している区間がある)
+ブラウザで実測して体感遅延なく反応的に再計算できることを確認済み。
 
 **メインパネルの2D/3D表示切り替え**(「地図について2d/3dを切り替えできるようにしたい/2dの
 場合は覆域表示時に指定した海抜高度での探知可能領域を図示したい/3dの場合は従来通り」との
@@ -1111,8 +1061,9 @@ flowchart LR
 見た目になる。ドラッグはオービット回転ではなく`OrbitCamera::pan`による平行移動になり
 (`up`ベクトルを北=Y軸にした`look_at`のため回転操作自体が意味を持たない)、ホイールズームは
 `OrbitCamera::distance`を正射影の画面縦幅(ワールド座標メートル)として再利用することで
-そのまま流用している。俯瞰/側面プリセットボタンは2D/3Dどちらでも常時表示し、クリックすると
-(元々`OrbitCamera::preset`が必ず`mode: ThreeD`を設定するため)自動的に3D表示へ戻る。
+そのまま流用している。なお、当初あった俯瞰/側面プリセットボタンは「俯瞰ボタンと側面ボタンは
+いらない」との要望により削除した(`terrain::camera::CameraPreset::Side`も不要になった
+ため合わせて削除)。2D↔3D切り替えは「2D表示に切替」/「3D表示に切替」ボタンのみで行う。
 
 **2Dモードでの覆域表示は「指定した海抜高度での探知可能領域」**(3Dの半球ドームとは別物、
 選択中の観測点についてのみ表示する点は共通): `terrain::los::compute_coverage_area`が、
@@ -1124,7 +1075,7 @@ flowchart LR
 距離`d`が伸びるほど地球曲率分・`1/d`の効果でほぼ単調に下がるため、`compute_los_dome`と
 同じ「最初に遮蔽されたら以降も遮蔽され続ける」扱いにできる(いったん地形に遮蔽された
 直線は、直線である以上その先で地形が下がっても二度と地形の陰から出てこないという、
-6.10節前半で述べた`compute_los_dome`の理屈がそのまま当てはまる)。
+6.9節前半で述べた`compute_los_dome`の理屈がそのまま当てはまる)。
 
 表示対象の海抜高度はメニュー「設定」→「覆域高度設定...」のフローティングパネル
 (`components/coverage_altitude_dialog.rs`、既定1000m、7.7節)で指定し、
@@ -1160,7 +1111,7 @@ rebuild_markers`がモードに応じてどちらのジオメトリを渡すか�
 │ ステータスパネル(上)      │                   │  [各種情報]タブ      │
 ├───────────────────────┤     メインパネル     ├───────────────────┤
 │ VABパネル(下)            │    (3D地形)        │ ボトムステータスパネル │
-│                         │                   │ [断面図][見通し範囲]  │
+│                         │                   │ [見通し範囲]         │
 └───────────────────────┴───────────────────┴───────────────────┘
 ```
 
@@ -1268,16 +1219,18 @@ classDiagram
     }
     class BottomStatusPanel {
         title = "ボトムステータスパネル"
-        tabs = [("断面図", CrossSectionView), ("見通し範囲", LosView)]
+        tabs = [("見通し範囲", LosView)]
     }
     TabbedPanel o-- Tab
     TopStatusPanel ..> TabbedPanel : 使う
     BottomStatusPanel ..> TabbedPanel : 使う
 ```
 
-ボトムステータスパネルへ「見通し範囲」タブ(6.10節)を追加したのが、複数タブ構成の最初の
-実例(それまではどちらのパネルも1タブのみだった)。タブ配列に`tab(...)`のエントリを
-1行足すだけで、`TabbedPanel`側の変更は一切不要だった(設計意図通りの拡張性)。
+ボトムステータスパネルへ「見通し範囲」タブ(6.9節)を追加した際に、一時的に「断面図」
+「見通し範囲」の2タブ構成になった(タブ配列に`tab(...)`のエントリを1行足すだけで、
+`TabbedPanel`側の変更は一切不要だった。設計意図通りの拡張性)。その後「ボトムステータス
+パネルの側面図もいらない」との要望を受けて断面図タブ(`CrossSectionView`、旧称「側面図」)
+自体を削除したため、現在はどちらのパネルも1タブ構成に戻っている。
 
 - `active: RwSignal<usize>`で選択中タブのインデックスを保持する
 - 各タブの中身(`AnyView`)は初回描画時に全タブぶん一度だけ生成してDOMに残し、
@@ -1297,7 +1250,7 @@ classDiagram
   いたものをそのまま移設したもので、ロジックに変更はない。サーバーへ`set_origin`
   コマンドを送るため`WsConnection`を必要とする
 - 「覆域高度設定...」: メインパネルの2D表示モードで使う覆域表示の対象海抜高度
-  (`ui_state::RadarMarkersState::coverage_altitude_m`、6.10節)を編集する
+  (`ui_state::RadarMarkersState::coverage_altitude_m`、6.9節)を編集する
   `components/coverage_altitude_dialog.rs`を画面中央に表示する。当初はメインパネル
   右上のインライン入力欄(2Dモード時のみ表示)だったが、「高度はメニューから
   フローティングウインドウで入力できるようにして」との要望を受けてこちらへ移設した。

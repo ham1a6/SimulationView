@@ -1,5 +1,4 @@
 pub mod coverage_altitude_dialog;
-pub mod cross_section_view;
 pub mod los_view;
 pub mod main_panel;
 pub mod menu_bar;

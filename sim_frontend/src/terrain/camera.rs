@@ -67,14 +67,15 @@ impl Camera {
     }
 }
 
-/// 視点プリセット(BASIC_DESIGN.md 6節フェーズ10: 俯瞰・側面のワンクリック切り替え)。
-/// 切り替え後もズーム・回転の自由操作は継続できる(初期アングルの提供に過ぎない)。
+/// 視点プリセット(BASIC_DESIGN.md 6節フェーズ10)。3Dモードの初期カメラアングルを与える
+/// (以後はズーム・回転の自由操作ができる)。当初は俯瞰・側面の2種類をワンクリックで
+/// 切り替えるボタンがあったが、「俯瞰ボタンと側面ボタンはいらない」との要望により
+/// ボタン自体を削除し(`components/terrain_view.rs`)、`Side`バリアントも不要になったため
+/// 削除した。現在は初期表示用の`Overview`のみ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraPreset {
-    /// 俯瞰: 斜め上から見下ろす(中央の地図パネルの既定)。
+    /// 俯瞰: 斜め上から見下ろす(中央の地図パネルの既定・唯一の初期アングル)。
     Overview,
-    /// 側面: ほぼ水平から見る(右パネル下部・側面図の既定)。
-    Side,
 }
 
 /// メインパネルの表示モード(2D/3D切り替え)。3Dは従来通りの自由視点(透視投影・
@@ -145,16 +146,6 @@ impl OrbitCamera {
                 yaw: -std::f32::consts::FRAC_PI_4,
                 pitch: 0.6,
                 fov_y_radians: 50f32.to_radians(),
-                z_near: 1.0,
-                z_far: Z_FAR,
-                mode: ViewMode::ThreeD,
-            },
-            CameraPreset::Side => Self {
-                target: Vec3::new(0.0, 0.0, target_up),
-                distance: 60_000.0,
-                yaw: 0.0,
-                pitch: 0.08,
-                fov_y_radians: 45f32.to_radians(),
                 z_near: 1.0,
                 z_far: Z_FAR,
                 mode: ViewMode::ThreeD,

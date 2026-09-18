@@ -1,18 +1,12 @@
-//! 断面図(cross-section)生成。側面図パネルで、原点を起点に指定した方位角方向へ
-//! 地表をサンプリングし、(距離, 標高)の点列を作る(2D表示用、`components/cross_section_view.rs`)。
+//! 地形データ範囲の判定(`max_valid_distance`)。元々は断面図(cross-section)パネル
+//! (`components/cross_section_view.rs`、方位角方向への地表サンプリングに使用)向けの
+//! モジュールだったが、断面図パネル自体を削除した際にこの関数だけ`terrain::los`が
+//! 共有していたため残した(「ボトムステータスパネルの側面図もいらない」との要望、
+//! git履歴参照)。
 
 use super::loader::TerrainData;
-use super::mesh::{sample_heightmap, EnuTransform, Origin};
+use super::mesh::EnuTransform;
 
-pub struct ProfilePoint {
-    pub distance_m: f64,
-    pub elevation_m: f32,
-    pub lat_deg: f64,
-    pub lon_deg: f64,
-}
-
-/// 方位角方向1本につき何点サンプリングするか。
-const NUM_SAMPLES: usize = 300;
 /// 二分探索で「地形データの範囲内かどうか」を調べる際の初期上限距離。
 /// 地形データの外接矩形(5度四方、対角線で約780km)より確実に大きい値にしておく。
 const SEARCH_UPPER_BOUND_M: f64 = 1_000_000.0;
@@ -46,27 +40,4 @@ pub(super) fn max_valid_distance(
         }
     }
     lo
-}
-
-/// 原点から方位角(度、北=0・東=90・時計回り)方向へ、地形データの範囲内いっぱいまで
-/// 地表をサンプリングする。原点変更・方位角変更のたびに呼び直す想定。
-pub fn build_profile(data: &TerrainData, origin: &Origin, azimuth_deg: f64) -> Vec<ProfilePoint> {
-    let transform = EnuTransform::new(origin, &data.metadata.ellipsoid);
-    let az_rad = azimuth_deg.to_radians();
-    let dir_east = az_rad.sin();
-    let dir_north = az_rad.cos();
-
-    let max_distance = max_valid_distance(data, &transform, dir_east, dir_north);
-    if max_distance <= 0.0 {
-        return Vec::new();
-    }
-
-    (0..=NUM_SAMPLES)
-        .map(|i| {
-            let distance = max_distance * (i as f64) / (NUM_SAMPLES as f64);
-            let (lat, lon) = transform.inverse(dir_east * distance, dir_north * distance);
-            let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0);
-            ProfilePoint { distance_m: distance, elevation_m: elevation, lat_deg: lat, lon_deg: lon }
-        })
-        .collect()
 }
