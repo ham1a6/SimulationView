@@ -520,12 +520,48 @@ body {
     background: #2a4456;
 }
 
-/* 中段(横スクロール領域)の外枠。可視幅はパネル幅いっぱい、中身(vab-mid-grid)はそれより
-   広い min-width を持つため、はみ出た分が横スクロールで見えるようになる。 */
-.vab-scroll-outer {
-    overflow-x: auto;
-    overflow-y: hidden;
-    width: 100%;
+/* 中段(ページ送りするボタン群)全体。グリッドの下にページ送りコントロールを積む。 */
+.vab-mid-block {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+/* 中段のページ送りコントロール(◀ 1/2 ▶)。 */
+.vab-pager {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+}
+
+.vab-pager-btn {
+    background: #234;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.75rem;
+    padding: 0.15rem 0.6rem;
+}
+
+.vab-pager-btn:hover:not(:disabled) {
+    background: #356;
+    border-color: var(--accent);
+}
+
+.vab-pager-btn:disabled {
+    background: #1a1a1a;
+    color: #555;
+    cursor: not-allowed;
+}
+
+.vab-pager-label {
+    font-size: 0.75rem;
+    color: #999;
+    font-variant-numeric: tabular-nums;
+    min-width: 2.5ch;
+    text-align: center;
 }
 
 /* 地図・右パネルの境界のドラッグ可能なリサイザー(6.1節)。 */

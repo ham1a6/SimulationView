@@ -5,8 +5,8 @@
 //! - 中段・下段(サーバーVabConfigでのB5〜B24相当)は、**選択中カテゴリに応じて内容が
 //!   動的に切り替わるフロント側だけのダミーコンテンツ**に置き換える(サーバーからの
 //!   実際のボタン定義は使わない)。VAB自体がまだ実ハードウェア非連動の開発用ダミーの
-//!   段階のため、「B1〜B4の押下でB5〜B24の表示・機能が変わる」「中段は横スクロールで
-//!   追加ボタンを操作できる」というUXをまずフロント側だけで試作したもの。
+//!   段階のため、「B1〜B4の押下でB5〜B24の表示・機能が変わる」「中段は追加ボタンを
+//!   ページ送りボタンで操作できる」というUXをまずフロント側だけで試作したもの。
 //!   サーバー側をカテゴリ対応させる(カテゴリごとに本物のVabConfigを配信する)のは
 //!   将来の課題(CLAUDE.md参照)
 //! - ラベルが空文字のボタン(先頭行側)は「未使用の穴」としてDOM要素自体を描画しない
@@ -18,11 +18,12 @@ use crate::protocol::ClientCommand;
 use crate::ws::WsConnection;
 use crate::ws::WsSignals;
 
-/// 中段(横スクロールする領域)の行数。先頭行(カテゴリ選択)・下段(固定4個)を除いた
+/// 中段(ページ送りする領域)の行数。先頭行(カテゴリ選択)・下段(固定4個)を除いた
 /// 残りをこの行数として扱う(元のVabConfigのrowsから引くのではなく、ダミー表示専用の
 /// 固定値。サーバーのVabConfigとは独立している)。
 const MID_ROWS: usize = 4;
-/// 中段の実際の列数(横スクロールで見せる分、可視列数より広くしてスクロールを試作できるようにする)。
+/// 中段の実際の列数(ページ送りで見せる分、1ページの可視列数より多くしてページ送りを
+/// 試作できるようにする)。
 const MID_TOTAL_COLS: usize = 8;
 /// 下段(固定・横スクロールなし)の列数。
 const BOTTOM_COLS: usize = 4;
@@ -46,6 +47,8 @@ pub fn VabPanel(
     let signals = use_context::<WsSignals>().expect("WsSignals context not found");
     // 選択中カテゴリ(先頭行のうち何番目のボタンが押されたか、0始まり)。既定は先頭。
     let selected_category = RwSignal::new(0usize);
+    // 中段の現在表示中ページ(0始まり)。カテゴリを切り替えたら先頭ページに戻す。
+    let current_page = RwSignal::new(0usize);
 
     view! {
         <div class="panel-section vab-panel">
@@ -83,6 +86,7 @@ pub fn VabPanel(
                                     if enabled {
                                         conn.send_command(&ClientCommand::vab_press(button_id.clone()));
                                         selected_category.set(i);
+                                        current_page.set(0);
                                     }
                                 };
                                 let is_selected = move || selected_category.get() == i;
@@ -102,32 +106,72 @@ pub fn VabPanel(
                     </div>
                 };
 
-                // --- 中段: 選択中カテゴリのダミーボタン(横スクロールで追加ボタンを見せる) ---
-                let mid_grid_style = format!(
-                    "grid-template-columns: repeat({MID_TOTAL_COLS}, 1fr); \
-                     grid-template-rows: repeat({MID_ROWS}, auto); \
-                     min-width: calc(100% * {MID_TOTAL_COLS} / {cols});"
-                );
+                // --- 中段: 選択中カテゴリのダミーボタン(ページ送りボタンで追加ボタンを見せる) ---
+                // 1ページの列数は先頭行と同じ`cols`。横スクロールではなく、◀/▶ボタンで
+                // ページを切り替える方式にした(要望により、横スクロールバー方式から変更)。
+                let total_pages = MID_TOTAL_COLS.div_ceil(cols).max(1);
+                let page = current_page.get().min(total_pages - 1);
+                let mid_grid_style =
+                    format!("grid-template-columns: repeat({cols}, 1fr); grid-template-rows: repeat({MID_ROWS}, auto);");
                 let conn_mid = conn.clone();
                 let cat_for_mid = category_label.clone();
-                let mid_block = view! {
-                    <div class="vab-scroll-outer">
-                        <div class="vab-grid vab-mid-grid" style=mid_grid_style>
-                            {(0..MID_ROWS * MID_TOTAL_COLS)
-                                .map(|i| {
-                                    let (label, id) = mid_button(&cat_for_mid, i);
-                                    let conn = conn_mid.clone();
-                                    let on_click = move |_| {
-                                        conn.send_command(&ClientCommand::vab_press(id.clone()));
-                                    };
-                                    view! {
-                                        <button class="vab-button vab-button-dummy" on:click=on_click>
-                                            {label}
-                                        </button>
-                                    }
+                let mid_grid = view! {
+                    <div class="vab-grid vab-mid-grid" style=mid_grid_style>
+                        {(0..MID_ROWS)
+                            .flat_map(|row| {
+                                (0..cols).filter_map(move |col_in_page| {
+                                    let abs_col = page * cols + col_in_page;
+                                    (abs_col < MID_TOTAL_COLS).then_some(row * MID_TOTAL_COLS + abs_col)
                                 })
-                                .collect::<Vec<_>>()}
-                        </div>
+                            })
+                            .map(|i| {
+                                let (label, id) = mid_button(&cat_for_mid, i);
+                                let conn = conn_mid.clone();
+                                let on_click = move |_| {
+                                    conn.send_command(&ClientCommand::vab_press(id.clone()));
+                                };
+                                view! {
+                                    <button class="vab-button vab-button-dummy" on:click=on_click>
+                                        {label}
+                                    </button>
+                                }
+                            })
+                            .collect::<Vec<_>>()}
+                    </div>
+                };
+
+                // --- 中段のページ送りコントロール(◀ 1/2 ▶) ---
+                let is_first_page = page == 0;
+                let is_last_page = page + 1 >= total_pages;
+                let on_prev_page = move |_: leptos::ev::MouseEvent| {
+                    current_page.update(|p| *p = p.saturating_sub(1));
+                };
+                let on_next_page = move |_: leptos::ev::MouseEvent| {
+                    current_page.update(|p| *p = (*p + 1).min(total_pages - 1));
+                };
+                let pager = view! {
+                    <div class="vab-pager">
+                        <button
+                            class="vab-pager-btn"
+                            disabled=is_first_page
+                            on:click=on_prev_page
+                        >
+                            "◀"
+                        </button>
+                        <span class="vab-pager-label">{format!("{}/{}", page + 1, total_pages)}</span>
+                        <button
+                            class="vab-pager-btn"
+                            disabled=is_last_page
+                            on:click=on_next_page
+                        >
+                            "▶"
+                        </button>
+                    </div>
+                };
+                let mid_block = view! {
+                    <div class="vab-mid-block">
+                        {mid_grid}
+                        {pager}
                     </div>
                 };
 
