@@ -90,6 +90,95 @@
     flex-direction: column;
 }
 
+/* 断面図(ui::cross_section_view::CrossSectionView): 上=SVGチャート(残り高さいっぱい)、
+   下=方位角スライダー。 */
+.cross-section-view {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-height: 0;
+    gap: 0.5rem;
+}
+
+.cross-section-chart {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+}
+
+.cross-section-svg {
+    width: 100%;
+    height: 100%;
+}
+
+.cs-axis {
+    stroke: var(--border);
+    stroke-width: 1;
+}
+
+.cs-area {
+    fill: var(--accent);
+    fill-opacity: 0.18;
+    stroke: none;
+}
+
+.cs-line {
+    stroke: var(--accent);
+    stroke-width: 1.5;
+}
+
+/* 覆域(いずれかのレーダーから見える区間)のオーバーレイ。cs-lineの上に重ねて描く。 */
+.cs-coverage {
+    stroke: #4be0a0;
+    stroke-width: 2.5;
+}
+
+/* 覆域(上空を含む、いずれかのレーダーから見える領域)の塗りつぶし。cs-areaより下(背面)に
+   描き、地形のシルエットがこの上に重なって正しく手前に見えるようにする。 */
+.cs-airspace {
+    fill: #4be0a0;
+    fill-opacity: 0.16;
+    stroke: none;
+}
+
+.cs-label {
+    fill: #999;
+    font-size: 9px;
+}
+
+.cross-section-status {
+    margin: auto;
+}
+
+.cross-section-controls {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+}
+
+.cross-section-slider-label {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.75rem;
+    color: #999;
+}
+
+.cross-section-slider-label input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+}
+
+.cross-section-azimuth-value {
+    flex: 0 0 auto;
+    min-width: 3.5ch;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.85rem;
+}
+
 /* 見通し範囲(レーダー覆域図、ui::los_view::LosView)。上=選択中レーダーのSVG極座標図
    (残り高さいっぱい)、下=レーダー一覧(選択・削除・アンテナ高/最大観測範囲の編集)。
    レーダー自体の追加はTerrainView上の右クリックで行う。 */

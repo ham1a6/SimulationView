@@ -1289,18 +1289,20 @@ classDiagram
     }
     class BottomStatusPanel {
         title = "ボトムステータスパネル"
-        tabs = [("見通し範囲", LosView)]
+        tabs = [("断面図", CrossSectionView), ("見通し範囲", LosView)]
     }
     TabbedPanel o-- Tab
     TopStatusPanel ..> TabbedPanel : 使う
     BottomStatusPanel ..> TabbedPanel : 使う
 ```
 
-ボトムステータスパネルへ「見通し範囲」タブ(6.9節)を追加した際に、一時的に「断面図」
+ボトムステータスパネルへ「見通し範囲」タブ(6.9節)を追加した際に、「断面図」
 「見通し範囲」の2タブ構成になった(タブ配列に`tab(...)`のエントリを1行足すだけで、
 `TabbedPanel`側の変更は一切不要だった。設計意図通りの拡張性)。その後「ボトムステータス
 パネルの側面図もいらない」との要望を受けて断面図タブ(`CrossSectionView`、旧称「側面図」)
-自体を削除したため、現在はどちらのパネルも1タブ構成に戻っている。
+自体を一時削除したが、後日「断面図機能自体を復活してほしい」との要望を受けて再度追加し、
+現在は再び2タブ構成になっている(git履歴参照。復活時の実装は`sim3dview::ui::
+cross_section_view::CrossSectionView`としてライブラリ側に置いている)。
 
 - `active: RwSignal<usize>`で選択中タブのインデックスを保持する
 - 各タブの中身(`AnyView`)は初回描画時に全タブぶん一度だけ生成してDOMに残し、
