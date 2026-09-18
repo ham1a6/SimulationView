@@ -18,8 +18,27 @@ struct CameraUniform {
 /// 2048×2048に引き上げた後、遠景で多数の細かい三角形(陸地・海のNaN色を含む)が
 /// 1画素に収まりきらずエイリアシング(市松状のちらつき/斑点)を起こすようになったため
 /// 導入した(「地表面上に水色の点がいっぱい書かれてる」との報告を受けて調査・対処)。
-/// 4はWebGPU実装で広くサポートされる標準的な値。
+/// 4はWebGPU実装で広くサポートされる標準的な値(8はハードウェアによって非対応。実機で
+/// `createTexture({sampleCount: 8, ...})`がエラーになることを確認済み)。
 const SAMPLE_COUNT: u32 = 4;
+
+/// スーパーサンプリングの倍率。4倍MSAAだけでは、やや引いた視点・浅い角度で地形の
+/// エイリアシング(「背景と同じ色の点が多数表示される/ズーム操作やカメラ操作時に画面が
+/// ちかちかする」)を抑えきれなかったため追加した。canvasの`SUPERSAMPLE_FACTOR`倍の
+/// 内部解像度で描画(+4倍MSAA)した後、線形フィルタで実際のcanvas解像度へ縮小する
+/// (`downsample_pipeline`)。
+const SUPERSAMPLE_FACTOR: u32 = 2;
+/// スーパーサンプリング後の内部テクスチャの一辺の上限(ピクセル)。WebGPUが保証する
+/// 最小の`maxTextureDimension2D`は8192だが、非常に大きなcanvas(4K超のウインドウ等)で
+/// 2倍すると際どくなるため、余裕を持って安全側に制限する。
+const SUPERSAMPLE_MAX_DIMENSION: u32 = 4096;
+
+/// canvasの実解像度からスーパーサンプリング用の内部解像度を求める。
+fn supersample_size(width: u32, height: u32) -> (u32, u32) {
+    let w = (width.max(1) * SUPERSAMPLE_FACTOR).min(SUPERSAMPLE_MAX_DIMENSION);
+    let h = (height.max(1) * SUPERSAMPLE_FACTOR).min(SUPERSAMPLE_MAX_DIMENSION);
+    (w, h)
+}
 
 pub struct TerrainRenderer {
     surface: wgpu::Surface<'static>,
@@ -33,9 +52,17 @@ pub struct TerrainRenderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
-    // MSAA用の中間カラーテクスチャ。各パイプラインがこのマルチサンプルテクスチャへ描画し、
-    // render()の最後にスワップチェーンのテクスチャへ解決(resolve)する。
+    // MSAA用の中間カラーテクスチャ(スーパーサンプリングの内部解像度、SAMPLE_COUNT倍
+    // マルチサンプル)。各パイプラインがこのテクスチャへ描画し、render()の最後に
+    // supersample_color_viewへ解決(resolve)する。
     msaa_view: wgpu::TextureView,
+    // MSAA解決先(スーパーサンプリングの内部解像度、シングルサンプル)。downsample_pipelineが
+    // このテクスチャを読み、実際のcanvas解像度(スワップチェーン)へ線形フィルタで縮小する。
+    supersample_color_view: wgpu::TextureView,
+    downsample_pipeline: wgpu::RenderPipeline,
+    downsample_bind_group_layout: wgpu::BindGroupLayout,
+    downsample_sampler: wgpu::Sampler,
+    downsample_bind_group: wgpu::BindGroup,
     // レーダー観測点マーカー(四角い枠)用(LineList)。地形本体とは別パイプラインだが、
     // 頂点レイアウト・カメラバインドグループは共用する(terrain.wgslのシェーダーは
     // 位置をview_projで変換して色をそのまま出すだけの汎用的な内容のため、線描画にもそのまま使える)。
@@ -90,8 +117,11 @@ impl TerrainRenderer {
         config.present_mode = wgpu::PresentMode::Fifo;
         surface.configure(&device, &config);
 
-        let depth_view = create_depth_view(&device, width, height);
-        let msaa_view = create_msaa_view(&device, config.format, width, height);
+        let (supersample_width, supersample_height) = supersample_size(width, height);
+        let depth_view = create_depth_view(&device, supersample_width, supersample_height);
+        let msaa_view = create_msaa_view(&device, config.format, supersample_width, supersample_height);
+        let supersample_color_view =
+            create_supersample_color_view(&device, config.format, supersample_width, supersample_height);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("terrain_shader"),
@@ -292,6 +322,87 @@ impl TerrainRenderer {
             cache: None,
         });
 
+        // スーパーサンプリングのダウンサンプルパイプライン(頂点バッファなし、画面いっぱいの
+        // 三角形1枚。terrain.wgslのvs_fullscreen/fs_downsample参照)。
+        let downsample_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("downsample_bind_group_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let downsample_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("downsample_pipeline_layout"),
+                bind_group_layouts: &[Some(&downsample_bind_group_layout)],
+                immediate_size: 0,
+            });
+        let downsample_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("downsample_pipeline"),
+            layout: Some(&downsample_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_fullscreen"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_downsample"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            // スワップチェーンへ直接(シングルサンプルで)描くパスなので深度・MSAAとも不要。
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let downsample_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("downsample_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let downsample_bind_group = create_downsample_bind_group(
+            &device,
+            &downsample_bind_group_layout,
+            &downsample_sampler,
+            &supersample_color_view,
+        );
+
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("terrain_vertex_buffer"),
             contents: bytemuck::cast_slice(&mesh.vertices),
@@ -317,6 +428,11 @@ impl TerrainRenderer {
             camera_bind_group,
             depth_view,
             msaa_view,
+            supersample_color_view,
+            downsample_pipeline,
+            downsample_bind_group_layout,
+            downsample_sampler,
+            downsample_bind_group,
             line_pipeline,
             marker_vertex_buffer: None,
             num_marker_vertices: 0,
@@ -373,8 +489,23 @@ impl TerrainRenderer {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
-        self.depth_view = create_depth_view(&self.device, width, height);
-        self.msaa_view = create_msaa_view(&self.device, self.config.format, width, height);
+        let (supersample_width, supersample_height) = supersample_size(width, height);
+        self.depth_view = create_depth_view(&self.device, supersample_width, supersample_height);
+        self.msaa_view =
+            create_msaa_view(&self.device, self.config.format, supersample_width, supersample_height);
+        self.supersample_color_view = create_supersample_color_view(
+            &self.device,
+            self.config.format,
+            supersample_width,
+            supersample_height,
+        );
+        // supersample_color_viewを作り直したので、それを参照しているbind groupも作り直す。
+        self.downsample_bind_group = create_downsample_bind_group(
+            &self.device,
+            &self.downsample_bind_group_layout,
+            &self.downsample_sampler,
+            &self.supersample_color_view,
+        );
     }
 
     pub fn aspect_ratio(&self) -> f32 {
@@ -414,7 +545,9 @@ impl TerrainRenderer {
                 label: Some("terrain_render_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &self.msaa_view,
-                    resolve_target: Some(&view),
+                    // スワップチェーンへ直接ではなく、スーパーサンプリングの内部解像度テクスチャへ
+                    // 解決する(この後のdownsampleパスで実際のcanvas解像度へ縮小する)。
+                    resolve_target: Some(&self.supersample_color_view),
                     depth_slice: None,
                     ops: wgpu::Operations {
                         // 空(地形・背景水平面のどちらも描かれない領域)は黒。地平線から下は
@@ -465,6 +598,31 @@ impl TerrainRenderer {
             }
         }
 
+        {
+            // スーパーサンプリングのダウンサンプルパス: 内部解像度で描いた
+            // supersample_color_viewを、実際のcanvas解像度のスワップチェーンへ線形フィルタで
+            // 縮小して描く(画面いっぱいの三角形1枚、頂点バッファなし)。
+            let mut downsample_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("downsample_render_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            downsample_pass.set_pipeline(&self.downsample_pipeline);
+            downsample_pass.set_bind_group(0, &self.downsample_bind_group, &[]);
+            downsample_pass.draw(0..3, 0..1);
+        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.present(frame);
         Ok(())
@@ -491,9 +649,10 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
     texture.create_view(&wgpu::TextureViewDescriptor::default())
 }
 
-/// MSAA用の中間カラーテクスチャ(サンプル数`SAMPLE_COUNT`)を作る。スワップチェーンの
-/// テクスチャ自体はマルチサンプル非対応なので、いったんこのテクスチャに描画してから
-/// `resolve_target`でスワップチェーンへ解決(ダウンサンプリング)する。
+/// MSAA用の中間カラーテクスチャ(スーパーサンプリングの内部解像度、サンプル数
+/// `SAMPLE_COUNT`)を作る。マルチサンプルテクスチャは直接シェーダーでサンプリングできない
+/// ため、いったんこのテクスチャに描画してから`resolve_target`で
+/// `supersample_color_view`(シングルサンプル、同じ内部解像度)へ解決する。
 fn create_msaa_view(
     device: &wgpu::Device,
     format: wgpu::TextureFormat,
@@ -515,4 +674,53 @@ fn create_msaa_view(
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// MSAA解決先(スーパーサンプリングの内部解像度、シングルサンプル)。`downsample_pipeline`が
+/// テクスチャとしてサンプリングするため`TEXTURE_BINDING`も付与する。
+fn create_supersample_color_view(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("terrain_supersample_color_texture"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// `downsample_pipeline`用のbind group(スーパーサンプリング済みテクスチャ+線形サンプラー)。
+/// `supersample_color_view`を作り直すたび(初期化時・resize時)に作り直す必要がある。
+fn create_downsample_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    supersample_color_view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("downsample_bind_group"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(supersample_color_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
 }

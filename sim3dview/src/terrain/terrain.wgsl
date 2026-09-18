@@ -33,3 +33,37 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 fn fs_dome(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color, 0.22);
 }
+
+// スーパーサンプリングのダウンサンプル用(renderer.rsのdownsample_pipeline)。地形メッシュを
+// 内部解像度(画面の`SUPERSAMPLE_FACTOR`倍、4倍MSAA込み)で描いた後、このシェーダーで画面
+// いっぱいの三角形を1枚描いて線形フィルタでサンプリングし、実際のcanvas解像度へ縮小する。
+// 4倍MSAAだけでは、2048×2048化後の遠景・浅い角度で細かい陸地/海(NaN)の三角形による
+// エイリアシング(斑点・ちらつき)を抑えきれなかったため導入した
+// (「背景と同じ色の点が多数表示される/ズーム操作やカメラ操作時に画面がちかちかする」との
+// 報告を受けて対処)。頂点バッファを使わない「画面いっぱいの三角形」の定石
+// (vertex_indexだけから3頂点を計算し、クリップ領域外にはみ出す部分はラスタライザが
+// 自動的に切り捨てる)を使っている。
+struct DownsampleOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_fullscreen(@builtin(vertex_index) vertex_index: u32) -> DownsampleOutput {
+    var out: DownsampleOutput;
+    let x = f32((vertex_index << 1u) & 2u);
+    let y = f32(vertex_index & 2u);
+    out.clip_position = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
+    out.uv = vec2<f32>(x, y);
+    return out;
+}
+
+@group(0) @binding(0)
+var supersample_texture: texture_2d<f32>;
+@group(0) @binding(1)
+var supersample_sampler: sampler;
+
+@fragment
+fn fs_downsample(in: DownsampleOutput) -> @location(0) vec4<f32> {
+    return textureSample(supersample_texture, supersample_sampler, in.uv);
+}

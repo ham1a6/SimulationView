@@ -957,11 +957,39 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 遠景で多数の細かい三角形(陸地・海のNaN色を含む)が1画素に収まりきらずエイリアシング
 (市松状の斑点)を起こすようになったため導入した(「地表面上に水色の点がいっぱい書かれてる」
 との報告を受けて調査・対処)。3つのパイプライン(地形本体・マーカー線・覆域ドーム)すべてで
-`multisample.count = 4`にし、深度テクスチャも同じサンプル数にする。カラー出力はいったん
-`SAMPLE_COUNT=4`のMSAA中間テクスチャ(`TerrainRenderer::msaa_view`)へ描画し、
-`RenderPassColorAttachment::resolve_target`でスワップチェーンのテクスチャへ解決する
-(MSAAテクスチャ自体は解決後不要なので`store: Discard`)。`resize()`のたびに深度テクスチャと
-同様にMSAAテクスチャも作り直す。
+`multisample.count = 4`にし、深度テクスチャも同じサンプル数にする。
+
+**スーパーサンプリング(2x、MSAAと併用)**: MSAA(4x)導入後も、やや引いた視点・浅い角度では
+エイリアシング(「広域表示時に地形上に背景と同じ色の点が多数表示される/ズーム・カメラ操作時に
+ちかちかする」)が残っていたため追加した。WebGPUでは8倍MSAAが実装依存で非対応な場合がある
+(実機の`createTexture`で明示的にエラーになることを確認済み。仕様上必須なのは1と4のみ)ため、
+MSAAの倍率自体は4のまま、**内部解像度をcanvasの`SUPERSAMPLE_FACTOR`(2)倍にして描画し、
+最後に線形フィルタで実際のcanvas解像度へ縮小する2パス構成**にした:
+
+1. 地形本体・マーカー線・覆域ドームの3パイプラインは、いずれも「canvasの2倍の内部解像度」の
+   `msaa_view`(4xマルチサンプル)へ描画し、同じ内部解像度の`supersample_color_view`
+   (シングルサンプル、`TEXTURE_BINDING`付き)へ`resolve_target`で解決する
+2. 2パス目(`downsample_pipeline`)が、頂点バッファなしの「画面いっぱいの三角形」1枚
+   (`terrain.wgsl`の`vs_fullscreen`、`vertex_index`だけから3頂点を計算する定石)を描き、
+   `fs_downsample`が`supersample_color_view`を線形フィルタ(`FilterMode::Linear`)でサンプリング
+   しながら実際のスワップチェーン(canvas解像度)へ出力する。ちょうど2倍のダウンサンプルなので、
+   線形フィルタのバイリニア補間がそのまま2×2画素の平均(ボックスフィルタ相当)として働く
+
+内部テクスチャの一辺は`SUPERSAMPLE_MAX_DIMENSION`(4096px)で安全側に頭打ちにしてある
+(WebGPUが保証する`maxTextureDimension2D`の最小値8192に対し、非常に大きなcanvasで2倍すると
+際どくなるため)。`resize()`のたびに深度テクスチャ・MSAAテクスチャに加え、
+`supersample_color_view`と、それを参照する`downsample_bind_group`も作り直す。
+
+効果検証: 修正前に陸地内で`WATER_COLOR`([140,199,235])と完全一致する画素が複数見つかって
+いた領域を、`canvas.toDataURL()`によるピクセルサンプリングで再検証したところ、1200画素中
+0画素まで減少(完全に解消)。ただしカメラがほぼ水平に近い浅い角度(1スキャンラインに
+メッシュの非常に多くの行が投影される極端なケース)では、2倍のスーパーサンプリングだけでは
+なお弱い縞模様が残ることを確認済み(より高い倍率かLOD的な仕組みが必要になる見込みで、
+現時点では対応を見送っている)。
+
+ハマりどころ: `trunk serve`はpath依存先(`sim3dview`)のソース変更を自動では検知しない
+(監視対象は基本的にビルド対象crate自身のソースツリーのため)。ライブラリ側だけを編集した
+場合は`trunk serve`の再起動が必要。
 
 ### 6.9 見通し範囲(レーダー観測点、`terrain::los` / `terrain::markers` / `terrain::pick` / `LosView`)
 
