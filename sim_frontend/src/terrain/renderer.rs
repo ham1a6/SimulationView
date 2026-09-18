@@ -14,6 +14,13 @@ struct CameraUniform {
     view_proj: [[f32; 4]; 4],
 }
 
+/// マルチサンプルアンチエイリアシング(MSAA)のサンプル数。地形メッシュの解像度を
+/// 2048×2048に引き上げた後、遠景で多数の細かい三角形(陸地・海のNaN色を含む)が
+/// 1画素に収まりきらずエイリアシング(市松状のちらつき/斑点)を起こすようになったため
+/// 導入した(「地表面上に水色の点がいっぱい書かれてる」との報告を受けて調査・対処)。
+/// 4はWebGPU実装で広くサポートされる標準的な値。
+const SAMPLE_COUNT: u32 = 4;
+
 pub struct TerrainRenderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -26,6 +33,9 @@ pub struct TerrainRenderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
+    // MSAA用の中間カラーテクスチャ。各パイプラインがこのマルチサンプルテクスチャへ描画し、
+    // render()の最後にスワップチェーンのテクスチャへ解決(resolve)する。
+    msaa_view: wgpu::TextureView,
     // レーダー観測点マーカー(四角い枠)用(LineList)。地形本体とは別パイプラインだが、
     // 頂点レイアウト・カメラバインドグループは共用する(terrain.wgslのシェーダーは
     // 位置をview_projで変換して色をそのまま出すだけの汎用的な内容のため、線描画にもそのまま使える)。
@@ -81,6 +91,7 @@ impl TerrainRenderer {
         surface.configure(&device, &config);
 
         let depth_view = create_depth_view(&device, width, height);
+        let msaa_view = create_msaa_view(&device, config.format, width, height);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("terrain_shader"),
@@ -180,7 +191,11 @@ impl TerrainRenderer {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: SAMPLE_COUNT,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -220,7 +235,11 @@ impl TerrainRenderer {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: SAMPLE_COUNT,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -264,7 +283,11 @@ impl TerrainRenderer {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: SAMPLE_COUNT,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
             multiview_mask: None,
             cache: None,
         });
@@ -293,6 +316,7 @@ impl TerrainRenderer {
             camera_buffer,
             camera_bind_group,
             depth_view,
+            msaa_view,
             line_pipeline,
             marker_vertex_buffer: None,
             num_marker_vertices: 0,
@@ -350,6 +374,7 @@ impl TerrainRenderer {
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
         self.depth_view = create_depth_view(&self.device, width, height);
+        self.msaa_view = create_msaa_view(&self.device, self.config.format, width, height);
     }
 
     pub fn aspect_ratio(&self) -> f32 {
@@ -381,15 +406,17 @@ impl TerrainRenderer {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("terrain_render_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
+                    view: &self.msaa_view,
+                    resolve_target: Some(&view),
                     depth_slice: None,
                     ops: wgpu::Operations {
                         // 空(地形・背景水平面のどちらも描かれない領域)は黒。地平線から下は
                         // mesh.rsが追加する背景スカート(水色の大きな水平面)が覆うため、
                         // ここに映るのは実質的に真上方向のみになる。
                         load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
-                        store: wgpu::StoreOp::Store,
+                        // resolve_targetへ解決した後はこのMSAAテクスチャ自体は不要なので
+                        // 保存しない(Discard)。
+                        store: wgpu::StoreOp::Discard,
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -446,9 +473,37 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
-        sample_count: 1,
+        // 同じレンダーパス内の他のアタッチメント(MSAAカラーテクスチャ)とサンプル数を
+        // 揃える必要がある。
+        sample_count: SAMPLE_COUNT,
         dimension: wgpu::TextureDimension::D2,
         format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+/// MSAA用の中間カラーテクスチャ(サンプル数`SAMPLE_COUNT`)を作る。スワップチェーンの
+/// テクスチャ自体はマルチサンプル非対応なので、いったんこのテクスチャに描画してから
+/// `resolve_target`でスワップチェーンへ解決(ダウンサンプリング)する。
+fn create_msaa_view(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    width: u32,
+    height: u32,
+) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("terrain_msaa_texture"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: SAMPLE_COUNT,
+        dimension: wgpu::TextureDimension::D2,
+        format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
