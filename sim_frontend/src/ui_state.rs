@@ -9,6 +9,11 @@ use crate::terrain::markers::RadarMarker;
 #[derive(Clone, Copy)]
 pub struct OriginDialogState(pub RwSignal<bool>);
 
+/// 覆域高度設定フローティングパネルの開閉状態。`components/menu_bar.rs`(トリガー)と
+/// `components/coverage_altitude_dialog.rs`(表示)で共有する(`OriginDialogState`と同じ形)。
+#[derive(Clone, Copy)]
+pub struct CoverageAltitudeDialogState(pub RwSignal<bool>);
+
 /// メインパネル(3D地形)上への右クリックで追加するレーダー観測点(見通し範囲)の一覧・選択状態。
 /// `components/terrain_view.rs`(追加・3D描画)・`components/los_view.rs`(一覧・編集・削除)・
 /// `components/cross_section_view.rs`(断面図での覆域表示)で共有する。

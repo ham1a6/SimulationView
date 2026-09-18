@@ -1126,9 +1126,12 @@ flowchart LR
 直線は、直線である以上その先で地形が下がっても二度と地形の陰から出てこないという、
 6.10節前半で述べた`compute_los_dome`の理屈がそのまま当てはまる)。
 
-表示対象の海抜高度はメインパネル右上の「覆域高度(m)」入力欄(2Dモードのみ表示、既定1000m)
-で指定し、`ui_state::RadarMarkersState::coverage_altitude_m`(全パネル共有だが今のところ
+表示対象の海抜高度はメニュー「設定」→「覆域高度設定...」のフローティングパネル
+(`components/coverage_altitude_dialog.rs`、既定1000m、7.7節)で指定し、
+`ui_state::RadarMarkersState::coverage_altitude_m`(全パネル共有だが今のところ
 メインパネルの2Dモードのみが参照する、単一のグローバル設定)として持つ。
+メインパネル側は`components/terrain_view.rs`のEffectでこのシグナルを購読しているだけで、
+ダイアログ側から直接ジオメトリ再構築を呼び出しているわけではない(7.7節)。
 
 3D描画(`push_dome_surface`)と同様、`terrain::markers::push_coverage_area`が地表面に沿わせた
 (各点をその地点の地表標高+`COVERAGE_AREA_HEIGHT_BIAS_M`の高さに置く)星形(star-shaped、
@@ -1283,25 +1286,36 @@ classDiagram
 - タブが1個しかない場合でもタブバー自体は表示する(見た目の一貫性のため、
   タブ数によって表示/非表示を切り替えるような分岐は入れていない)
 
-### 7.7 メニューバー・原点設定フローティングパネル
+### 7.7 メニューバー・フローティングパネル(原点設定/覆域高度設定)
 
 画面最上部のメニューバー(`components/menu_bar.rs`)は「ファイル」「設定」「表示」
-「ヘルプ」の4項目。「設定」→「原点設定...」を選ぶと、原点入力フォーム(緯度・経度・
-`設定`ボタン、DETAILED_DESIGN.md 3.5節のバリデーション込み)をフローティングパネル
-(`components/origin_dialog.rs`)として画面中央に表示する。フォーム自体の中身は
-実装当初シミュレーションステータスパネルに直接埋め込まれていたものをそのまま
-移設したもので、ロジックに変更はない。
+「ヘルプ」の4項目。「設定」配下に2つのフローティングパネルを開く項目がある:
+
+- 「原点設定...」: 原点入力フォーム(緯度・経度・`設定`ボタン、DETAILED_DESIGN.md
+  3.5節のバリデーション込み)を`components/origin_dialog.rs`として画面中央に表示する。
+  フォーム自体の中身は実装当初シミュレーションステータスパネルに直接埋め込まれて
+  いたものをそのまま移設したもので、ロジックに変更はない。サーバーへ`set_origin`
+  コマンドを送るため`WsConnection`を必要とする
+- 「覆域高度設定...」: メインパネルの2D表示モードで使う覆域表示の対象海抜高度
+  (`ui_state::RadarMarkersState::coverage_altitude_m`、6.10節)を編集する
+  `components/coverage_altitude_dialog.rs`を画面中央に表示する。当初はメインパネル
+  右上のインライン入力欄(2Dモード時のみ表示)だったが、「高度はメニューから
+  フローティングウインドウで入力できるようにして」との要望を受けてこちらへ移設した。
+  サーバーへは何も送らないフロント側だけのローカル表示設定のため`WsConnection`は
+  不要で、`origin_dialog.rs`と見た目(`.origin-dialog*`のCSSクラスを共用)は同じだが
+  実装ははるかに単純(バリデーションも送信ボタンもない、数値入力欄1つだけ)
 
 ```mermaid
 stateDiagram-v2
     [*] --> 閉: 初期状態
-    閉 --> 開: 設定→原点設定...をクリック
+    閉 --> 開: 設定→(原点設定/覆域高度設定)...をクリック
     開 --> 閉: ✕ / 背景クリック
 ```
 
-- 開閉状態は`ui_state::OriginDialogState`(`RwSignal<bool>`のラップ)を`provide_context`
-  で共有し、`MenuBar`(トリガー)・`OriginDialog`(表示)の双方が`use_context`で参照する
-- メニューのドロップダウン・原点設定パネルとも、背景の透明な`.menu-backdrop`/
+- 開閉状態はそれぞれ`ui_state::OriginDialogState`/`CoverageAltitudeDialogState`
+  (どちらも`RwSignal<bool>`の単純なラップ)を`provide_context`で共有し、
+  `MenuBar`(トリガー)・各ダイアログ本体(表示)の双方が`use_context`で参照する
+- メニューのドロップダウン・フローティングパネルとも、背景の透明な`.menu-backdrop`/
   半透明の`.origin-dialog-backdrop`をクリックすると閉じる(パネル本体のクリックは
   `ev.stop_propagation()`でバックドロップまで伝播させない)
 - 「ファイル」「表示」「ヘルプ」は現時点では項目未定のため、クリックすると
@@ -1312,7 +1326,14 @@ stateDiagram-v2
   クロージャの外側で1回だけ作ると「2回目以降の呼び出しでムーブ済みエラー」に
   なる(Leptosの`{move || ...}`は再実行される前提のため`FnMut`である必要がある)。
   `origin_dialog.rs`では、開閉のたびに実行される内側のクロージャの中で
-  `conn.clone()`してから`on_submit`を作ることで回避している
+  `conn.clone()`してから`on_submit`を作ることで回避している(`coverage_altitude_dialog.rs`
+  は`WsConnection`を持たずRwSignalのみで完結するため、この問題自体が発生しない)
+- 覆域高度の変更をメインパネルの3D描画へ反映する経路: `coverage_altitude_dialog.rs`は
+  `coverage_altitude_m`シグナルを更新するだけで、実際のジオメトリ再構築・再描画は
+  `components/terrain_view.rs`のEffect(レーダー観測点の一覧・選択状態を購読していた
+  ものに`coverage_altitude_m`も加えた)が担う。ダイアログ側とメインパネル側が
+  別コンポーネントであっても、共有シグナル経由のリアクティブな購読だけで完結し、
+  互いを直接呼び出す必要がない
 
 ### 7.8 シミュレーションステータスパネルの状態表示(AppStatus)
 

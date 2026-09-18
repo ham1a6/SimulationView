@@ -21,16 +21,6 @@ use crate::terrain::store::TerrainStore;
 use crate::ui_state::RadarMarkersState;
 use crate::ws::WsSignals;
 
-/// `Rc<RefCell<ViewState>>`をLeptosの条件付き描画(children位置のクロージャ)から
-/// 使うためのラッパー。LeptosのReactiveFunctionはSend境界を要求する(SSRとの共通APIの
-/// ため)が、wasm32-unknown-unknown(スレッドなし単一スレッド)ではSend/Syncは実質意味を
-/// 持たず、Rc<RefCell<..>>を複数スレッドから使うことは実際には起こり得ない
-/// (`ws.rs::WsConnection`と同じ理由・同じ対処)。
-#[derive(Clone)]
-struct SendableViewState(Rc<RefCell<ViewState>>);
-unsafe impl Send for SendableViewState {}
-unsafe impl Sync for SendableViewState {}
-
 struct ViewState {
     renderer: Option<TerrainRenderer>,
     terrain: Option<Rc<TerrainData>>,
@@ -314,12 +304,16 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         });
     }
 
-    // --- Effect 4: レーダー観測点(一覧・選択状態)の変化に追従して3D描画を更新する ---
+    // --- Effect 4: レーダー観測点(一覧・選択状態・覆域高度)の変化に追従して3D描画を更新する ---
+    // 覆域高度(coverage_altitude_m)はメニューの「覆域高度設定...」フローティングパネル
+    // (`coverage_altitude_dialog.rs`)側で編集されるため、ここでの購読が2Dモードの
+    // 覆域表示を更新する唯一の経路になる。
     {
         let state = state.clone();
         Effect::new(move |_| {
             let _ = radar_markers.markers.get();
             let _ = radar_markers.selected.get();
+            let _ = radar_markers.coverage_altitude_m.get();
             rebuild_markers(&state, radar_markers);
             render_now(&state);
         });
@@ -457,11 +451,6 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         render_now(&state_toggle);
     };
 
-    // 覆域高度入力欄(2Dモードのみ表示)はLeptosの条件付き描画(children位置のクロージャ)
-    // から使うため、Send境界を満たす`SendableViewState`でラップして持つ(`SendableViewState`
-    // の定義コメント参照)。
-    let state_alt = SendableViewState(state.clone());
-
     view! {
         <div class="terrain-view">
             <canvas
@@ -480,28 +469,6 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 </button>
                 <button on:click=on_preset_overview title="俯瞰視点に切り替え">"俯瞰"</button>
                 <button on:click=on_preset_side title="側面視点に切り替え">"側面"</button>
-                {move || {
-                    let state_input = state_alt.clone();
-                    (view_mode.get() == ViewMode::TwoD).then(move || {
-                        view! {
-                            <label class="coverage-altitude-label">
-                                "覆域高度(m)"
-                                <input
-                                    type="number"
-                                    step="10"
-                                    prop:value=move || radar_markers.coverage_altitude_m.get().to_string()
-                                    on:input=move |ev| {
-                                        if let Ok(v) = event_target_value(&ev).parse::<f64>() {
-                                            radar_markers.coverage_altitude_m.set(v);
-                                            rebuild_markers(&state_input.0, radar_markers);
-                                            render_now(&state_input.0);
-                                        }
-                                    }
-                                />
-                            </label>
-                        }
-                    })
-                }}
             </div>
             {move || {
                 let s = status.get();

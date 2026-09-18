@@ -4,6 +4,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
+use crate::components::coverage_altitude_dialog::CoverageAltitudeDialog;
 use crate::components::main_panel::MainPanel;
 use crate::components::menu_bar::MenuBar;
 use crate::components::operation_panel::SimulationStatusPanel;
@@ -11,7 +12,7 @@ use crate::components::origin_dialog::OriginDialog;
 use crate::components::right_panel::{BottomStatusPanel, TopStatusPanel};
 use crate::components::vab::VabPanel;
 use crate::terrain::store::TerrainStore;
-use crate::ui_state::{OriginDialogState, RadarMarkersState};
+use crate::ui_state::{CoverageAltitudeDialogState, OriginDialogState, RadarMarkersState};
 use crate::ws::{default_ws_url, WsConnection, WsSignals};
 
 // 地図・右パネルの最小幅(DETAILED_DESIGN.md 7.2節: これを下回ったら外側コンテナを横スクロールさせる)。
@@ -24,6 +25,8 @@ pub fn App() -> impl IntoView {
     provide_context(signals);
     // 原点設定フローティングパネルの開閉状態(メニューバーから開く)。
     provide_context(OriginDialogState(RwSignal::new(false)));
+    // 覆域高度設定フローティングパネルの開閉状態(メニューバーから開く)。
+    provide_context(CoverageAltitudeDialogState(RwSignal::new(false)));
     // 地形データはメインパネル・ボトムステータスパネル(断面図タブ)で共有する(フェッチは
     // 1回だけ、BASIC_DESIGN.md 6節フェーズ10: 同一の地形メッシュに異なるカメラを適用する構成)。
     provide_context(TerrainStore::new());
@@ -113,6 +116,7 @@ pub fn App() -> impl IntoView {
                 </div>
             </div>
             <OriginDialog conn=conn.clone()/>
+            <CoverageAltitudeDialog/>
         </div>
     }
 }

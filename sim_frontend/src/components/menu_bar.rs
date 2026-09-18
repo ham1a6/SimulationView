@@ -6,7 +6,7 @@
 
 use leptos::prelude::*;
 
-use crate::ui_state::OriginDialogState;
+use crate::ui_state::{CoverageAltitudeDialogState, OriginDialogState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuId {
@@ -21,6 +21,8 @@ pub fn MenuBar() -> impl IntoView {
     let open_menu = RwSignal::new(None::<MenuId>);
     let origin_dialog =
         use_context::<OriginDialogState>().expect("OriginDialogState context not found");
+    let coverage_altitude_dialog = use_context::<CoverageAltitudeDialogState>()
+        .expect("CoverageAltitudeDialogState context not found");
 
     let menu_entry = move |id: MenuId, label: &'static str| {
         let dropdown = move || {
@@ -35,6 +37,15 @@ pub fn MenuBar() -> impl IntoView {
                             }
                         >
                             "原点設定..."
+                        </button>
+                        <button
+                            class="menu-dropdown-item"
+                            on:click=move |_| {
+                                open_menu.set(None);
+                                coverage_altitude_dialog.0.set(true);
+                            }
+                        >
+                            "覆域高度設定..."
                         </button>
                     </div>
                 }
