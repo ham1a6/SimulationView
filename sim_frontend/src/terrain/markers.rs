@@ -36,6 +36,18 @@ const DOME_SURFACE_COLOR: [f32; 3] = [0.3, 0.9, 1.0];
 /// 地形の遮蔽で半径が内側に凹む(`terrain::los::compute_los_dome`参照)。遮蔽の有無が
 /// 仰角によって切り替わる地表付近をやや密に、開けた上空側を粗くしてある。
 const DOME_RING_ELEVATIONS_DEG: [f64; 7] = [0.0, 5.0, 10.0, 20.0, 35.0, 55.0, 80.0];
+/// 覆域ドームの面を地表からわずかに持ち上げて描く高さ(メートル)。地形に遮蔽される方角
+/// では、ドーム境界が定義上ちょうど地形の表面に接する(遮蔽され始める点の高さ=地形の
+/// 高さになる)ため、そのままだと地形メッシュとほぼ同じ深度になりZファイティング
+/// (カメラ操作中にチカチカする現象の一因)を起こす。マーカー本体と同じ考え方で、
+/// ドーム全体を一律に少し持ち上げることで回避する。
+const DOME_HEIGHT_BIAS_M: f64 = 20.0;
+/// ドームの面(三角形)を作る際に方位角方向で間引く間隔(`compute_los_dome`自体は360方位角
+/// で計算するが、そのすべてを三角形化すると特に最上段リングを1点に閉じる傘の部分で
+/// 極端に細い三角形が大量に重なり、半透明合成(アルファブレンド)の描画順依存の副作用で
+/// カメラ操作中にチカチカして見えることが分かった。方位角を間引いて三角形数・重なりの
+/// 度合いを減らすことでこれを緩和する。値が大きいほど三角形が減り軽く/滑らかでなくなる)。
+const DOME_MESH_AZIMUTH_STRIDE: usize = 10;
 
 /// 1つのマーカーの四角い枠(4辺=8頂点、LineList用)を追加する。
 fn push_marker_box(
@@ -95,19 +107,24 @@ fn push_dome_surface(
         let local_east = horizontal * az_rad.sin();
         let local_north = horizontal * az_rad.cos();
         let (lat, lon) = local_transform.inverse(local_east, local_north);
-        let absolute_height = observer_height + p.range_m * el_rad.sin();
+        let absolute_height = observer_height + p.range_m * el_rad.sin() + DOME_HEIGHT_BIAS_M;
         let pos = mesh_transform.transform(lat, lon, absolute_height);
         TerrainVertex { position: pos, color: DOME_SURFACE_COLOR }
     };
 
+    // 三角形化する方位角のインデックス一覧(間引き済み、`DOME_MESH_AZIMUTH_STRIDE`参照)。
+    let steps: Vec<usize> = (0..num_azimuths).step_by(DOME_MESH_AZIMUTH_STRIDE).collect();
+
     // リング間の四角形パッチ(三角形2枚ずつ)。表裏どちらも見えるよう(cull_mode: None)、
     // 巻き順は特に気にしない。
     for ring_i in 0..rings.len() - 1 {
-        for az_i in 0..num_azimuths {
+        for k in 0..steps.len() {
+            let az_i = steps[k];
+            let az_next = steps[(k + 1) % steps.len()];
             let a = dome_vertex(ring_i, az_i);
-            let b = dome_vertex(ring_i, az_i + 1);
+            let b = dome_vertex(ring_i, az_next);
             let c = dome_vertex(ring_i + 1, az_i);
-            let d = dome_vertex(ring_i + 1, az_i + 1);
+            let d = dome_vertex(ring_i + 1, az_next);
             out.push(a);
             out.push(b);
             out.push(c);
@@ -124,12 +141,17 @@ fn push_dome_surface(
     let el_rad = top_ring.elevation_deg.to_radians();
     let avg_height_above_observer: f64 =
         top_ring.points.iter().map(|p| p.range_m * el_rad.sin()).sum::<f64>() / num_azimuths as f64;
-    let apex_pos =
-        mesh_transform.transform(marker.lat_deg, marker.lon_deg, observer_height + avg_height_above_observer);
+    let apex_pos = mesh_transform.transform(
+        marker.lat_deg,
+        marker.lon_deg,
+        observer_height + avg_height_above_observer + DOME_HEIGHT_BIAS_M,
+    );
     let apex = TerrainVertex { position: apex_pos, color: DOME_SURFACE_COLOR };
-    for az_i in 0..num_azimuths {
+    for k in 0..steps.len() {
+        let az_i = steps[k];
+        let az_next = steps[(k + 1) % steps.len()];
         out.push(dome_vertex(top_ring_i, az_i));
-        out.push(dome_vertex(top_ring_i, az_i + 1));
+        out.push(dome_vertex(top_ring_i, az_next));
         out.push(apex);
     }
 }
