@@ -4,7 +4,7 @@
 //! 描画用の頂点列(LineList、`TerrainRenderer::update_markers`用)を作るだけの純粋関数群。
 
 use super::loader::TerrainData;
-use super::los::{compute_los, LosParams};
+use super::los::{compute_los_dome, LosParams};
 use super::mesh::{sample_heightmap, EnuTransform, Origin, TerrainVertex};
 
 /// 地図上に配置したレーダー観測点1つ分の情報。
@@ -28,11 +28,11 @@ const SELECTED_MARKER_COLOR: [f32; 3] = [1.0, 0.92, 0.25];
 const MARKER_COLOR: [f32; 3] = [1.0, 0.55, 0.15];
 const COVERAGE_RING_COLOR: [f32; 3] = [0.3, 0.9, 1.0];
 
-/// 覆域ドーム(半球状ワイヤーフレーム)の緯度リング仰角(度)。0°=地表(見通し限界距離
-/// そのものが半径)、値が大きいほど真上に近い。「もっと立体的に、半球状のオブジェクトが
-/// 表示されるイメージで」という要望により、単なる地表面の等高線的リングから、
-/// 複数の仰角リング+経度線で構成する半球ワイヤーフレームに変更した。
-const DOME_RING_ELEVATIONS_DEG: [f64; 5] = [0.0, 20.0, 40.0, 60.0, 80.0];
+/// 覆域ドーム(半球状ワイヤーフレーム)の緯度リング仰角(度)。0°=地表付近、値が大きいほど
+/// 真上に近い。地形に遮蔽されない方角ではどの仰角でも同じ半径(=滑らかな球面)になり、
+/// 地表付近だけ地形の遮蔽で半径が内側に凹む(`terrain::los::compute_los_dome`参照)。
+/// 遮蔽の有無が仰角によって切り替わる地表付近をやや密に、開けた上空側を粗くしてある。
+const DOME_RING_ELEVATIONS_DEG: [f64; 7] = [0.0, 5.0, 10.0, 20.0, 35.0, 55.0, 80.0];
 /// ドームの経度線(縦線)の本数(等間隔の方位角に1本ずつ)。
 const DOME_MERIDIAN_COUNT: usize = 12;
 
@@ -60,11 +60,10 @@ fn push_marker_box(
 }
 
 /// 選択中マーカーの覆域を、半球状のワイヤーフレーム(ドーム)としてLineList用の頂点列に
-/// 追加する。各方位角の見通し限界距離(`compute_los`、地表面基準)を**その方位角での
-/// ドーム半径**とみなし、仰角0°(地表)から`DOME_RING_ELEVATIONS_DEG`の各仰角までの
-/// 緯度リング(円周)+経度線(縦線)で球面状に描く(sin/cosで単純に extrude するだけなので、
-/// 地形の凹凡に関わらず滑らかな半球の見た目になる。地表の起伏に沿わせていた以前の実装より、
-/// 「半球状のオブジェクト」という見た目の要望に合わせた)。
+/// 追加する。`compute_los_dome`が仰角ごとに求めるスラントレンジ(地形に遮蔽されない方角では
+/// 最大観測範囲まで一定、遮蔽される方角だけ内側に凹む)を使い、緯度リング(円周)+
+/// 経度線(縦線)で球面状に描く。上空は地形にほとんど遮蔽されないため、結果として
+/// 「地表面で遮られているところ以外は滑らかな球面」という見た目になる。
 fn push_coverage_dome(
     out: &mut Vec<TerrainVertex>,
     data: &TerrainData,
@@ -74,18 +73,22 @@ fn push_coverage_dome(
     let radar_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
     let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
     let params = LosParams { observer_height_m: marker.height_m, max_range_m: marker.max_range_m };
-    let points = compute_los(data, &radar_origin, &params);
-    if points.len() < 2 {
+    let rings = compute_los_dome(data, &radar_origin, &params, &DOME_RING_ELEVATIONS_DEG);
+    let Some(num_azimuths) = rings.first().map(|r| r.points.len()) else {
+        return;
+    };
+    if num_azimuths < 2 {
         return;
     }
     let observer_height =
         sample_heightmap(data, marker.lat_deg, marker.lon_deg).unwrap_or(0.0) as f64 + marker.height_m;
 
-    // ドーム上の1点(方位角インデックス, 仰角)を地形メッシュのENU座標へ変換する。
-    let dome_vertex = |az_i: usize, elevation_deg: f64| -> TerrainVertex {
-        let p = &points[az_i % points.len()];
+    // ドーム上の1点(リングインデックス, 方位角インデックス)を地形メッシュのENU座標へ変換する。
+    let dome_vertex = |ring_i: usize, az_i: usize| -> TerrainVertex {
+        let ring = &rings[ring_i];
+        let p = &ring.points[az_i % num_azimuths];
         let az_rad = p.azimuth_deg.to_radians();
-        let el_rad = elevation_deg.to_radians();
+        let el_rad = ring.elevation_deg.to_radians();
         let horizontal = p.range_m * el_rad.cos();
         let local_east = horizontal * az_rad.sin();
         let local_north = horizontal * az_rad.cos();
@@ -96,19 +99,19 @@ fn push_coverage_dome(
     };
 
     // 緯度リング(各仰角ごとに全方位角を結ぶ閉ループ)。
-    for &elevation_deg in &DOME_RING_ELEVATIONS_DEG {
-        for i in 0..points.len() {
-            out.push(dome_vertex(i, elevation_deg));
-            out.push(dome_vertex(i + 1, elevation_deg));
+    for ring_i in 0..rings.len() {
+        for az_i in 0..num_azimuths {
+            out.push(dome_vertex(ring_i, az_i));
+            out.push(dome_vertex(ring_i, az_i + 1));
         }
     }
 
     // 経度線(等間隔の方位角ごとに、地表〜最上段リングを結ぶ縦線)。
     for m in 0..DOME_MERIDIAN_COUNT {
-        let az_i = m * points.len() / DOME_MERIDIAN_COUNT;
-        for pair in DOME_RING_ELEVATIONS_DEG.windows(2) {
-            out.push(dome_vertex(az_i, pair[0]));
-            out.push(dome_vertex(az_i, pair[1]));
+        let az_i = m * num_azimuths / DOME_MERIDIAN_COUNT;
+        for ring_i in 0..rings.len().saturating_sub(1) {
+            out.push(dome_vertex(ring_i, az_i));
+            out.push(dome_vertex(ring_i + 1, az_i));
         }
     }
 }

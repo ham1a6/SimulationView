@@ -188,3 +188,97 @@ pub fn min_visible_altitude(
     // angle(h) == required_angle となるhを直接解く(それ以上の高度なら見える下限)。
     Some(required_angle * target_distance + curvature_drop_m(target_distance, r_eff) + observer_height)
 }
+
+/// 半球状ドーム表示(`terrain::markers::push_coverage_dome`)1リングぶんの、全方位角の
+/// 見通し限界スラントレンジ。
+pub struct DomeRing {
+    pub elevation_deg: f64,
+    /// 各点の`range_m`は、この仰角における観測点からのスラントレンジ(直線距離)。
+    pub points: Vec<LosPoint>,
+}
+
+/// 指定した複数の仰角それぞれについて、全方位角の見通し限界距離(スラントレンジ)を計算する。
+/// `compute_los`(仰角0°=地表を這う見え方のみ)を仰角方向に拡張したもの。
+///
+/// `compute_los`との違い: 観測点からの**直線(仰角一定のレイ)**が地形に遮蔽されずに
+/// どこまで届くかを求める。直線は一度地形にぶつかったら、その先で地形が下がっても
+/// (直線である以上)二度と地形の陰から出てこないため、「最初に遮蔽された時点で打ち切り」が
+/// 物理的に正しい(`compute_los`の「手前の尾根の陰でも先で地形が高くなれば再び見える」扱いは、
+/// 地表を這うように見ていく別の設定であり、ここでは採用しない)。**地形に遮蔽されない方角
+/// では、最大観測範囲(スラントレンジ)までそのまま届く**ため、遮蔽がなければ滑らかな球面
+/// (=どの仰角でも同じ半径)になる。地表付近だけ、地形の遮蔽によって半径が内側に凹む。
+pub fn compute_los_dome(
+    data: &TerrainData,
+    origin: &Origin,
+    params: &LosParams,
+    elevation_degs: &[f64],
+) -> Vec<DomeRing> {
+    let transform = EnuTransform::new(origin, &data.metadata.ellipsoid);
+    let observer_ground_elevation =
+        sample_heightmap(data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0) as f64;
+    let observer_height = observer_ground_elevation + params.observer_height_m;
+    let r_eff = EARTH_RADIUS_M * K_FACTOR;
+
+    let ring_tans: Vec<f64> = elevation_degs.iter().map(|d| d.to_radians().tan()).collect();
+    let ring_cos: Vec<f64> = elevation_degs.iter().map(|d| d.to_radians().cos()).collect();
+    let mut ring_slant_ranges = vec![vec![0.0_f64; NUM_AZIMUTHS]; elevation_degs.len()];
+
+    for az_i in 0..NUM_AZIMUTHS {
+        let azimuth_deg = az_i as f64 * 360.0 / NUM_AZIMUTHS as f64;
+        let az_rad = azimuth_deg.to_radians();
+        let dir_east = az_rad.sin();
+        let dir_north = az_rad.cos();
+        let data_max = max_valid_distance(data, &transform, dir_east, dir_north);
+
+        // 仰角が大きいほど、同じスラントレンジ上限に対応する水平距離の上限は小さくなる
+        // (horizontal = スラントレンジ * cos(仰角))。
+        let horizontal_caps: Vec<f64> =
+            ring_cos.iter().map(|&c| data_max.min(params.max_range_m * c)).collect();
+        let ray_max = horizontal_caps.iter().cloned().fold(0.0_f64, f64::max);
+        if ray_max <= 0.0 {
+            continue;
+        }
+
+        let mut max_angle = f64::NEG_INFINITY;
+        let mut ring_done = vec![false; ring_tans.len()];
+        for i in 1..=SAMPLES_PER_RAY {
+            let d = ray_max * i as f64 / SAMPLES_PER_RAY as f64;
+            let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
+            let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
+            let apparent_height = elevation - curvature_drop_m(d, r_eff);
+            let angle = (apparent_height - observer_height) / d;
+            if angle > max_angle {
+                max_angle = angle;
+            }
+            for k in 0..ring_tans.len() {
+                if ring_done[k] || d > horizontal_caps[k] {
+                    continue;
+                }
+                if max_angle <= ring_tans[k] {
+                    ring_slant_ranges[k][az_i] = if ring_cos[k] > 1e-6 { d / ring_cos[k] } else { d };
+                } else {
+                    ring_done[k] = true;
+                }
+            }
+            if ring_done.iter().all(|&b| b) {
+                break;
+            }
+        }
+    }
+
+    elevation_degs
+        .iter()
+        .zip(ring_slant_ranges)
+        .map(|(&elevation_deg, ranges)| {
+            let points = ranges
+                .into_iter()
+                .enumerate()
+                .map(|(az_i, range_m)| LosPoint {
+                    azimuth_deg: az_i as f64 * 360.0 / NUM_AZIMUTHS as f64,
+                    range_m,
+                })
+                .collect();
+            DomeRing { elevation_deg, points }
+        })
+        .collect()
+}
