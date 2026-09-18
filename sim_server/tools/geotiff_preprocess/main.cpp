@@ -34,8 +34,15 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kTargetWidth = 1024;
-constexpr int kTargetHeight = 1024;
+// 目標解像度。当初1024×1024だったが、「マップの解像度を上げてほしい」との要望により
+// 2048×2048に引き上げた(5°四方≒555kmに対し1グリッドセルが約542m→約271mになる)。
+// 単一の固定メッシュ全体を丸ごとGPUに載せる設計のまま(LODは導入していない)なので、
+// 際限なく上げられるわけではない。頂点数は概算で(kTargetWidth)^2、インデックス数は
+// その約6倍(u32)になるため、例えば4096×4096まで上げると頂点・インデックスとも
+// 2048×2048の4倍(合計で1024×1024の16倍)になり、ブラウザのWASMメモリ・GPUバッファ
+// サイズの両方でかなり重くなる。2048×2048は実機(Windows、AMD統合/専用GPU)で動作確認済み。
+constexpr int kTargetWidth = 2048;
+constexpr int kTargetHeight = 2048;
 
 // GRS80楕円体パラメータ(DETAILED_DESIGN.md 3.2節・metadata.jsonスキーマ)。
 constexpr double kEllipsoidA = 6378137.0;

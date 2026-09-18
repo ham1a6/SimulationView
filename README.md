@@ -120,7 +120,7 @@ sim_server\build\tools\geotiff_preprocess\Debug\geotiff_preprocess.exe
 [geotiff_preprocess] found 17 tile(s), mosaic bounds: lat 35..40, lon 135..140 (18000x18000px)
 [geotiff_preprocess] composited 17 tile(s) into 18000x18000 mosaic (missing cells left as NaN = ocean)
 [geotiff_preprocess] wrote sim_server/assets/terrain\heightmap.bin and sim_server/assets/terrain\metadata.json
-[geotiff_preprocess] elevation range: -11.5... .. 3677.9...
+[geotiff_preprocess] elevation range: -22.0... .. 3710.8...
 ```
 
 存在しないタイル・各タイル内のNODATA画素・マスクファイル(`*_MSK.tif`、同梱)が海と示す画素は
