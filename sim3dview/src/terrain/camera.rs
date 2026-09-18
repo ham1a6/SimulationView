@@ -49,18 +49,26 @@ impl Camera {
         // /カメラ操作時に描画が安定しない」)の原因になっていた。Depth32Float+反転Zの組み合わせは
         // この種の広域(惑星規模)地形描画における標準的な対策(浮動小数点は0付近ほど密に
         // 値を表現できるため、遠方をdepth=0付近に割り当てる反転Zの方が実効精度を稼げる)。
-        // 透視投影はfar_planeを無限遠として扱える(`perspective_infinite_reverse`)ため、
-        // z_farによる遠方クリッピングの心配自体がなくなる利点もある。
+        //
+        // 透視投影は当初`perspective_infinite_reverse`(far=無限遠)を使っていたが、
+        // 「原点から遠いところで地表面の描画が省略される(zoomに依存せず、原点から遠い
+        // ほど発生)」という不具合が報告された。無限遠板影はclip.z成分が(view座標のzに
+        // 依存しない)定数near値になる特殊な行列形状になり(実際に手計算で確認済み)、
+        // これ自体は数学的には正しいが、通常のクリップ行列とは異なる不慣れな形であるため、
+        // 環境によってはGPU/ドライバのクリッピング処理が想定外の挙動をする可能性を排除
+        // できなかった。より保守的な、near/farとも有限の反転Z(`directx::perspective`に
+        // near/farを入れ替えて渡すだけで反転Zになる。正射影と同じトリックが透視投影でも
+        // 成り立つことを手計算で確認済み)に変更し、z_farには従来通り
+        // 1,500,000m(実データの最大想定距離に対して十分な余裕を持たせた値)を使う。
         let proj = match self.projection {
             Projection::Perspective { fov_y_radians } => {
-                directx::perspective_infinite_reverse(fov_y_radians, self.aspect, self.z_near)
+                directx::perspective(fov_y_radians, self.aspect, self.z_far, self.z_near)
             }
             Projection::Orthographic { view_height_m } => {
                 let half_h = view_height_m * 0.5;
                 let half_w = half_h * self.aspect;
-                // 正射影は深度がzに対して線形なので、near/farを入れ替えて渡すだけで
-                // 深度マッピングが反転する(near→1, far→0)。透視投影と違い無限遠版は
-                // 存在しないため、near/far入れ替えで対応する。
+                // 正射影も深度がzに対して線形なので、near/farを入れ替えて渡すだけで
+                // 深度マッピングが反転する(near→1, far→0)。
                 directx::orthographic(-half_w, half_w, -half_h, half_h, self.z_far, self.z_near)
             }
         };
@@ -77,13 +85,10 @@ impl Camera {
             let p = inv_vp * Vec4::new(ndc_x, ndc_y, ndc_z, 1.0);
             p.truncate() / p.w
         };
-        // 反転Z(camera.rs冒頭のview_proj_matrix参照): NDC z=1がnear、z=0がfarに対応する
-        // (透視投影はさらにfarを無限遠として扱っている)。NDC z=0をそのまま逆変換すると
-        // 無限遠点の座標を求めることになり数学的に特異点(w=0近辺での除算、Inf/NaN)になるため、
-        // near(z=1、有限)と、無限遠でない適当な中間点(z=0.5、有限)の2点を取り、
-        // その差からレイの向きを求める(直線上の異なる2点があれば方向は定まるため、
-        // 厳密にnear/farである必要はない)。正射影(2Dモード)はfarも有限だが、同じ実装で
-        // 問題なく動作する。
+        // 反転Z(camera.rs冒頭のview_proj_matrix参照): NDC z=1がnear、z=0がfarに対応する。
+        // near/farとも有限なのでz=0を直接逆変換しても問題は起きないが、near(z=1)と
+        // 適当な中間点(z=0.5)の2点を取り、その差からレイの向きを求める実装のままにしてある
+        // (直線上の異なる2点があれば方向は定まるため、厳密にnear/farである必要はない)。
         let near = unproject(1.0);
         let mid = unproject(0.5);
         (near, mid - near)
