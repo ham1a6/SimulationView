@@ -4,7 +4,7 @@
 //! 描画用の頂点列(LineList、`TerrainRenderer::update_markers`用)を作るだけの純粋関数群。
 
 use super::loader::TerrainData;
-use super::los::{compute_los, LosParams, LosPoint};
+use super::los::{compute_los, LosParams};
 use super::mesh::{sample_heightmap, EnuTransform, Origin, TerrainVertex};
 
 /// 地図上に配置したレーダー観測点1つ分の情報。
@@ -21,12 +21,20 @@ pub struct RadarMarker {
 
 /// マーカー(四角い枠)の地表からの一辺半分の大きさ(メートル)。
 const MARKER_HALF_SIZE_M: f64 = 4000.0;
-/// マーカー・覆域リングを地表からわずかに持ち上げて描く高さ(メートル、Zファイティング回避)。
+/// マーカーを地表からわずかに持ち上げて描く高さ(メートル、Zファイティング回避)。
 const HEIGHT_BIAS_M: f32 = 25.0;
 
 const SELECTED_MARKER_COLOR: [f32; 3] = [1.0, 0.92, 0.25];
 const MARKER_COLOR: [f32; 3] = [1.0, 0.55, 0.15];
 const COVERAGE_RING_COLOR: [f32; 3] = [0.3, 0.9, 1.0];
+
+/// 覆域ドーム(半球状ワイヤーフレーム)の緯度リング仰角(度)。0°=地表(見通し限界距離
+/// そのものが半径)、値が大きいほど真上に近い。「もっと立体的に、半球状のオブジェクトが
+/// 表示されるイメージで」という要望により、単なる地表面の等高線的リングから、
+/// 複数の仰角リング+経度線で構成する半球ワイヤーフレームに変更した。
+const DOME_RING_ELEVATIONS_DEG: [f64; 5] = [0.0, 20.0, 40.0, 60.0, 80.0];
+/// ドームの経度線(縦線)の本数(等間隔の方位角に1本ずつ)。
+const DOME_MERIDIAN_COUNT: usize = 12;
 
 /// 1つのマーカーの四角い枠(4辺=8頂点、LineList用)を追加する。
 fn push_marker_box(
@@ -51,8 +59,13 @@ fn push_marker_box(
     }
 }
 
-/// 選択中マーカーの覆域境界(360方位角の閉ループ)をLineList用の頂点列として追加する。
-fn push_coverage_ring(
+/// 選択中マーカーの覆域を、半球状のワイヤーフレーム(ドーム)としてLineList用の頂点列に
+/// 追加する。各方位角の見通し限界距離(`compute_los`、地表面基準)を**その方位角での
+/// ドーム半径**とみなし、仰角0°(地表)から`DOME_RING_ELEVATIONS_DEG`の各仰角までの
+/// 緯度リング(円周)+経度線(縦線)で球面状に描く(sin/cosで単純に extrude するだけなので、
+/// 地形の凹凡に関わらず滑らかな半球の見た目になる。地表の起伏に沿わせていた以前の実装より、
+/// 「半球状のオブジェクト」という見た目の要望に合わせた)。
+fn push_coverage_dome(
     out: &mut Vec<TerrainVertex>,
     data: &TerrainData,
     mesh_transform: &EnuTransform,
@@ -65,20 +78,38 @@ fn push_coverage_ring(
     if points.len() < 2 {
         return;
     }
+    let observer_height =
+        sample_heightmap(data, marker.lat_deg, marker.lon_deg).unwrap_or(0.0) as f64 + marker.height_m;
 
-    let to_vertex = |p: &LosPoint| -> TerrainVertex {
+    // ドーム上の1点(方位角インデックス, 仰角)を地形メッシュのENU座標へ変換する。
+    let dome_vertex = |az_i: usize, elevation_deg: f64| -> TerrainVertex {
+        let p = &points[az_i % points.len()];
         let az_rad = p.azimuth_deg.to_radians();
-        let local_east = p.range_m * az_rad.sin();
-        let local_north = p.range_m * az_rad.cos();
+        let el_rad = elevation_deg.to_radians();
+        let horizontal = p.range_m * el_rad.cos();
+        let local_east = horizontal * az_rad.sin();
+        let local_north = horizontal * az_rad.cos();
         let (lat, lon) = local_transform.inverse(local_east, local_north);
-        let ground_elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
-        let mut pos = mesh_transform.transform(lat, lon, ground_elevation);
-        pos[2] += HEIGHT_BIAS_M;
+        let absolute_height = observer_height + p.range_m * el_rad.sin();
+        let pos = mesh_transform.transform(lat, lon, absolute_height);
         TerrainVertex { position: pos, color: COVERAGE_RING_COLOR }
     };
-    for i in 0..points.len() {
-        out.push(to_vertex(&points[i]));
-        out.push(to_vertex(&points[(i + 1) % points.len()]));
+
+    // 緯度リング(各仰角ごとに全方位角を結ぶ閉ループ)。
+    for &elevation_deg in &DOME_RING_ELEVATIONS_DEG {
+        for i in 0..points.len() {
+            out.push(dome_vertex(i, elevation_deg));
+            out.push(dome_vertex(i + 1, elevation_deg));
+        }
+    }
+
+    // 経度線(等間隔の方位角ごとに、地表〜最上段リングを結ぶ縦線)。
+    for m in 0..DOME_MERIDIAN_COUNT {
+        let az_i = m * points.len() / DOME_MERIDIAN_COUNT;
+        for pair in DOME_RING_ELEVATIONS_DEG.windows(2) {
+            out.push(dome_vertex(az_i, pair[0]));
+            out.push(dome_vertex(az_i, pair[1]));
+        }
     }
 }
 
@@ -99,7 +130,7 @@ pub fn build_marker_geometry(
         let color = if is_selected { SELECTED_MARKER_COLOR } else { MARKER_COLOR };
         push_marker_box(&mut out, data, &mesh_transform, marker, color);
         if is_selected {
-            push_coverage_ring(&mut out, data, &mesh_transform, marker);
+            push_coverage_dome(&mut out, data, &mesh_transform, marker);
         }
     }
     out
