@@ -186,8 +186,41 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 .dyn_into()
                 .expect("canvas node_ref should be an HtmlCanvasElement");
 
-            let canvas_for_cb = canvas.clone();
-            let state_for_cb = state.clone();
+            // canvasの内部解像度(width/height)を実際のCSSサイズへ合わせ、必要なら
+            // レンダラーを初期化/リサイズする。ResizeObserverのコールバックと、
+            // 下の`visibilitychange`ハンドラの両方から呼べるよう共通化してある。
+            let apply_size = {
+                let canvas = canvas.clone();
+                let state = state.clone();
+                move |width: u32, height: u32| {
+                    if width == 0 || height == 0 {
+                        return;
+                    }
+                    canvas.set_width(width);
+                    canvas.set_height(height);
+
+                    let has_renderer = state.borrow().renderer.is_some();
+                    if has_renderer {
+                        let mut s = state.borrow_mut();
+                        if let Some(renderer) = s.renderer.as_mut() {
+                            renderer.resize(width, height);
+                        }
+                        drop(s);
+                        render_now(&state);
+                    } else {
+                        try_init(
+                            state.clone(),
+                            canvas.clone(),
+                            terrain_store.get_untracked(),
+                            origin_state,
+                            status,
+                            radar_markers,
+                        );
+                    }
+                }
+            };
+
+            let apply_size_for_resize = apply_size.clone();
             let closure = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
                 let Some(entry) = entries
                     .get(0)
@@ -199,38 +232,47 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 let rect = entry.content_rect();
                 let width = rect.width().round().max(0.0) as u32;
                 let height = rect.height().round().max(0.0) as u32;
-                if width == 0 || height == 0 {
-                    return;
-                }
-                canvas_for_cb.set_width(width);
-                canvas_for_cb.set_height(height);
-
-                let has_renderer = state_for_cb.borrow().renderer.is_some();
-                if has_renderer {
-                    let mut s = state_for_cb.borrow_mut();
-                    if let Some(renderer) = s.renderer.as_mut() {
-                        renderer.resize(width, height);
-                    }
-                    drop(s);
-                    render_now(&state_for_cb);
-                } else {
-                    try_init(
-                        state_for_cb.clone(),
-                        canvas_for_cb.clone(),
-                        terrain_store.get_untracked(),
-                        origin_state,
-                        status,
-                        radar_markers,
-                    );
-                }
+                apply_size_for_resize(width, height);
             });
 
             let observer = web_sys::ResizeObserver::new(closure.as_ref().unchecked_ref())
                 .expect("ResizeObserver::new failed");
             observer.observe(&canvas);
 
+            // ブラウザは非表示(バックグラウンド)タブに対してResizeObserverの通知自体を
+            // スロットリング(完全停止)することがある(CLAUDE.md「スプリッタードラッグ時の
+            // リサイズ追従」で既知)。ページが非表示のまま初回マウントされると、canvasの
+            // 内部解像度がHTML既定値(300×150)のまま一度も更新されず、その後CSSで
+            // 実際の表示サイズへ引き伸ばされることでアスペクト比が崩れ、地形の一部
+            // (特に画面端寄り・低標高の周辺部)が視野から欠けて見える不具合になっていた。
+            // ws.rsのWebSocket再接続と同じPage Visibility APIのパターンで、タブが可視に
+            // 戻った時点で実際のCSSサイズを取り直し、ズレていれば取り込み直す。
+            let canvas_for_visibility = canvas.clone();
+            let visibility_closure = Closure::<dyn FnMut()>::new(move || {
+                let hidden = web_sys::window()
+                    .and_then(|w| w.document())
+                    .map(|d| d.hidden())
+                    .unwrap_or(false);
+                if hidden {
+                    return;
+                }
+                let rect = canvas_for_visibility.get_bounding_client_rect();
+                let width = rect.width().round().max(0.0) as u32;
+                let height = rect.height().round().max(0.0) as u32;
+                if width != canvas_for_visibility.width() || height != canvas_for_visibility.height() {
+                    apply_size(width, height);
+                }
+            });
+            if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+                let _ = document.add_event_listener_with_callback(
+                    "visibilitychange",
+                    visibility_closure.as_ref().unchecked_ref(),
+                );
+            }
+
             // クロージャ・observerともにこのパネルの生存期間ずっと必要なのでforgetする。
             closure.forget();
+            visibility_closure.forget();
             std::mem::forget(observer);
         });
     }
