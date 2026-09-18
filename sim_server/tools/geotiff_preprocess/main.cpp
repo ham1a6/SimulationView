@@ -5,9 +5,13 @@
 // 実際に見つかったタイルの緯度経度範囲から実行時に自動的に決める**(1.2節・2.3節)。
 // そのため map_data/ に別の場所のタイルを追加/削除しても、コード変更なしに追従する。
 // データが存在しない領域(モザイクの外接矩形内でタイルが見つからないセル + 各タイル内の
-// NODATA画素 + マスクファイル(*_MSK.tif)が海と示す画素)はNaNで埋め、標高0mとは区別する
-// (海の色で塗るための目印。1.4節)。タイル内部の海域はDSM側では単に標高0mとして格納されて
-// おりNODATAセンチネルでは検出できないため、マスクファイルを別途読んで補っている。
+// NODATA画素のうち埋められなかったもの + マスクファイル(*_MSK.tif)が海と示す画素)は
+// NaNで埋め、標高0mとは区別する(海の色で塗るための目印。1.4節)。タイル内部の海域は
+// DSM側では単に標高0mとして格納されておりNODATAセンチネルでは検出できないため、
+// マスクファイルを別途読んで補っている。タイル内のNODATA画素のうち、海ではなく
+// かつ小さい(kMaxFillableHolePixels以下の)ものは、周囲の有効画素から補間して埋める
+// (雲の影・センサー欠損等を想定。「タイル内の小さなNODATA穴だけ補完してほしい」との
+// 要望による。タイル自体が丸ごと存在しない大きな欠損・海は補間の対象外)。
 // 再投影は行わない: 入力GeoTIFF(ALOS DSM)は既にEPSG:4326の緯度経度グリッドに
 // 1タイル=1度×1度ちょうどで整列しているため、単純に読み取って敷き詰め、
 // 平均法でダウンサンプリングするだけでよい(2.2節)。
@@ -24,6 +28,7 @@
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <queue>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -133,6 +138,138 @@ std::vector<bool> load_sea_mask(const std::string& dsm_path, int expected_w, int
     return is_sea;
 }
 
+// 「小さなNODATA穴」とみなす連結成分の最大画素数。これを超える(=大きすぎる)穴は
+// 周囲からの補間対象にせず、従来通りNODATA(最終的にNaN=データなし)のまま残す。
+// 2000画素は、ネイティブ解像度(1px=1秒角≒約30m)で半径25px前後(直径約1.5km)の
+// 円に相当し、雲の影・センサーの局所的な欠損程度の「小さな穴」を想定した値。
+// タイル自体が丸ごと存在しない欠損(1タイル=3600×3600=1296万画素)とは
+// 桁違いに小さく、意図せず大きな空白を埋めてしまうことはない。
+constexpr int kMaxFillableHolePixels = 2000;
+
+// 「小さなNODATA穴」(海ではない、周囲を有効な陸地画素に囲まれた小さな欠損領域)を、
+// 周囲の有効画素の平均値で埋める。海(`is_sea`)は補間の材料にも対象にもしない
+// (海は「データが欠損している」のではなく「実際に海である」ため、要望により対象外にした)。
+// タイル自体が丸ごと存在しない大きな欠損は、このタイル内補間の対象外(build_mosaic側で
+// 引き続きNaNのまま=水色で表示される)。
+//
+// アルゴリズム: 8連結で穴画素を連結成分に分け、`kMaxFillableHolePixels`を超える成分は
+// 埋めずスキップする。埋める成分は、穴の境界(有効画素に隣接する穴画素)からBFSで内側へ
+// 波及させながら、その時点で確定済み(有効、または既に埋め済み)の8近傍画素の平均値で
+// 順に埋めていく。これにより、常に実データ(または実データから補間済みの値)だけを
+// 材料にでき、穴の内部からいきなり値を作ることがない。
+// 戻り値: 実際に埋めた画素数。
+int fill_small_nodata_holes(std::vector<float>& elevation, int width, int height,
+                             const std::vector<bool>& hole_candidate,
+                             const std::vector<bool>& is_sea) {
+    const size_t n = elevation.size();
+    std::vector<int> component_id(n, -1);
+    int filled_total = 0;
+
+    const int neighbor_dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
+    const int neighbor_dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
+
+    for (size_t start = 0; start < n; ++start) {
+        if (!hole_candidate[start] || component_id[start] != -1) {
+            continue;
+        }
+        // 8連結で連結成分を収集する(単純なスタックDFS)。
+        std::vector<int> members;
+        std::vector<int> stack{static_cast<int>(start)};
+        component_id[start] = 0; // 訪問済みの目印(値自体は使わない)
+        while (!stack.empty()) {
+            const int cur = stack.back();
+            stack.pop_back();
+            members.push_back(cur);
+            const int cy = cur / width;
+            const int cx = cur % width;
+            for (int k = 0; k < 8; ++k) {
+                const int ny = cy + neighbor_dy[k];
+                const int nx = cx + neighbor_dx[k];
+                if (ny < 0 || ny >= height || nx < 0 || nx >= width) {
+                    continue;
+                }
+                const int ni = ny * width + nx;
+                if (hole_candidate[ni] && component_id[ni] == -1) {
+                    component_id[ni] = 0;
+                    stack.push_back(ni);
+                }
+            }
+        }
+
+        if (members.size() > static_cast<size_t>(kMaxFillableHolePixels)) {
+            continue; // 大きすぎる穴は対象外(NODATAのまま残す)。
+        }
+
+        std::vector<bool> in_component(n, false);
+        for (int i : members) {
+            in_component[i] = true;
+        }
+        std::vector<bool> filled(n, false);
+
+        // 有効な(穴でも海でもない)近傍を持つ穴画素を、その平均値で埋めてBFSの種にする。
+        auto try_fill = [&](int i) -> bool {
+            const int y = i / width;
+            const int x = i % width;
+            double sum = 0.0;
+            int count = 0;
+            for (int k = 0; k < 8; ++k) {
+                const int ny = y + neighbor_dy[k];
+                const int nx = x + neighbor_dx[k];
+                if (ny < 0 || ny >= height || nx < 0 || nx >= width) {
+                    continue;
+                }
+                const int ni = ny * width + nx;
+                if (is_sea[ni]) {
+                    continue; // 海は補間材料にしない。
+                }
+                if (in_component[ni] && !filled[ni]) {
+                    continue; // まだ埋まっていない穴画素は使わない。
+                }
+                sum += elevation[ni];
+                ++count;
+            }
+            if (count == 0) {
+                return false;
+            }
+            elevation[i] = static_cast<float>(sum / count);
+            filled[i] = true;
+            return true;
+        };
+
+        std::queue<int> queue;
+        for (int i : members) {
+            if (try_fill(i)) {
+                queue.push(i);
+                ++filled_total;
+            }
+        }
+        while (!queue.empty()) {
+            const int cur = queue.front();
+            queue.pop();
+            const int cy = cur / width;
+            const int cx = cur % width;
+            for (int k = 0; k < 8; ++k) {
+                const int ny = cy + neighbor_dy[k];
+                const int nx = cx + neighbor_dx[k];
+                if (ny < 0 || ny >= height || nx < 0 || nx >= width) {
+                    continue;
+                }
+                const int ni = ny * width + nx;
+                if (in_component[ni] && !filled[ni]) {
+                    if (try_fill(ni)) {
+                        queue.push(ni);
+                        ++filled_total;
+                    }
+                }
+            }
+        }
+        // filledのまま残った成分内画素(周囲が全て他の穴・海で、有効画素に到達できない
+        // 場合。8連結で成分を作っている以上理論上起こらないはずだが、念のため何もしない
+        // =NODATAのまま残す)。
+    }
+    return filled_total;
+}
+
 // GeoTIFF(DSM)を1枚読み込む。再投影は行わない。
 SourceGrid load_dsm_tile(const std::string& path) {
     GDALDataset* dataset = static_cast<GDALDataset*>(GDALOpen(path.c_str(), GA_ReadOnly));
@@ -165,14 +302,41 @@ SourceGrid load_dsm_tile(const std::string& path) {
     // GDT_Float32を指定することで、元データが16bit整数でもGDALが自動的にfloatへ変換して読む。
     const CPLErr err = band->RasterIO(GF_Read, 0, 0, width, height, elevation.data(), width,
                                        height, GDT_Float32, 0, 0);
-    // タイル内のNODATA画素(主に海域)をNaNへ置き換える。海の色で塗る目印として使う
-    // (build_mosaic/downsample_averageもNaNを「データなし」として扱う)。
     int has_nodata = 0;
     const double nodata_value = band->GetNoDataValue(&has_nodata);
     GDALClose(dataset);
     if (err != CE_None) {
         throw std::runtime_error("failed to read raster data: " + path);
     }
+
+    // マスクファイル(*_MSK.tif)ベースの海域検出(NODATAセンチネルでは検出できない、
+    // タイル内部の海域=標高0mだが有効データに見える画素への対応)。
+    const std::vector<bool> sea_mask = load_sea_mask(path, width, height);
+    const std::vector<bool> is_sea =
+        sea_mask.empty() ? std::vector<bool>(elevation.size(), false) : sea_mask;
+
+    // NODATA画素のうち、海ではないもの(=雲の影・センサー欠損等による「小さな穴」の候補)を
+    // 周囲の有効画素から補間して埋める(要望により追加。海は対象外、埋めた後もNODATAの
+    // ままの画素だけを次のステップでNaNにする)。
+    if (has_nodata) {
+        const float nodata_f = static_cast<float>(nodata_value);
+        std::vector<bool> hole_candidate(elevation.size(), false);
+        for (size_t i = 0; i < elevation.size(); ++i) {
+            if (elevation[i] == nodata_f && !is_sea[i]) {
+                hole_candidate[i] = true;
+            }
+        }
+        const int filled = fill_small_nodata_holes(elevation, width, height, hole_candidate, is_sea);
+        if (filled > 0) {
+            std::cout << "[geotiff_preprocess] filled " << filled
+                       << " small NODATA hole pixel(s) in " << fs::path(path).filename().string()
+                       << std::endl;
+        }
+    }
+
+    // タイル内に残ったNODATA画素(大きすぎて埋められなかった穴を含む)をNaNへ置き換える。
+    // 海の色で塗る目印として使う(build_mosaic/downsample_averageもNaNを「データなし」として
+    // 扱う)。
     if (has_nodata) {
         const float nodata_f = static_cast<float>(nodata_value);
         for (float& v : elevation) {
@@ -182,14 +346,11 @@ SourceGrid load_dsm_tile(const std::string& path) {
         }
     }
 
-    // マスクファイル(*_MSK.tif)ベースの海域検出で追加で補う(NODATAセンチネルでは
-    // 検出できない、タイル内部の海域=標高0mだが有効データに見える画素への対応)。
-    const std::vector<bool> sea_mask = load_sea_mask(path, width, height);
-    if (!sea_mask.empty()) {
-        for (size_t i = 0; i < elevation.size(); ++i) {
-            if (sea_mask[i]) {
-                elevation[i] = std::numeric_limits<float>::quiet_NaN();
-            }
+    // 海は(補間の材料にはしたが)引き続きNaNにする。海は「データが欠損している」のではなく
+    // 「実際に海である」ため、周囲から補間して陸地にすることはしない。
+    for (size_t i = 0; i < elevation.size(); ++i) {
+        if (is_sea[i]) {
+            elevation[i] = std::numeric_limits<float>::quiet_NaN();
         }
     }
 
