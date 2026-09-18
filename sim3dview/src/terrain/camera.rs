@@ -40,14 +40,28 @@ impl Camera {
         let view = look_at_mat4(self.eye, self.target, self.up);
         // wgpuの正規化デバイス座標は深度[0,1](OpenGL流の[-1,1]ではない)なので
         // directx::perspective/orthographic(DirectX/WebGPU互換、深度[0,1])を使う。
+        //
+        // **反転Z(reversed-Z)を採用**(near→深度1, far→深度0。renderer.rsのdepth_compareも
+        // Greaterに揃えてある): z_near=1m・z_far=1,500,000mという非常に広いレンジを
+        // 通常の(near→0, far→1の)深度バッファで扱うと、遠方(見た目上はほとんどの地形が
+        // 該当)でdepth値の実効精度がほぼ失われ、地形の行ごとにデプステストの勝敗が
+        // 不安定になる(カメラ操作のたびに結果が変わる) z-fighting(「地表面で所々透けている
+        // /カメラ操作時に描画が安定しない」)の原因になっていた。Depth32Float+反転Zの組み合わせは
+        // この種の広域(惑星規模)地形描画における標準的な対策(浮動小数点は0付近ほど密に
+        // 値を表現できるため、遠方をdepth=0付近に割り当てる反転Zの方が実効精度を稼げる)。
+        // 透視投影はfar_planeを無限遠として扱える(`perspective_infinite_reverse`)ため、
+        // z_farによる遠方クリッピングの心配自体がなくなる利点もある。
         let proj = match self.projection {
             Projection::Perspective { fov_y_radians } => {
-                directx::perspective(fov_y_radians, self.aspect, self.z_near, self.z_far)
+                directx::perspective_infinite_reverse(fov_y_radians, self.aspect, self.z_near)
             }
             Projection::Orthographic { view_height_m } => {
                 let half_h = view_height_m * 0.5;
                 let half_w = half_h * self.aspect;
-                directx::orthographic(-half_w, half_w, -half_h, half_h, self.z_near, self.z_far)
+                // 正射影は深度がzに対して線形なので、near/farを入れ替えて渡すだけで
+                // 深度マッピングが反転する(near→1, far→0)。透視投影と違い無限遠版は
+                // 存在しないため、near/far入れ替えで対応する。
+                directx::orthographic(-half_w, half_w, -half_h, half_h, self.z_far, self.z_near)
             }
         };
         proj * view
