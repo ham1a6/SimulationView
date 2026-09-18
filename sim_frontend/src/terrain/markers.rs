@@ -7,7 +7,7 @@
 //! パイプラインを使うため、頂点列を作る関数も分かれている。
 
 use super::loader::TerrainData;
-use super::los::{compute_los_dome, LosParams};
+use super::los::{compute_coverage_area, compute_los_dome, LosParams, LosPoint};
 use super::mesh::{sample_heightmap, EnuTransform, Origin, TerrainVertex};
 
 /// 地図上に配置したレーダー観測点1つ分の情報。
@@ -48,6 +48,19 @@ const DOME_HEIGHT_BIAS_M: f64 = 20.0;
 /// カメラ操作中にチカチカして見えることが分かった。方位角を間引いて三角形数・重なりの
 /// 度合いを減らすことでこれを緩和する。値が大きいほど三角形が減り軽く/滑らかでなくなる)。
 const DOME_MESH_AZIMUTH_STRIDE: usize = 10;
+
+/// 2D地図モードでの覆域表示(指定した海抜高度での探知可能領域)の塗り色。
+/// 3Dの覆域ドーム(`DOME_SURFACE_COLOR`)とは見た目で区別できる色にする。
+const COVERAGE_AREA_COLOR: [f32; 3] = [0.35, 0.9, 0.4];
+/// 覆域表示(2D)の境界線の色。塗り自体はドームと同じ薄い半透明(fs_dome、アルファ0.22)
+/// なので地図上ではかなり控えめにしか見えない(実機のピクセルサンプリングで色の混合
+/// 自体は正しいことを確認済み)。境界だけは不透明なLineList(`fs_main`)で太めに描き、
+/// 地図上でも一目で領域の輪郭が分かるようにする(`los_view.rs`の2D極座標図が
+/// 塗り+輪郭線の両方を持つのと同じ考え方)。
+const COVERAGE_OUTLINE_COLOR: [f32; 3] = [0.75, 1.0, 0.4];
+/// 覆域表示(2D)を地表からわずかに持ち上げて描く高さ(メートル)。マーカー本体・
+/// 覆域ドームと同じ理由(Zファイティング回避、`HEIGHT_BIAS_M`参照)。
+const COVERAGE_AREA_HEIGHT_BIAS_M: f64 = 20.0;
 
 /// 1つのマーカーの四角い枠(4辺=8頂点、LineList用)を追加する。
 fn push_marker_box(
@@ -156,6 +169,91 @@ fn push_dome_surface(
     }
 }
 
+/// 選択中マーカーの、指定した海抜高度での探知可能領域(2D地図モード用)を、地表面に
+/// 沿って貼り付けたSurface(TriangleList)として頂点列に追加する。`compute_coverage_area`が
+/// 全方位角について求める水平距離を境界とする、観測点を中心とした星形(star-shaped)
+/// 領域なので、観測点から境界上の隣接2点への三角形(ファン)を360個並べるだけで
+/// 自己交差のない面になる(3Dの覆域ドームのアペック付近のような、視点回転時の
+/// 半透明合成チカチカ対策の間引きは、2Dは常に真上固定視点で回転しないため不要)。
+fn push_coverage_area(
+    out: &mut Vec<TerrainVertex>,
+    data: &TerrainData,
+    mesh_transform: &EnuTransform,
+    marker: &RadarMarker,
+    target_altitude_m: f64,
+) {
+    let radar_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
+    let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
+    let params = LosParams { observer_height_m: marker.height_m, max_range_m: marker.max_range_m };
+    let points = compute_coverage_area(data, &radar_origin, &params, target_altitude_m);
+    if points.len() < 2 {
+        return;
+    }
+
+    // 地表面に沿わせるため、各点(観測点自身も含む)は「その地点の地表標高+バイアス」の
+    // 高さに置く(覆域そのものの高度target_altitude_mではない。あくまで地図上に貼る
+    // 塗り分けのオーバーレイであり、3Dドームのように空間中の実際の高度を表現するもの
+    // ではないため)。
+    let vertex_at = |lat: f64, lon: f64| -> TerrainVertex {
+        let ground = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
+        let pos = mesh_transform.transform(lat, lon, ground + COVERAGE_AREA_HEIGHT_BIAS_M);
+        TerrainVertex { position: pos, color: COVERAGE_AREA_COLOR }
+    };
+    let boundary_vertex = |p: &LosPoint| -> TerrainVertex {
+        let az_rad = p.azimuth_deg.to_radians();
+        let local_east = p.range_m * az_rad.sin();
+        let local_north = p.range_m * az_rad.cos();
+        let (lat, lon) = local_transform.inverse(local_east, local_north);
+        vertex_at(lat, lon)
+    };
+
+    let center = vertex_at(marker.lat_deg, marker.lon_deg);
+    let n = points.len();
+    for i in 0..n {
+        let a = boundary_vertex(&points[i]);
+        let b = boundary_vertex(&points[(i + 1) % n]);
+        out.push(center);
+        out.push(a);
+        out.push(b);
+    }
+}
+
+/// `push_coverage_area`と同じ境界(指定した海抜高度での探知可能領域の外周)を、不透明な
+/// LineList(マーカー本体と同じ`TerrainRenderer::update_markers`のバッファ・パイプライン)
+/// として追加する。塗り(TriangleList、半透明)だけでは地図上で見えにくいため、輪郭線を
+/// 別途重ねて一目で分かるようにする(`COVERAGE_OUTLINE_COLOR`の定義コメント参照)。
+fn push_coverage_outline(
+    out: &mut Vec<TerrainVertex>,
+    data: &TerrainData,
+    mesh_transform: &EnuTransform,
+    marker: &RadarMarker,
+    target_altitude_m: f64,
+) {
+    let radar_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
+    let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
+    let params = LosParams { observer_height_m: marker.height_m, max_range_m: marker.max_range_m };
+    let points = compute_coverage_area(data, &radar_origin, &params, target_altitude_m);
+    if points.len() < 2 {
+        return;
+    }
+
+    let boundary_vertex = |p: &LosPoint| -> TerrainVertex {
+        let az_rad = p.azimuth_deg.to_radians();
+        let local_east = p.range_m * az_rad.sin();
+        let local_north = p.range_m * az_rad.cos();
+        let (lat, lon) = local_transform.inverse(local_east, local_north);
+        let ground = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
+        let pos = mesh_transform.transform(lat, lon, ground + COVERAGE_AREA_HEIGHT_BIAS_M);
+        TerrainVertex { position: pos, color: COVERAGE_OUTLINE_COLOR }
+    };
+
+    let n = points.len();
+    for i in 0..n {
+        out.push(boundary_vertex(&points[i]));
+        out.push(boundary_vertex(&points[(i + 1) % n]));
+    }
+}
+
 /// マーカー一覧 + 選択状態から、マーカー本体(四角い枠、LineList)の頂点列を作る。
 /// `mesh_origin`は現在GPUにアップロードされている地形メッシュの原点(マーカー自体の
 /// 緯度経度とは無関係。マーカー位置をこの原点基準のENU座標へ変換するために使う)。
@@ -187,6 +285,41 @@ pub fn build_dome_surface_geometry(
     let mut out = Vec::new();
     if let Some(marker) = selected.and_then(|id| markers.iter().find(|m| m.id == id)) {
         push_dome_surface(&mut out, data, &mesh_transform, marker);
+    }
+    out
+}
+
+/// `build_coverage_area_geometry`と同じ境界の、不透明な輪郭線(LineList)の頂点列を作る。
+/// `build_marker_geometry`の結果と連結して`TerrainRenderer::update_markers`に渡す想定
+/// (マーカー本体と同じパイプラインを使うため)。
+pub fn build_coverage_outline_geometry(
+    data: &TerrainData,
+    mesh_origin: &Origin,
+    markers: &[RadarMarker],
+    selected: Option<u64>,
+    target_altitude_m: f64,
+) -> Vec<TerrainVertex> {
+    let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
+    let mut out = Vec::new();
+    if let Some(marker) = selected.and_then(|id| markers.iter().find(|m| m.id == id)) {
+        push_coverage_outline(&mut out, data, &mesh_transform, marker, target_altitude_m);
+    }
+    out
+}
+
+/// 選択中マーカーの、指定した海抜高度での探知可能領域(2D地図モード、TriangleList)の
+/// 頂点列を作る。3Dの`build_dome_surface_geometry`と同様、選択中のマーカーについてのみ描く。
+pub fn build_coverage_area_geometry(
+    data: &TerrainData,
+    mesh_origin: &Origin,
+    markers: &[RadarMarker],
+    selected: Option<u64>,
+    target_altitude_m: f64,
+) -> Vec<TerrainVertex> {
+    let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
+    let mut out = Vec::new();
+    if let Some(marker) = selected.and_then(|id| markers.iter().find(|m| m.id == id)) {
+        push_coverage_area(&mut out, data, &mesh_transform, marker, target_altitude_m);
     }
     out
 }

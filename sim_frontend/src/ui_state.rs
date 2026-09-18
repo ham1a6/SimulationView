@@ -17,6 +17,10 @@ pub struct RadarMarkersState {
     pub markers: RwSignal<Vec<RadarMarker>>,
     pub selected: RwSignal<Option<u64>>,
     next_id: RwSignal<u64>,
+    /// メインパネルが2D地図モードのときに覆域表示で使う、対象の海抜高度(メートル)。
+    /// 個々のレーダーのパラメータ(アンテナ高・最大観測範囲)とは別に、表示側の設定
+    /// として1つだけ持つ(複数レーダーがあっても「今見たい高度」は1つのため)。
+    pub coverage_altitude_m: RwSignal<f64>,
 }
 
 impl RadarMarkersState {
@@ -25,6 +29,7 @@ impl RadarMarkersState {
             markers: RwSignal::new(Vec::new()),
             selected: RwSignal::new(None),
             next_id: RwSignal::new(1),
+            coverage_altitude_m: RwSignal::new(1000.0),
         }
     }
 

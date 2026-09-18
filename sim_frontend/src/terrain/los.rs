@@ -189,6 +189,62 @@ pub fn min_visible_altitude(
     Some(required_angle * target_distance + curvature_drop_m(target_distance, r_eff) + observer_height)
 }
 
+/// 指定した1つの海抜高度(絶対標高、メートル)を飛ぶ対象について、全方位角の
+/// 探知可能距離(水平距離)を計算する。2D地図モード(`components/terrain_view.rs`)での
+/// 覆域表示に使う。`compute_los_dome`が「仰角一定の直線」を仰角ごとに走査するのに対し、
+/// ここでは「高度一定の直線」を対象の高度について走査する(observer-target間の仰角の必要値は
+/// 地球曲率の効果で距離とともにほぼ単調に下がるため、`compute_los_dome`と同じ
+/// 「最初に遮蔽されたら以降も遮蔽され続ける」扱いにできる。地形自身の遮蔽判定は
+/// `is_visible`/`min_visible_altitude`と同じマスク角アルゴリズム)。
+pub fn compute_coverage_area(
+    data: &TerrainData,
+    origin: &Origin,
+    params: &LosParams,
+    target_altitude_m: f64,
+) -> Vec<LosPoint> {
+    let transform = EnuTransform::new(origin, &data.metadata.ellipsoid);
+    let observer_ground_elevation =
+        sample_heightmap(data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0) as f64;
+    let observer_height = observer_ground_elevation + params.observer_height_m;
+    let r_eff = EARTH_RADIUS_M * K_FACTOR;
+
+    (0..NUM_AZIMUTHS)
+        .map(|az_i| {
+            let azimuth_deg = az_i as f64 * 360.0 / NUM_AZIMUTHS as f64;
+            let az_rad = azimuth_deg.to_radians();
+            let dir_east = az_rad.sin();
+            let dir_north = az_rad.cos();
+
+            let data_max = max_valid_distance(data, &transform, dir_east, dir_north);
+            let ray_max = data_max.min(params.max_range_m);
+            if ray_max <= 0.0 {
+                return LosPoint { azimuth_deg, range_m: 0.0 };
+            }
+
+            let mut max_angle = f64::NEG_INFINITY;
+            let mut visible_range = 0.0_f64;
+            for i in 1..=SAMPLES_PER_RAY {
+                let d = ray_max * i as f64 / SAMPLES_PER_RAY as f64;
+                let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
+                let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
+                let apparent_height = elevation - curvature_drop_m(d, r_eff);
+                let angle = (apparent_height - observer_height) / d;
+                if angle > max_angle {
+                    max_angle = angle;
+                }
+                let target_angle =
+                    (target_altitude_m - curvature_drop_m(d, r_eff) - observer_height) / d;
+                if target_angle >= max_angle {
+                    visible_range = d;
+                } else {
+                    break;
+                }
+            }
+            LosPoint { azimuth_deg, range_m: visible_range }
+        })
+        .collect()
+}
+
 /// 半球状ドーム表示(`terrain::markers::push_coverage_dome`)1リングぶんの、全方位角の
 /// 見通し限界スラントレンジ。
 pub struct DomeRing {

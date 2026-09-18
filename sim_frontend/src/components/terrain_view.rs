@@ -11,7 +11,7 @@ use leptos::prelude::*;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
-use crate::terrain::camera::{CameraPreset, OrbitCamera};
+use crate::terrain::camera::{CameraPreset, OrbitCamera, ViewMode};
 use crate::terrain::loader::TerrainData;
 use crate::terrain::markers;
 use crate::terrain::mesh::{self, Origin};
@@ -20,6 +20,16 @@ use crate::terrain::renderer::TerrainRenderer;
 use crate::terrain::store::TerrainStore;
 use crate::ui_state::RadarMarkersState;
 use crate::ws::WsSignals;
+
+/// `Rc<RefCell<ViewState>>`をLeptosの条件付き描画(children位置のクロージャ)から
+/// 使うためのラッパー。LeptosのReactiveFunctionはSend境界を要求する(SSRとの共通APIの
+/// ため)が、wasm32-unknown-unknown(スレッドなし単一スレッド)ではSend/Syncは実質意味を
+/// 持たず、Rc<RefCell<..>>を複数スレッドから使うことは実際には起こり得ない
+/// (`ws.rs::WsConnection`と同じ理由・同じ対処)。
+#[derive(Clone)]
+struct SendableViewState(Rc<RefCell<ViewState>>);
+unsafe impl Send for SendableViewState {}
+unsafe impl Sync for SendableViewState {}
 
 struct ViewState {
     renderer: Option<TerrainRenderer>,
@@ -127,7 +137,9 @@ fn render_now(state: &Rc<RefCell<ViewState>>) {
 /// `render_now`すること。
 fn rebuild_markers(state: &Rc<RefCell<ViewState>>, radar_markers: RadarMarkersState) {
     let mut s = state.borrow_mut();
-    let (Some(terrain), Some(mesh_origin)) = (s.terrain.clone(), s.mesh_origin) else {
+    let (Some(terrain), Some(mesh_origin), mode) =
+        (s.terrain.clone(), s.mesh_origin, s.camera.mode)
+    else {
         return;
     };
     let Some(renderer) = s.renderer.as_mut() else {
@@ -135,11 +147,27 @@ fn rebuild_markers(state: &Rc<RefCell<ViewState>>, radar_markers: RadarMarkersSt
     };
     let marker_list = radar_markers.markers.get_untracked();
     let selected = radar_markers.selected.get_untracked();
-    let marker_vertices = markers::build_marker_geometry(&terrain, &mesh_origin, &marker_list, selected);
+    let mut marker_vertices = markers::build_marker_geometry(&terrain, &mesh_origin, &marker_list, selected);
+    // 覆域表示は3D(半球ドーム)と2D(指定高度での探知可能領域)で見せ方自体が別物なので、
+    // 同じ描画パイプライン(update_dome)に対してモードに応じて別のジオメトリを渡す。
+    let coverage_vertices = match mode {
+        ViewMode::ThreeD => markers::build_dome_surface_geometry(&terrain, &mesh_origin, &marker_list, selected),
+        ViewMode::TwoD => {
+            let altitude_m = radar_markers.coverage_altitude_m.get_untracked();
+            // 塗り(半透明、アルファ0.22)だけでは地図上で見えにくいため、マーカーと同じ
+            // 不透明LineListのバッファへ輪郭線も追加する(`push_coverage_outline`参照)。
+            marker_vertices.extend(markers::build_coverage_outline_geometry(
+                &terrain,
+                &mesh_origin,
+                &marker_list,
+                selected,
+                altitude_m,
+            ));
+            markers::build_coverage_area_geometry(&terrain, &mesh_origin, &marker_list, selected, altitude_m)
+        }
+    };
     renderer.update_markers(&marker_vertices);
-    let dome_vertices =
-        markers::build_dome_surface_geometry(&terrain, &mesh_origin, &marker_list, selected);
-    renderer.update_dome(&dome_vertices);
+    renderer.update_dome(&coverage_vertices);
 }
 
 #[component]
@@ -328,7 +356,19 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 let dy = (y - s.last_y) as f32;
                 s.last_x = x;
                 s.last_y = y;
-                s.camera.orbit(dx * ORBIT_SENSITIVITY, dy * ORBIT_SENSITIVITY);
+                match s.camera.mode {
+                    ViewMode::ThreeD => {
+                        s.camera.orbit(dx * ORBIT_SENSITIVITY, dy * ORBIT_SENSITIVITY);
+                    }
+                    ViewMode::TwoD => {
+                        // 正射影の画面縦幅(distance)と実際のcanvas高さ(ピクセル)の比から、
+                        // 画面上のドラッグ量をワールド座標(メートル)の移動量へ変換する。
+                        let canvas_h = s.renderer.as_ref().map(|r| r.canvas_height_px()).unwrap_or(1).max(1);
+                        let world_per_px = s.camera.distance / canvas_h as f32;
+                        // 画面上は北=上(up=Vec3::Y)なので、上方向のドラッグ(dy<0)は北への移動。
+                        s.camera.pan(dx * world_per_px, -dy * world_per_px);
+                    }
+                }
                 true
             }
         };
@@ -381,18 +421,46 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         }
     };
 
+    // 2D/3D表示モード切り替え。実際のモードは`state`(camera.mode)が持つが、ボタン表示・
+    // 条件分岐(見た目の切り替え)にはリアクティブなsignalが必要なので、ここで複製して持つ。
+    let view_mode = RwSignal::new(ViewMode::ThreeD);
+
+    // 俯瞰/側面プリセットボタンは2D/3Dどちらでも常に表示する(3Dモードへの切り替えを兼ねる)。
+    // `OrbitCamera::preset`は必ずmode=ThreeDにするため、2Dモード中にクリックした場合は
+    // view_modeも合わせて更新し、覆域表示(3Dドーム/2D覆域領域)のジオメトリも切り替える。
     let state_overview = state.clone();
     let on_preset_overview = move |_| {
         let target_up = state_overview.borrow().target_up;
         state_overview.borrow_mut().camera = OrbitCamera::preset(CameraPreset::Overview, target_up);
+        view_mode.set(ViewMode::ThreeD);
+        rebuild_markers(&state_overview, radar_markers);
         render_now(&state_overview);
     };
     let state_side = state.clone();
     let on_preset_side = move |_| {
         let target_up = state_side.borrow().target_up;
         state_side.borrow_mut().camera = OrbitCamera::preset(CameraPreset::Side, target_up);
+        view_mode.set(ViewMode::ThreeD);
+        rebuild_markers(&state_side, radar_markers);
         render_now(&state_side);
     };
+
+    let state_toggle = state.clone();
+    let on_toggle_view_mode = move |_| {
+        let new_mode = match view_mode.get_untracked() {
+            ViewMode::ThreeD => ViewMode::TwoD,
+            ViewMode::TwoD => ViewMode::ThreeD,
+        };
+        state_toggle.borrow_mut().camera.mode = new_mode;
+        view_mode.set(new_mode);
+        rebuild_markers(&state_toggle, radar_markers);
+        render_now(&state_toggle);
+    };
+
+    // 覆域高度入力欄(2Dモードのみ表示)はLeptosの条件付き描画(children位置のクロージャ)
+    // から使うため、Send境界を満たす`SendableViewState`でラップして持つ(`SendableViewState`
+    // の定義コメント参照)。
+    let state_alt = SendableViewState(state.clone());
 
     view! {
         <div class="terrain-view">
@@ -407,8 +475,33 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 on:contextmenu=on_context_menu
             ></canvas>
             <div class="terrain-view-controls">
+                <button on:click=on_toggle_view_mode title="2D/3D表示切り替え">
+                    {move || if view_mode.get() == ViewMode::ThreeD { "2D表示に切替" } else { "3D表示に切替" }}
+                </button>
                 <button on:click=on_preset_overview title="俯瞰視点に切り替え">"俯瞰"</button>
                 <button on:click=on_preset_side title="側面視点に切り替え">"側面"</button>
+                {move || {
+                    let state_input = state_alt.clone();
+                    (view_mode.get() == ViewMode::TwoD).then(move || {
+                        view! {
+                            <label class="coverage-altitude-label">
+                                "覆域高度(m)"
+                                <input
+                                    type="number"
+                                    step="10"
+                                    prop:value=move || radar_markers.coverage_altitude_m.get().to_string()
+                                    on:input=move |ev| {
+                                        if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+                                            radar_markers.coverage_altitude_m.set(v);
+                                            rebuild_markers(&state_input.0, radar_markers);
+                                            render_now(&state_input.0);
+                                        }
+                                    }
+                                />
+                            </label>
+                        }
+                    })
+                }}
             </div>
             {move || {
                 let s = status.get();

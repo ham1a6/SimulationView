@@ -381,6 +381,13 @@ impl TerrainRenderer {
         self.config.width as f32 / self.config.height.max(1) as f32
     }
 
+    /// canvasの内部解像度の縦幅(ピクセル)。2Dモードのドラッグ操作(パン)で、
+    /// 画面上のピクセル移動量をワールド座標(メートル)へ変換するのに使う
+    /// (`components/terrain_view.rs`参照)。
+    pub fn canvas_height_px(&self) -> u32 {
+        self.config.height
+    }
+
     pub fn render(&self, camera: &Camera) -> Result<(), String> {
         let camera_uniform = CameraUniform {
             view_proj: camera.view_proj_matrix().to_cols_array_2d(),
