@@ -26,3 +26,10 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color, 1.0);
 }
+
+// 見通し範囲の覆域ドーム(半球状の面)用。地形やマーカーを透けて見せたいため、
+// 固定の半透明アルファで出力する(頂点データ自体は他のパイプラインと共用のposition+colorのまま)。
+@fragment
+fn fs_dome(in: VertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(in.color, 0.22);
+}

@@ -121,7 +121,7 @@ fn render_now(state: &Rc<RefCell<ViewState>>) {
     }
 }
 
-/// レーダー観測点マーカー・見通し範囲の覆域リングのジオメトリを、現在の地形・原点・
+/// レーダー観測点マーカー・見通し範囲の覆域ドームのジオメトリを、現在の地形・原点・
 /// マーカー一覧・選択状態から作り直してGPUバッファへ反映する。原点変更時
 /// (メッシュ再構築後)・マーカー追加/削除/選択変更時に呼ぶ。描画自体は呼び出し側で
 /// `render_now`すること。
@@ -135,8 +135,11 @@ fn rebuild_markers(state: &Rc<RefCell<ViewState>>, radar_markers: RadarMarkersSt
     };
     let marker_list = radar_markers.markers.get_untracked();
     let selected = radar_markers.selected.get_untracked();
-    let vertices = markers::build_marker_geometry(&terrain, &mesh_origin, &marker_list, selected);
-    renderer.update_markers(&vertices);
+    let marker_vertices = markers::build_marker_geometry(&terrain, &mesh_origin, &marker_list, selected);
+    renderer.update_markers(&marker_vertices);
+    let dome_vertices =
+        markers::build_dome_surface_geometry(&terrain, &mesh_origin, &marker_list, selected);
+    renderer.update_dome(&dome_vertices);
 }
 
 #[component]

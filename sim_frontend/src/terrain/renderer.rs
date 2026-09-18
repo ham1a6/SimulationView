@@ -26,12 +26,17 @@ pub struct TerrainRenderer {
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
-    // レーダー観測点マーカー・見通し範囲の覆域リング用(LineList)。地形本体とは別パイプライン
-    // だが、頂点レイアウト・カメラバインドグループは共用する(terrain.wgslのシェーダーは
+    // レーダー観測点マーカー(四角い枠)用(LineList)。地形本体とは別パイプラインだが、
+    // 頂点レイアウト・カメラバインドグループは共用する(terrain.wgslのシェーダーは
     // 位置をview_projで変換して色をそのまま出すだけの汎用的な内容のため、線描画にもそのまま使える)。
     line_pipeline: wgpu::RenderPipeline,
     marker_vertex_buffer: Option<wgpu::Buffer>,
     num_marker_vertices: u32,
+    // 見通し範囲の覆域ドーム(半球状の面、TriangleList)用。地形・マーカーの奥に透けて見える
+    // よう、アルファブレンド有効・深度書き込み無効のパイプラインにしてある(fs_dome参照)。
+    dome_pipeline: wgpu::RenderPipeline,
+    dome_vertex_buffer: Option<wgpu::Buffer>,
+    num_dome_vertices: u32,
 }
 
 impl TerrainRenderer {
@@ -186,7 +191,7 @@ impl TerrainRenderer {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[Some(vertex_layout)],
+                buffers: &[Some(vertex_layout.clone())],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -211,6 +216,50 @@ impl TerrainRenderer {
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // 覆域ドーム(半球状の面)用パイプライン。地形・マーカーの奥に透けて見えるよう、
+        // アルファブレンドを有効にし、深度は「テストはする(地形より奥にあれば隠れる)が
+        // 書き込みはしない(ドーム自身の三角形同士が奥行き順で互いを隠して欠けて見える
+        // ことがないようにする、半透明物体の簡易的な描き方)」にしてある。
+        let dome_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("dome_surface_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[Some(vertex_layout)],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_dome"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -247,12 +296,14 @@ impl TerrainRenderer {
             line_pipeline,
             marker_vertex_buffer: None,
             num_marker_vertices: 0,
+            dome_pipeline,
+            dome_vertex_buffer: None,
+            num_dome_vertices: 0,
         })
     }
 
-    /// レーダー観測点マーカー・見通し範囲の覆域リングの頂点データを更新する。
-    /// 原点変更・マーカー追加/削除/選択変更のたびに呼び直す想定(`terrain/markers.rs`が
-    /// 頂点データを作る)。
+    /// レーダー観測点マーカー(四角い枠)の頂点データを更新する。原点変更・マーカー追加/
+    /// 削除/選択変更のたびに呼び直す想定(`terrain/markers.rs`が頂点データを作る)。
     pub fn update_markers(&mut self, vertices: &[super::mesh::TerrainVertex]) {
         if vertices.is_empty() {
             self.marker_vertex_buffer = None;
@@ -265,6 +316,22 @@ impl TerrainRenderer {
             usage: wgpu::BufferUsages::VERTEX,
         }));
         self.num_marker_vertices = vertices.len() as u32;
+    }
+
+    /// 選択中マーカーの覆域ドーム(半球状の面、TriangleList)の頂点データを更新する。
+    /// `update_markers`と同じタイミングで呼び直す想定。
+    pub fn update_dome(&mut self, vertices: &[super::mesh::TerrainVertex]) {
+        if vertices.is_empty() {
+            self.dome_vertex_buffer = None;
+            self.num_dome_vertices = 0;
+            return;
+        }
+        self.dome_vertex_buffer = Some(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("dome_vertex_buffer"),
+            contents: bytemuck::cast_slice(vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        }));
+        self.num_dome_vertices = vertices.len() as u32;
     }
 
     /// 原点変更時など、頂点数は変わらないまま座標(位置)だけを更新したいときに使う。
@@ -350,6 +417,16 @@ impl TerrainRenderer {
                     render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
                     render_pass.set_vertex_buffer(0, marker_buffer.slice(..));
                     render_pass.draw(0..self.num_marker_vertices, 0..1);
+                }
+            }
+
+            // 覆域ドーム(半透明)は他の不透明な描画がすべて終わった後に描く。
+            if let Some(dome_buffer) = self.dome_vertex_buffer.as_ref() {
+                if self.num_dome_vertices > 0 {
+                    render_pass.set_pipeline(&self.dome_pipeline);
+                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+                    render_pass.set_vertex_buffer(0, dome_buffer.slice(..));
+                    render_pass.draw(0..self.num_dome_vertices, 0..1);
                 }
             }
         }
