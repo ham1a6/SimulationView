@@ -11,6 +11,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 use crate::terrain::camera::{CameraPreset, OrbitCamera, ViewMode};
+use crate::terrain::display::WaterVisibilityState;
 use crate::terrain::loader::TerrainData;
 use crate::terrain::markers::{self, RadarMarkersState};
 use crate::terrain::mesh::{self, Origin};
@@ -45,6 +46,7 @@ fn try_init(
     origin_state: OriginState,
     status: RwSignal<String>,
     radar_markers: RadarMarkersState,
+    water_visibility: WaterVisibilityState,
 ) {
     let width = canvas.width();
     let height = canvas.height();
@@ -79,6 +81,7 @@ fn try_init(
                     s.target_up = target_up;
                     s.camera.target.z = target_up;
                 }
+                renderer.set_show_water(water_visibility.0.get_untracked());
                 let camera = state.borrow().camera.to_camera(renderer.aspect_ratio());
                 if let Err(e) = renderer.render(&camera) {
                     log::error!("[terrain] initial render failed: {e}");
@@ -158,6 +161,9 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let origin_state = use_context::<OriginState>().expect("OriginState context not found");
     let terrain_store = use_context::<TerrainStore>().expect("TerrainStore context not found");
     let radar_markers = use_context::<RadarMarkersState>().expect("RadarMarkersState context not found");
+    // 未提供でもデフォルト(表示)で動作するよう、他のcontextと違いunwrap_or_defaultにしてある
+    // (既存の利用側コードに影響を与えない、後から追加したオプション機能のため)。
+    let water_visibility = use_context::<WaterVisibilityState>().unwrap_or_default();
 
     terrain_store.ensure_loaded();
 
@@ -215,6 +221,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                             origin_state,
                             status,
                             radar_markers,
+                            water_visibility,
                         );
                     }
                 }
@@ -291,7 +298,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 .clone()
                 .dyn_into()
                 .expect("canvas node_ref should be an HtmlCanvasElement");
-            try_init(state.clone(), canvas, Some(data), origin_state, status, radar_markers);
+            try_init(state.clone(), canvas, Some(data), origin_state, status, radar_markers, water_visibility);
         });
     }
 
@@ -345,6 +352,21 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             let _ = radar_markers.coverage_altitude_m.get();
             rebuild_markers(&state, radar_markers);
             render_now(&state);
+        });
+    }
+
+    // --- Effect 5: 表示メニュー「海を表示」チェックボックスの変化に追従して描画を更新する ---
+    {
+        let state = state.clone();
+        Effect::new(move |_| {
+            let show = water_visibility.0.get();
+            let has_renderer = state.borrow().renderer.is_some();
+            if has_renderer {
+                if let Some(renderer) = state.borrow().renderer.as_ref() {
+                    renderer.set_show_water(show);
+                }
+                render_now(&state);
+            }
         });
     }
 

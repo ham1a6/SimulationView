@@ -4,6 +4,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
+use sim3dview::terrain::display::WaterVisibilityState;
 use sim3dview::terrain::markers::RadarMarkersState;
 use sim3dview::terrain::origin::OriginState;
 use sim3dview::terrain::store::TerrainStore;
@@ -38,6 +39,10 @@ pub fn App() -> impl IntoView {
     // 見通し範囲(レーダー観測点)の一覧・選択状態(sim3dviewライブラリの型)。メインパネル上の
     // 右クリックで追加し、ボトムステータスパネルの「見通し範囲」タブで一覧表示・編集・削除する。
     provide_context(RadarMarkersState::new());
+    // 海レイヤー(NaNセル・背景スカート)の表示/非表示(sim3dviewライブラリの型)。
+    // メニューバーの「表示」→「海を表示」チェックボックスから切り替える。
+    let water_visibility = WaterVisibilityState::new();
+    provide_context(water_visibility);
     // 現在の原点(sim3dviewライブラリの型)。TerrainViewはこれを読んでメッシュを再計算する。
     // サーバーからのOriginState(protocol)が届くたびに、下のEffectでこちらへミラーする
     // (sim3dviewライブラリは通信プロトコルを一切知らないため、この橋渡しはアプリ側の役目)。

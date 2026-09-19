@@ -2,12 +2,16 @@
 //! 「設定」→「原点設定...」/「覆域高度設定...」を選ぶと、sim3dviewライブラリが提供する
 //! フローティングパネル(`ui::origin_dialog`/`ui::coverage_altitude_dialog`)を開く
 //! (パネル本体・開閉状態の型ともライブラリ側にあり、このメニューは開閉のトリガーのみ)。
-//! ファイル/表示/ヘルプは現時点では項目未定のプレースホルダ(クリックしても「準備中」の
+//! 「表示」→「海を表示」は海レイヤー(NaNセル・背景スカート)の表示/非表示を切り替える
+//! チェックボックス(状態自体はsim3dviewライブラリの`terrain::display::WaterVisibilityState`、
+//! 実際の描画反映は`ui::terrain_view::TerrainView`側)。
+//! ファイル/ヘルプは現時点では項目未定のプレースホルダ(クリックしても「準備中」の
 //! ダミー項目が出るだけ)。メニューが開いている間は透明な全画面バックドロップを敷き、
 //! そこをクリックすると閉じる(外側クリックで閉じる一般的なメニューの挙動)。
 
 use leptos::prelude::*;
 
+use sim3dview::terrain::display::WaterVisibilityState;
 use sim3dview::ui::coverage_altitude_dialog::CoverageAltitudeDialogState;
 use sim3dview::ui::origin_dialog::OriginDialogState;
 
@@ -26,6 +30,8 @@ pub fn MenuBar() -> impl IntoView {
         use_context::<OriginDialogState>().expect("OriginDialogState context not found");
     let coverage_altitude_dialog = use_context::<CoverageAltitudeDialogState>()
         .expect("CoverageAltitudeDialogState context not found");
+    let water_visibility =
+        use_context::<WaterVisibilityState>().expect("WaterVisibilityState context not found");
 
     let menu_entry = move |id: MenuId, label: &'static str| {
         let dropdown = move || {
@@ -50,6 +56,21 @@ pub fn MenuBar() -> impl IntoView {
                         >
                             "覆域高度設定..."
                         </button>
+                    </div>
+                }
+                .into_any(),
+                MenuId::View => view! {
+                    <div class="menu-dropdown">
+                        <label class="menu-dropdown-item menu-dropdown-item--checkbox">
+                            <input
+                                type="checkbox"
+                                prop:checked=move || water_visibility.0.get()
+                                on:change=move |_| {
+                                    water_visibility.0.update(|v| *v = !*v);
+                                }
+                            />
+                            "海を表示"
+                        </label>
                     </div>
                 }
                 .into_any(),

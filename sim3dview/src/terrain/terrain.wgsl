@@ -4,6 +4,22 @@ struct CameraUniform {
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
 
+// 表示オプション(表示メニュー「海を表示」チェックボックス、terrain/display.rs参照)。
+// show_water<0.5なら海(WATER_COLORとほぼ同じ色の頂点)のフラグメントを破棄する。
+// 頂点に「海かどうか」の専用属性を持たせる代わりに、既存のcolor属性がWATER_COLORと
+// 一致するかどうかで判定している(mesh.rsのNaNセル・背景スカートはどちらも
+// 厳密に同じWATER_COLORを使っているため、追加の頂点属性なしで判別できる)。
+struct DisplayUniform {
+    show_water: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+};
+@group(0) @binding(1)
+var<uniform> display: DisplayUniform;
+
+const WATER_COLOR: vec3<f32> = vec3<f32>(0.55, 0.78, 0.92);
+
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) color: vec3<f32>,
@@ -24,6 +40,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    if (display.show_water < 0.5 && distance(in.color, WATER_COLOR) < 0.01) {
+        discard;
+    }
     return vec4<f32>(in.color, 1.0);
 }
 

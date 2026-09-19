@@ -14,6 +14,16 @@ struct CameraUniform {
     view_proj: [[f32; 4]; 4],
 }
 
+/// 表示オプション(表示メニュー「海を表示」チェックボックス)。フラグメントシェーダーで
+/// 海(WATER_COLOR)のフラグメントを破棄するかどうかを切り替える(terrain.wgsl参照)。
+/// 16byte境界に揃えるため3つのパディングを持たせてある。
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct DisplayUniform {
+    show_water: f32,
+    _pad: [f32; 3],
+}
+
 /// マルチサンプルアンチエイリアシング(MSAA)のサンプル数。地形メッシュの解像度を
 /// 2048×2048に引き上げた後、遠景で多数の細かい三角形(陸地・海のNaN色を含む)が
 /// 1画素に収まりきらずエイリアシング(市松状のちらつき/斑点)を起こすようになったため
@@ -51,6 +61,7 @@ pub struct TerrainRenderer {
     num_indices: u32,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    display_buffer: wgpu::Buffer,
     depth_view: wgpu::TextureView,
     // MSAA用の中間カラーテクスチャ(スーパーサンプリングの内部解像度、SAMPLE_COUNT倍
     // マルチサンプル)。各パイプラインがこのテクスチャへ描画し、render()の最後に
@@ -137,27 +148,46 @@ impl TerrainRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
+        let display_uniform = DisplayUniform { show_water: 1.0, _pad: [0.0; 3] };
+        let display_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("display_buffer"),
+            contents: bytemuck::bytes_of(&display_uniform),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
         let camera_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("camera_bind_group_layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                }],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
             });
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("camera_bind_group"),
             layout: &camera_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: camera_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: display_buffer.as_entire_binding() },
+            ],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -432,6 +462,7 @@ impl TerrainRenderer {
             num_indices: mesh.indices.len() as u32,
             camera_buffer,
             camera_bind_group,
+            display_buffer,
             depth_view,
             msaa_view,
             supersample_color_view,
@@ -486,6 +517,14 @@ impl TerrainRenderer {
     pub fn update_vertices(&self, mesh: &TerrainMesh) {
         self.queue
             .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&mesh.vertices));
+    }
+
+    /// 表示メニューの「海を表示」チェックボックスから呼ぶ。海(NaNセル・背景スカートとも
+    /// WATER_COLOR)のフラグメントをシェーダー側で破棄するかどうかを切り替える
+    /// (terrain.wgslのfs_main参照)。
+    pub fn set_show_water(&self, show: bool) {
+        let uniform = DisplayUniform { show_water: if show { 1.0 } else { 0.0 }, _pad: [0.0; 3] };
+        self.queue.write_buffer(&self.display_buffer, 0, bytemuck::bytes_of(&uniform));
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
