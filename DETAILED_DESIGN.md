@@ -1353,15 +1353,10 @@ stateDiagram-v2
 
 ### 7.8 シミュレーションステータスパネルの状態表示(AppStatus)
 
-シミュレーションステータスパネルのバッジは、**接続そのものの状態(`ConnectionStatus`、
-フロント側が自前で計算)**と**シミュレータアプリケーション自体の状態(`AppStatus.text`、
-C++側から配信)**という2つの独立したレイヤーの情報を、1つの文字列に出し分けて表示する:
-
-- `ConnectionStatus::Connected`のとき: `AppStatus.text`をそのまま表示
-  (例: "シミュレーション実行中" / "一時停止中")
-- それ以外(`Connecting`/`Reconnecting`/`PausedHidden`)のとき: 詳細を出し分けず
-  一律「接続中」と表示する(バッジの背景色は`ConnectionStatus`ごとに従来通り
-  色分けされたまま)
+シミュレーションステータスパネルの状態表示は、バッジなどの装飾を付けず、C++側から配信された
+`AppStatus.text`を**そのまま文字列として表示する**だけ。取得できない場合(WebSocketが
+`ConnectionStatus::Connected`でない、または接続済みでもまだ`AppStatus`を受け取っていない)は、
+詳細を出し分けず一律「接続中」とだけ表示する(`ConnectionStatus`ごとの色分け・文言の出し分けはしない)。
 
 `AppStatus.text`の実体はC++側`Simulation::running_`(pause/resumeコマンドで変化)に
 連動しており、`OriginState`の`origin_changed`と同じパターンで

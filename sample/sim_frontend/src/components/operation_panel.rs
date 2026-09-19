@@ -11,28 +11,21 @@ use crate::ws::{ConnectionStatus, WsSignals};
 pub fn SimulationStatusPanel() -> impl IntoView {
     let signals = use_context::<WsSignals>().expect("WsSignals context not found");
 
-    // 接続済みの間は、シミュレータアプリケーション自身が送ってきた状態文字列を
-    // そのまま表示する。それ以外の状態(接続中・再接続試行中・一時停止中)は、
-    // 詳細を出し分けず一律「接続中」と表示する(バッジの色分けは維持する)。
-    let status_text = move || match signals.status.get() {
-        ConnectionStatus::Connected => signals
-            .app_status
-            .get()
-            .map(|s| s.text)
-            .unwrap_or_else(|| "接続済み".to_string()),
-        _ => "接続中".to_string(),
-    };
-    let status_class = move || match signals.status.get() {
-        ConnectionStatus::Connected => "status status--connected",
-        ConnectionStatus::Connecting => "status status--connecting",
-        ConnectionStatus::Reconnecting { .. } => "status status--reconnecting",
-        ConnectionStatus::PausedHidden => "status status--paused",
+    // シミュレータアプリケーション(C++)が送ってきた状態文字列を装飾なしでそのまま表示する。
+    // 接続が確立していない・まだ状態文字列を受け取っていないなど、取得できない間は
+    // 詳細を出し分けず一律「接続中」とだけ表示する。
+    let status_text = move || {
+        let app_status = match signals.status.get() {
+            ConnectionStatus::Connected => signals.app_status.get(),
+            _ => None,
+        };
+        app_status.map(|s| s.text).unwrap_or_else(|| "接続中".to_string())
     };
 
     view! {
         <div class="panel-section operation-panel">
             <h2>"シミュレーションステータスパネル"</h2>
-            <p class=status_class>{status_text}</p>
+            <p>{status_text}</p>
 
             <dl class="kv-list">
                 <dt>"原点"</dt>

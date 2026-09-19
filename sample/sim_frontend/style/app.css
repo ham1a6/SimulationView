@@ -344,31 +344,3 @@ body {
     border-radius: 4px;
     font-size: 0.85rem;
 }
-
-.status {
-    display: inline-block;
-    padding: 0.2rem 0.6rem;
-    border-radius: 999px;
-    font-weight: bold;
-    font-size: 0.85rem;
-}
-
-.status--connected {
-    background: #163;
-    color: #9f9;
-}
-
-.status--connecting {
-    background: #663;
-    color: #ff9;
-}
-
-.status--reconnecting {
-    background: #631;
-    color: #fc9;
-}
-
-.status--paused {
-    background: #333;
-    color: #999;
-}
