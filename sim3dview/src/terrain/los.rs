@@ -25,8 +25,13 @@ fn azimuth_deg_of(az_i: usize) -> f64 {
     az_i as f64 * 360.0 / NUM_AZIMUTHS as f64
 }
 
-/// 1方位角あたりのサンプル点数。
-const SAMPLES_PER_RAY: usize = 200;
+/// 1方位角あたりのサンプル点数(`compute_los`・`compute_coverage_area`・`compute_los_dome`)。
+/// 最大観測範囲50kmで50m間隔、200kmで200m間隔(地形の最細解像度30mに近い細かさ)。
+/// 増やすほど計算時間はほぼ比例して増える(6400方位 x この点数だけ標高を引く)。
+const SAMPLES_PER_RAY: usize = 1000;
+/// 対象地点1点までの見通し判定(`is_visible`・`min_visible_altitude`。断面図で断面上の
+/// 各点ごとに呼ぶので軽くしておく必要がある)のサンプル点数の上限。500m間隔で、10〜この値の範囲。
+const MAX_TARGET_SAMPLES: usize = 200;
 
 /// 見通し範囲計算のパラメータ。
 pub struct LosParams {
@@ -132,7 +137,7 @@ pub fn is_visible(
     let target_angle =
         (target_elevation - curvature_drop_m(target_distance, r_eff) - observer_height) / target_distance;
 
-    let samples = ((target_distance / 500.0).ceil() as usize).clamp(10, SAMPLES_PER_RAY);
+    let samples = ((target_distance / 500.0).ceil() as usize).clamp(10, MAX_TARGET_SAMPLES);
     for i in 1..samples {
         let d = target_distance * i as f64 / samples as f64;
         let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
@@ -180,7 +185,7 @@ pub fn min_visible_altitude(
 
     // 観測点から対象地点までの間の地形が作る最大の見かけ仰角(=対象が見えるために
     // 必要な最低仰角)を求める。target自身の標高には依存しない点がis_visibleと異なる。
-    let samples = ((target_distance / 500.0).ceil() as usize).clamp(10, SAMPLES_PER_RAY);
+    let samples = ((target_distance / 500.0).ceil() as usize).clamp(10, MAX_TARGET_SAMPLES);
     let mut required_angle = f64::NEG_INFINITY;
     for i in 1..samples {
         let d = target_distance * i as f64 / samples as f64;
@@ -284,7 +289,12 @@ pub fn compute_los_dome(
 
     let ring_tans: Vec<f64> = elevation_degs.iter().map(|d| d.to_radians().tan()).collect();
     let ring_cos: Vec<f64> = elevation_degs.iter().map(|d| d.to_radians().cos()).collect();
-    let mut ring_slant_ranges = vec![vec![0.0_f64; NUM_AZIMUTHS]; elevation_degs.len()];
+    let num_rings = elevation_degs.len();
+    debug_assert!(
+        elevation_degs.windows(2).all(|w| w[0] < w[1]) && elevation_degs.iter().all(|&d| (0.0..90.0).contains(&d)),
+        "elevation_degsは0以上90未満の昇順で渡すこと"
+    );
+    let mut ring_slant_ranges = vec![vec![0.0_f64; NUM_AZIMUTHS]; num_rings];
 
     for az_i in 0..NUM_AZIMUTHS {
         let azimuth_deg = azimuth_deg_of(az_i);
@@ -295,37 +305,55 @@ pub fn compute_los_dome(
 
         // 仰角が大きいほど、同じスラントレンジ上限に対応する水平距離の上限は小さくなる
         // (horizontal = スラントレンジ * cos(仰角))。
-        let horizontal_caps: Vec<f64> =
-            ring_cos.iter().map(|&c| data_max.min(params.max_range_m * c)).collect();
-        let ray_max = horizontal_caps.iter().cloned().fold(0.0_f64, f64::max);
+        let horizontal_cap = |k: usize| data_max.min(params.max_range_m * ring_cos[k]);
+        let ray_max = (0..num_rings).map(horizontal_cap).fold(0.0_f64, f64::max);
         if ray_max <= 0.0 {
             continue;
         }
+        let sample_distance = |i: usize| ray_max * i as f64 / SAMPLES_PER_RAY as f64;
 
+        // リングkについて、遮蔽されずに届いた最後のサンプル番号`reach`(0なら手前で遮蔽)から、
+        // そのリングのスラントレンジを確定する(水平距離の上限`horizontal_cap(k)`を超える
+        // サンプルは対象外)。
+        let mut finalize = |k: usize, reach: usize| {
+            let cap = horizontal_cap(k);
+            let mut j = reach.min(((cap / ray_max) * SAMPLES_PER_RAY as f64).floor() as usize);
+            while j > 0 && sample_distance(j) > cap {
+                j -= 1;
+            }
+            while j < reach && sample_distance(j + 1) <= cap {
+                j += 1;
+            }
+            if j > 0 {
+                let d = sample_distance(j);
+                ring_slant_ranges[k][az_i] = if ring_cos[k] > 1e-6 { d / ring_cos[k] } else { d };
+            }
+        };
+
+        // 仰角が低いリングほど`ring_tans`が小さく、先に遮蔽される(`max_angle`は単調非減少)。
+        // 遮蔽が確定したリングは先頭から順に`first_alive`まで進むので、リング数に関わらず
+        // 1サンプルあたりの比較は(新たに遮蔽されたリングを除いて)1回で済む。
         let mut max_angle = f64::NEG_INFINITY;
-        let mut ring_done = vec![false; ring_tans.len()];
+        let mut first_alive = 0;
         for i in 1..=SAMPLES_PER_RAY {
-            let d = ray_max * i as f64 / SAMPLES_PER_RAY as f64;
+            let d = sample_distance(i);
             let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
             let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
             let apparent_height = elevation - curvature_drop_m(d, r_eff);
             let angle = (apparent_height - observer_height) / d;
             if angle > max_angle {
                 max_angle = angle;
-            }
-            for k in 0..ring_tans.len() {
-                if ring_done[k] || d > horizontal_caps[k] {
-                    continue;
+                while first_alive < num_rings && max_angle > ring_tans[first_alive] {
+                    finalize(first_alive, i - 1);
+                    first_alive += 1;
                 }
-                if max_angle <= ring_tans[k] {
-                    ring_slant_ranges[k][az_i] = if ring_cos[k] > 1e-6 { d / ring_cos[k] } else { d };
-                } else {
-                    ring_done[k] = true;
+                if first_alive == num_rings {
+                    break;
                 }
             }
-            if ring_done.iter().all(|&b| b) {
-                break;
-            }
+        }
+        for k in first_alive..num_rings {
+            finalize(k, SAMPLES_PER_RAY);
         }
     }
 

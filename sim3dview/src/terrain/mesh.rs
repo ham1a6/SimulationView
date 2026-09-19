@@ -30,6 +30,12 @@ pub struct EnuTransform {
     origin_x: f64,
     origin_y: f64,
     origin_z: f64,
+    /// 原点の緯度経度の三角関数(`transform_f64`・`enu_to_geodetic`が毎回求め直すと、
+    /// 覆域ドームの頂点変換のように大量に呼ぶ場面で重いので、`new`で1回だけ求めておく)。
+    sin_lat0: f64,
+    cos_lat0: f64,
+    sin_lon0: f64,
+    cos_lon0: f64,
     a: f64,
     e2: f64,
     /// 原点緯度における子午線曲率半径(`inverse`用。呼び出しごとに求め直すと見通し計算で
@@ -55,6 +61,10 @@ impl EnuTransform {
             origin_x: x0,
             origin_y: y0,
             origin_z: z0,
+            sin_lat0,
+            cos_lat0: lat0.cos(),
+            sin_lon0: lon0.sin(),
+            cos_lon0: lon0.cos(),
             a,
             e2,
             meridian_radius: a * (1.0 - e2) / denom.powi(3),
@@ -76,10 +86,8 @@ impl EnuTransform {
         let dy = y - self.origin_y;
         let dz = z - self.origin_z;
 
-        let sin_lat0 = self.origin_lat_rad.sin();
-        let cos_lat0 = self.origin_lat_rad.cos();
-        let sin_lon0 = self.origin_lon_rad.sin();
-        let cos_lon0 = self.origin_lon_rad.cos();
+        let (sin_lat0, cos_lat0, sin_lon0, cos_lon0) =
+            (self.sin_lat0, self.cos_lat0, self.sin_lon0, self.cos_lon0);
 
         let east = -sin_lon0 * dx + cos_lon0 * dy;
         let north = -sin_lat0 * cos_lon0 * dx - sin_lat0 * sin_lon0 * dy + cos_lat0 * dz;
@@ -91,10 +99,8 @@ impl EnuTransform {
     /// ENU→ECEF(原点の回転行列の転置)→測地座標(反復法)。原点から数千km離れた点でも
     /// 地球の丸み・楕円体を正しく扱う(下の`inverse`は原点近傍の接平面近似)。
     pub fn enu_to_geodetic(&self, east: f64, north: f64, up: f64) -> (f64, f64, f64) {
-        let sin_lat0 = self.origin_lat_rad.sin();
-        let cos_lat0 = self.origin_lat_rad.cos();
-        let sin_lon0 = self.origin_lon_rad.sin();
-        let cos_lon0 = self.origin_lon_rad.cos();
+        let (sin_lat0, cos_lat0, sin_lon0, cos_lon0) =
+            (self.sin_lat0, self.cos_lat0, self.sin_lon0, self.cos_lon0);
 
         let x = self.origin_x - sin_lon0 * east - sin_lat0 * cos_lon0 * north + cos_lat0 * cos_lon0 * up;
         let y = self.origin_y + cos_lon0 * east - sin_lat0 * sin_lon0 * north + cos_lat0 * sin_lon0 * up;
