@@ -1085,6 +1085,22 @@ far→深度0)に切り替えた。浮動小数点は0付近ほど密に値を�
   「信頼されていないマウントポイント」で起動に失敗する。その場合は
   `~/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/cargo.exe`を直接実行する
 
+### geotiff_preprocessをサンプルからライブラリ側(`tools/`)へ移動
+
+前処理ツールは`sample/sim_server/tools/geotiff_preprocess`にあり、sim_serverのCMakeプロジェクトの
+一部としてビルドされていた。だが、地形データ(`heightmap.bin`/`metadata.json`)を作るのは
+sim3dviewを使う側のアプリ全般に必要な工程で、サンプルサーバー固有のものではないため、
+ライブラリの一部としてリポジトリ直下の`tools/geotiff_preprocess`へ移した。
+
+- **独立したCMakeプロジェクト化**: `tools/geotiff_preprocess/CMakeLists.txt`を単独の`project()`にし、
+  専用の`vcpkg.json`(`gdal`のみ)を置いた。sim_server側は`add_subdirectory`と`vcpkg.json`の`gdal`を
+  削除し、GDALに一切依存しなくなった(ビルド時間の大半を占めていたGDALのビルドがsim_serverから消えた)
+- **出力先の変更**: `geotiff_preprocess.exe`は`tools/geotiff_preprocess/build/Debug/`に出る
+  (旧: `sample/sim_server/build/tools/geotiff_preprocess/Debug/`)。`build/`は`.gitignore`に追加
+- 入力・出力の既定パス(`map_data`、`sample/sim_server/assets/terrain`)は相対パスのままで、
+  従来どおりリポジトリルートから実行する。出力先の既定はサンプルのassetsを指すが、
+  第2引数で任意のディレクトリに変更できる
+
 ## 全実装完了後のコードレビューで修正済みの項目
 
 C++/Rust全ソースを通読し、`cargo check`(警告ゼロ化)・CMakeビルド(警告ゼロ)まで確認した際に

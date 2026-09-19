@@ -161,6 +161,11 @@ Sim3dView/
 ├── Cargo.toml                  # ワークスペースルート(members: sim3dview, sample/sim_frontend)
 ├── map_data/                  # 入力: ALOS DSM GeoTIFFタイル(17枚、既存・変更しない)
 │   └── ALPSMLC30_N###E###_DSM.tif ...
+├── tools/                       # ライブラリの一部として提供する開発ツール(サンプルではない)
+│   └── geotiff_preprocess/        # GeoTIFF→heightmap.bin/metadata.json前処理CLI(C++, GDAL依存はここに限定)
+│       ├── CMakeLists.txt           # sim_serverとは独立したCMakeプロジェクト
+│       ├── vcpkg.json               # gdal
+│       └── main.cpp
 ├── sim3dview/                   # ライブラリ本体(Rust/Leptos/WASM)。使い方はsim3dview/README.md参照
 │   ├── Cargo.toml
 │   ├── README.md                 # 開発者向け使い方ドキュメント
@@ -191,7 +196,7 @@ Sim3dView/
 └── sample/                       # 「これはサンプルです」という位置づけのディレクトリ
     ├── sim_server/                 # C++側(sim3dviewのデータ契約を満たす参照実装サーバー)
     │   ├── CMakeLists.txt
-    │   ├── vcpkg.json               # libuv/zlib/gdal(前処理ツール専用)
+    │   ├── vcpkg.json               # libuv/zlib
     │   ├── third_party/
     │   │   ├── uWebSockets/          # git submodule (uSockets含む)
     │   │   └── msgpack-cxx/          # git submodule (msgpack-c cpp_masterブランチ)
@@ -203,10 +208,6 @@ Sim3dView/
     │   │   ├── main.cpp
     │   │   ├── simulation.cpp
     │   │   └── ws_server.cpp
-    │   ├── tools/
-    │   │   └── geotiff_preprocess/     # GDAL依存はここに限定
-    │   │       ├── CMakeLists.txt
-    │   │       └── main.cpp
     │   └── assets/
     │       └── terrain/                 # 前処理ツールの出力(heightmap.bin/metadata.json)
     └── sim_frontend/                # sim3dviewライブラリを使うサンプルアプリ(Rust)

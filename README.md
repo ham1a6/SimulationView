@@ -99,7 +99,7 @@ cargo check -p sim3dview --target wasm32-unknown-unknown      # ライブラリ�
 cargo check -p sim_frontend --target wasm32-unknown-unknown   # サンプルアプリの統合コンパイル確認
 ```
 
-### 3. C++側(sim_server)のビルド
+### 3. C++側のビルド(sim_server と 前処理ツール)
 
 Visual Studio 2022同梱のCMake・vcpkgを使う。パスは環境によって多少変わるので、自分の環境の
 Visual Studioインストール先に合わせて読み替えること。
@@ -110,16 +110,20 @@ $toolchain = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\vcpkg\s
 
 & $cmake -S sample/sim_server -B sample/sim_server/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="$toolchain"
 & $cmake --build sample/sim_server/build --config Debug
+
+# 地形データ前処理ツール(sim3dviewライブラリの一部。GDAL依存。sim_serverとは別のCMakeプロジェクト)
+& $cmake -S tools/geotiff_preprocess -B tools/geotiff_preprocess/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="$toolchain"
+& $cmake --build tools/geotiff_preprocess/build --config Debug
 ```
 
-初回のconfigure時にvcpkgが依存(`libuv`/`zlib`/`gdal`、`sample/sim_server/vcpkg.json`で管理)を
-自動ビルドする。**GDALのフルビルドだけで15分前後かかる**(2回目以降はバイナリキャッシュが
-効いて数秒〜数十秒)。
+初回のconfigure時にvcpkgが依存を自動ビルドする(sim_serverは`libuv`/`zlib`=`sample/sim_server/vcpkg.json`、
+前処理ツールは`gdal`=`tools/geotiff_preprocess/vcpkg.json`)。**GDALのフルビルドだけで15分前後かかる**
+(2回目以降はバイナリキャッシュが効いて数秒〜数十秒)。
 
 ビルドが成功すると以下が生成される(出力先が2箇所に分かれる点に注意):
 
 - `sample/sim_server/build/Debug/sim_server.exe` — シミュレーション本体+WebSocket/HTTPサーバー
-- `sample/sim_server/build/tools/geotiff_preprocess/Debug/geotiff_preprocess.exe` — 地形データ前処理ツール
+- `tools/geotiff_preprocess/build/Debug/geotiff_preprocess.exe` — 地形データ前処理ツール
 
 ### 4. 地形データの生成(初回のみ・1回だけ実行)
 
@@ -129,7 +133,7 @@ $toolchain = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\vcpkg\s
 相対パスで参照するため):
 
 ```powershell
-sample\sim_server\build\tools\geotiff_preprocess\Debug\geotiff_preprocess.exe
+tools\geotiff_preprocess\build\Debug\geotiff_preprocess.exe
 ```
 
 `map_data/`内のGeoTIFFタイル(現在17枚同梱済み)を自動検出し、モザイク→ダウンサンプリング
@@ -215,7 +219,7 @@ http://localhost:8081
 | `trunk serve`が`address already in use`(os error 10048)で失敗する | 既定の8080番ポートはDocker Desktop/WSLが使用していることがある。`sample/sim_frontend/Trunk.toml`で8081番に変更済み |
 | `trunk serve`の起動ログが`server listening at:`の後、一部アドレス(`kubernetes.docker.internal`等)を数十秒おきに追加表示し続けて実際には繋がらない | 起動時のネットワークインターフェース・ホスト名列挙処理がDocker関連の仮想ネットワーク環境でハングすることがある。`Trunk.toml`で`disable_address_lookup = true`にして回避済み |
 | `sim_server.exe`が起動しない/すぐ終了する | 別プロセスが既に9001番ポートを使っていないか確認(`netstat -ano \| findstr 9001`)。前のsim_serverプロセスが残っていないか確認する |
-| vcpkgの`gdal`インストールが`libxml2`のビルドで失敗する | 本プロジェクトでは`sample/sim_server/vcpkg.json`で`gdal`を`"default-features": false`にすることで、不要な`libxml2`(GML/KML用、Windowsで既知のIconv関連ビルド失敗がある)を回避済み。設定を変更していなければ発生しない |
+| vcpkgの`gdal`インストールが`libxml2`のビルドで失敗する | 本プロジェクトでは`tools/geotiff_preprocess/vcpkg.json`で`gdal`を`"default-features": false`にすることで、不要な`libxml2`(GML/KML用、Windowsで既知のIconv関連ビルド失敗がある)を回避済み。設定を変更していなければ発生しない |
 | `geotiff_preprocess.exe`を実行しても`map_data`が見つからない | リポジトリの**ルートディレクトリ**から実行しているか確認する(既定のパスは`map_data`/`sample/sim_server/assets/terrain`という相対パス) |
 | GDALのビルドがとても遅い | 初回のみ発生(15分前後)。2回目以降はvcpkgのバイナリキャッシュが効くため数秒で終わる |
 | `sim3dview`ライブラリ側だけを編集したのに、`trunk serve`が再ビルドせず古い表示のまま | Trunkはpath依存先(`sim3dview`)のソース変更を自動ではwatchしない。`trunk serve`を再起動する(サンプルアプリ側のファイルも一緒に変更していれば自動検知される) |

@@ -658,7 +658,7 @@ classDiagram
 
 ### 5.5 GeoTIFF前処理ツール(geotiff_preprocess)のクラス構成
 
-`tools/geotiff_preprocess/main.cpp`に実装(単一ファイル、`sim_server`本体とは別実行ファイル)。
+`tools/geotiff_preprocess/main.cpp`に実装(単一ファイル、`sim_server`本体とは別のCMakeプロジェクト・別実行ファイル。sim3dviewライブラリの一部としてリポジトリ直下の`tools/`に置く)。
 
 | 関数/構造体 | 役割 |
 |---|---|

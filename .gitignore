@@ -2,6 +2,9 @@
 sample/sim_server/build/
 sample/sim_server/third_party/vcpkg_installed/
 sample/sim_server/vcpkg-configuration.json
+# C++ (tools/geotiff_preprocess)
+tools/geotiff_preprocess/build/
+
 # geotiff_preprocessの生成物(map_data/から再生成可能なのでコミットしない)
 sample/sim_server/assets/terrain/*.bin
 sample/sim_server/assets/terrain/*.json

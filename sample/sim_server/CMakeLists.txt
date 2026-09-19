@@ -70,6 +70,3 @@ endif()
 if (MSVC)
     target_compile_options(sim_server PRIVATE /Zc:__cplusplus)
 endif()
-
-# --- GeoTIFF前処理ツール(単発CLI、GDAL依存はこのサブディレクトリに限定) -------------
-add_subdirectory(tools/geotiff_preprocess)

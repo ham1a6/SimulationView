@@ -60,8 +60,8 @@ sim3dview = { git = "https://example.com/your-fork/Sim3dView.git" }
 - `{base_url}/heightmap.bin`(`Content-Type: application/octet-stream`): `width * height * 4`
   バイトのリトルエンディアンf32配列(row-major、南→北の行順)。NODATA/海は`NaN`。
 
-このリポジトリの`sample/sim_server`(C++ + GDAL)は、ALOS DSM GeoTIFFタイルからこの2ファイルを
-生成する参照実装です(`sample/sim_server/tools/geotiff_preprocess`)。同じ形式さえ満たせば
+このリポジトリの`tools/geotiff_preprocess`(C++ + GDAL)は、ALOS DSM GeoTIFFタイルからこの2ファイルを
+生成する前処理ツールで、ライブラリの一部として提供しています。同じ形式さえ満たせば
 サーバーの実装言語・データソースは問いません。
 
 ## 最小構成の使用例

@@ -33,8 +33,10 @@ C++シミュレータ + Rust/Leptos(WASM) Web UI + ALOS DEMベースの3D地形�
 sim3dview/            # ライブラリ本体(Rust/Leptos/WASM)。terrain/(データ取得・カメラ・wgpu描画・
                        # 覆域/見通し計算)+ ui/(TerrainView等のLeptosコンポーネント)
 sample/
-  sim_server/            # C++側(シミュレーション本体 + WebSocketサーバー + GeoTIFF前処理ツール)
+  sim_server/            # C++側(シミュレーション本体 + WebSocketサーバー)
   sim_frontend/          # sim3dviewを使うサンプルアプリ。VAB・状況パネル・メニュー・通信プロトコル等
+tools/
+  geotiff_preprocess/    # ライブラリの一部の前処理CLI(C++/GDAL)。GeoTIFF→heightmap.bin/metadata.json。独立CMakeプロジェクト
 map_data/             # 入力: ALOS DSM GeoTIFFタイル(17枚、既存・変更しない)
 Cargo.toml             # ワークスペースルート(members: sim3dview, sample/sim_frontend)
 ```
