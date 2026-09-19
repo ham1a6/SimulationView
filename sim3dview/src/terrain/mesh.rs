@@ -220,24 +220,154 @@ pub fn build_mesh(data: &TerrainData, origin: &Origin) -> TerrainMesh {
     }
 
     let mut mesh = TerrainMesh { vertices, indices };
-    append_background_skirt(&mut mesh, data.metadata.elevation_min);
+    append_background_skirt(&mut mesh, data.metadata.elevation_min, bounds, &transform);
     mesh
 }
 
 /// メインパネルの背景(実データの外接矩形の外側)を「地平線から下は水色」に見せるための、
-/// 実データよりずっと広い水平な板(スカート)。カメラの最大ズームアウト距離・遠方クリップ距離
-/// (`terrain/camera.rs`のMAX_DISTANCE/Z_FAR)のどこから見ても端が視野内に入らない大きさに
-/// しておく。標高は実データの最低標高より確実に低い位置に置き、実際の地形(海面=標高0m付近を
-/// 含む)が常に手前に描画されるようにする(同じ高さだとZファイティングで点滅しうるため)。
-const BACKGROUND_HALF_SIZE_M: f32 = 4_000_000.0;
+/// 実データよりずっと広い水平な板(スカート)。標高は実データの最低標高より確実に低い位置に
+/// 置き、実際の地形(海面=標高0m付近を含む)が常に手前に描画されるようにする(同じ高さだと
+/// Zファイティングで点滅しうるため)。
+///
+/// 外周の半径は`terrain::camera`のZ_FAR・MAX_DISTANCEと整合させる必要がある: カメラは
+/// 原点から最大MAX_DISTANCE離れられるため、スカートの外周(隅ではコーナーウェッジ用に
+/// さらに2倍まで伸ばす、下記参照)がZ_FARを超えると、カメラの遠方クリップ面によって
+/// スカートの外周を切り取ってしまい、その先に何も描画されない黒い背景が見えてしまう
+/// (実機で確認した不具合。以前はZ_FARが無限遠だったため問題にならなかったが、有限の
+/// Z_FARに変更した際にこの制約を見落としていた。またこの半径を小さくしすぎても、
+/// 俯瞰プリセットの広いFOV+浅いピッチ角では画面端で地平線方向の視線がこの半径より
+/// 遠くまで届いてしまい、同様に黒い背景が見える不具合も実機で確認した。以前の
+/// 「一律の全面板」方式で使っていた半径と同じ4,000,000mまで戻すことで解消した)。
+/// 実地形が実際に必要とする範囲(MAX_DISTANCE+データ外接矩形の対角線長)はこれより
+/// 大幅に小さいままなので、Z_FARを大きくしても実地形側の深度精度には影響しない。
+const BACKGROUND_OUTER_RADIUS_M: f32 = 4_000_000.0;
 const BACKGROUND_MARGIN_BELOW_MIN_M: f32 = 500.0;
 
-fn append_background_skirt(mesh: &mut TerrainMesh, elevation_min: f32) {
+/// スカートを1枚の全面板として実データの直下にも敷いていた際、実データ最低標高との差
+/// (`BACKGROUND_MARGIN_BELOW_MIN_M`)が数百m程度しかない低地の沿岸部で、遠景では
+/// 実地形側が負けてスカートに隠れる(=陸地が海に沈んで見える)報告を受けた対応。
+/// 「一律の平面ではなく、データの外接矩形の外側にだけ敷く」よう、実データの4隅をENU座標に
+/// 変換した四角形を「穴」として持つ、額縁状の構成に変更した。これにより実データの直下に
+/// スカートが存在すること自体がなくなり、上記の沈み込みが原理的に起こり得なくなる。
+///
+/// 「隅から辺ごとに個別の図形をつなぎ合わせる」方式(軸並行外接矩形での穴あけ、隅からの
+/// 放射状引き伸ばし、辺の法線オフセット+コーナーウェッジ、の3通りを試した)は、いずれも
+/// 特定の隅で図形同士の継ぎ目に隙間ができ、そこから何も描画されない黒い背景が見えてしまう
+/// 不具合が実機で繰り返し見つかった(実機のデバッグ配色で断片ごとに色分けして確認)。
+/// このような「複数図形を個別に計算してつなぎ合わせる」方式は継ぎ目の考慮漏れに弱いため、
+/// 代わりに中心から全方位角を一定刻みで走査し、各方位角について「実データの境界との交点」
+/// (内周)と「BACKGROUND_OUTER_RADIUS_M上の点」(外周)を求め、隣り合う方位角同士を
+/// 1枚の四角形でつなぐリング状のテッセレーションに変更した。
+///
+/// 内周は当初、実データの4隅だけを直線で結んだ四角形との交差で求めていたが、これでも
+/// 同じ隙間が再現し続けた。原因は緯度経度の矩形の辺(例えば緯度一定・経度が変化する辺)を
+/// ENU座標へ変換すると、地球が球面(正確には回転楕円体面)であるために直線にはならず
+/// わずかに湾曲すること。実際に検証したところ、原点から約465km離れた辺(5°×5°の矩形の
+/// 遠い側の辺)では、両端の隅を結んだ直線と実際の辺の中点との間に約2.7kmもの差があった
+/// (`EnuTransform`で数値検証済み)。これは無視できない大きさで、4隅だけの直線近似では
+/// スカートの内周と実際の地形メッシュの外周(2048点の格子)の間に隙間ができてしまう。
+/// 4辺それぞれを`BOUNDARY_SAMPLES_PER_EDGE`点で細かくサンプリングした多角形を使うことで
+/// この湾曲に追従させ、隙間を解消した。
+const SKIRT_RING_SEGMENTS: usize = 64;
+const BOUNDARY_SAMPLES_PER_EDGE: usize = 32;
+
+fn append_background_skirt(
+    mesh: &mut TerrainMesh,
+    elevation_min: f32,
+    bounds: &super::loader::GeodeticBounds,
+    transform: &EnuTransform,
+) {
     let up = elevation_min - BACKGROUND_MARGIN_BELOW_MIN_M;
-    let s = BACKGROUND_HALF_SIZE_M;
+
+    let to_xy = |lat: f64, lon: f64| -> [f32; 2] {
+        let p = transform.transform(lat, lon, 0.0);
+        [p[0], p[1]]
+    };
+
+    // 実データの外周を、4隅だけでなく各辺をBOUNDARY_SAMPLES_PER_EDGE点でサンプリングした
+    // 多角形として求める(地球の湾曲により、緯度経度の辺はENU座標上では直線にならないため)。
+    // 反時計回り(or 時計回り、原点次第)に、南辺→東辺→北辺→西辺の順で1周する。
+    let mut boundary: Vec<[f32; 2]> = Vec::with_capacity(BOUNDARY_SAMPLES_PER_EDGE * 4);
+    let n = BOUNDARY_SAMPLES_PER_EDGE;
+    for k in 0..n {
+        let t = k as f64 / n as f64;
+        let lon = bounds.min_lon + t * (bounds.max_lon - bounds.min_lon);
+        boundary.push(to_xy(bounds.min_lat, lon)); // 南辺: 西→東
+    }
+    for k in 0..n {
+        let t = k as f64 / n as f64;
+        let lat = bounds.min_lat + t * (bounds.max_lat - bounds.min_lat);
+        boundary.push(to_xy(lat, bounds.max_lon)); // 東辺: 南→北
+    }
+    for k in 0..n {
+        let t = k as f64 / n as f64;
+        let lon = bounds.max_lon - t * (bounds.max_lon - bounds.min_lon);
+        boundary.push(to_xy(bounds.max_lat, lon)); // 北辺: 東→西
+    }
+    for k in 0..n {
+        let t = k as f64 / n as f64;
+        let lat = bounds.max_lat - t * (bounds.max_lat - bounds.min_lat);
+        boundary.push(to_xy(lat, bounds.min_lon)); // 西辺: 北→南
+    }
+    let boundary_len = boundary.len();
+
+    let center_x = boundary.iter().map(|c| c[0]).sum::<f32>() / boundary_len as f32;
+    let center_y = boundary.iter().map(|c| c[1]).sum::<f32>() / boundary_len as f32;
+
+    // 方位角ごとに、中心からその方向へのレイが実データの境界多角形と交わる点(内周)を求める。
+    // 全辺を評価して条件を満たす候補を集め、その中から最小のt(中心に最も近い交点)を
+    // 採用する(凸多角形の内部の点から出るレイは幾何学的には辺をちょうど1つだけ通過する
+    // はずだが、浮動小数点誤差で複数の辺が条件を満たしてしまう場合に備え、最も近い交点を
+    // 選ぶことで頑健にしてある)。
+    let inner_point = |dx: f32, dy: f32| -> [f32; 2] {
+        let mut best_t: Option<f32> = None;
+        for k in 0..boundary_len {
+            let a = boundary[k];
+            let b = boundary[(k + 1) % boundary_len];
+            let ex = b[0] - a[0];
+            let ey = b[1] - a[1];
+            let denom = ex * dy - ey * dx;
+            if denom.abs() < 1e-3 {
+                continue; // レイと辺がほぼ平行
+            }
+            let ax = a[0] - center_x;
+            let ay = a[1] - center_y;
+            let t = (ex * ay - ey * ax) / denom;
+            let s = (dx * ay - dy * ax) / denom;
+            if t > 0.0 && s.is_finite() && (-1e-3..=1.0 + 1e-3).contains(&s) {
+                if best_t.is_none_or(|bt| t < bt) {
+                    best_t = Some(t);
+                }
+            }
+        }
+        match best_t {
+            Some(t) => [center_x + dx * t, center_y + dy * t],
+            // 理論上はここに来ないはずだが、万一交点が見つからなければ中心そのものを返す
+            // (退化した三角形になるだけで、隙間や破綻にはならない)。
+            None => [center_x, center_y],
+        }
+    };
+
+    let mut ring_inner = Vec::with_capacity(SKIRT_RING_SEGMENTS);
+    let mut ring_outer = Vec::with_capacity(SKIRT_RING_SEGMENTS);
+    for i in 0..SKIRT_RING_SEGMENTS {
+        let theta = (i as f32) / (SKIRT_RING_SEGMENTS as f32) * std::f32::consts::TAU;
+        let (dy, dx) = theta.sin_cos();
+        ring_inner.push(inner_point(dx, dy));
+        ring_outer.push([center_x + dx * BACKGROUND_OUTER_RADIUS_M, center_y + dy * BACKGROUND_OUTER_RADIUS_M]);
+    }
+
+    for i in 0..SKIRT_RING_SEGMENTS {
+        let j = (i + 1) % SKIRT_RING_SEGMENTS;
+        let quad = [ring_inner[i], ring_inner[j], ring_outer[j], ring_outer[i]];
+        add_skirt_quad(mesh, up, &quad);
+    }
+}
+
+fn add_skirt_quad(mesh: &mut TerrainMesh, up: f32, quad: &[[f32; 2]; 4]) {
     let base = mesh.vertices.len() as u32;
-    for position in [[-s, -s, up], [s, -s, up], [s, s, up], [-s, s, up]] {
-        mesh.vertices.push(TerrainVertex { position, color: WATER_COLOR });
+    for p in quad {
+        mesh.vertices.push(TerrainVertex { position: [p[0], p[1], up], color: WATER_COLOR });
     }
     mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
