@@ -253,7 +253,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             observer.observe(&canvas);
 
             // ブラウザは非表示(バックグラウンド)タブに対してResizeObserverの通知自体を
-            // スロットリング(完全停止)することがある(CLAUDE.md「スプリッタードラッグ時の
+            // スロットリング(完全停止)することがある(DEVELOPMENT_HISTORY.md「スプリッタードラッグ時の
             // リサイズ追従」で既知)。ページが非表示のまま初回マウントされると、canvasの
             // 内部解像度がHTML既定値(300×150)のまま一度も更新されず、その後CSSで
             // 実際の表示サイズへ引き伸ばされることでアスペクト比が崩れ、地形の一部

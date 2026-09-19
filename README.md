@@ -24,7 +24,8 @@ map_data/          入力: ALOS DSM GeoTIFFタイル(17枚。リポジトリに�
   以下のセットアップ手順に従ってください。
 
 詳しい設計は [BASIC_DESIGN.md](BASIC_DESIGN.md)(基本設計書)・[DETAILED_DESIGN.md](DETAILED_DESIGN.md)
-(詳細設計書、UML図つき)を参照。開発環境固有の情報・既知の問題は [CLAUDE.md](CLAUDE.md) を参照。
+(詳細設計書、UML図つき)を参照。開発環境固有の既知の問題は本書の「既知の環境問題・トラブルシューティング」、
+実装の経緯・ハマりどころは [DEVELOPMENT_HISTORY.md](DEVELOPMENT_HISTORY.md) を参照。
 
 ---
 
@@ -92,6 +93,11 @@ cargo install trunk --locked
 このリポジトリはCargoワークスペース(ルートの`Cargo.toml`、メンバーは`sim3dview`・
 `sample/sim_frontend`)になっているため、`cargo check -p sim3dview`のようにリポジトリ
 ルートからどちらのcrateも操作できる。
+
+```powershell
+cargo check -p sim3dview --target wasm32-unknown-unknown      # ライブラリ単体のコンパイル確認
+cargo check -p sim_frontend --target wasm32-unknown-unknown   # サンプルアプリの統合コンパイル確認
+```
 
 ### 3. C++側(sim_server)のビルド
 
@@ -212,6 +218,11 @@ http://localhost:8081
 | vcpkgの`gdal`インストールが`libxml2`のビルドで失敗する | 本プロジェクトでは`sample/sim_server/vcpkg.json`で`gdal`を`"default-features": false`にすることで、不要な`libxml2`(GML/KML用、Windowsで既知のIconv関連ビルド失敗がある)を回避済み。設定を変更していなければ発生しない |
 | `geotiff_preprocess.exe`を実行しても`map_data`が見つからない | リポジトリの**ルートディレクトリ**から実行しているか確認する(既定のパスは`map_data`/`sample/sim_server/assets/terrain`という相対パス) |
 | GDALのビルドがとても遅い | 初回のみ発生(15分前後)。2回目以降はvcpkgのバイナリキャッシュが効くため数秒で終わる |
+| `sim3dview`ライブラリ側だけを編集したのに、`trunk serve`が再ビルドせず古い表示のまま | Trunkはpath依存先(`sim3dview`)のソース変更を自動ではwatchしない。`trunk serve`を再起動する(サンプルアプリ側のファイルも一緒に変更していれば自動検知される) |
+| `cargo`が「信頼されていないマウントポイントが含まれているため、パスをスキャンできません」で起動しない | `~/.cargo/bin/cargo.exe`がシンボリックリンクのため、環境によっては起動できない。`~/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/cargo.exe`を直接実行する |
+| 他端末からLAN経由でアクセスすると「接続中」のまま地図も出ない(このマシンのlocalhostでは正常) | Windows Firewallの受信許可ルールが`sim_server.exe`の旧パスを指したままの可能性が高い(exeを移動・再作成した後に起きる)。管理者権限のPowerShellで`Get-NetFirewallRule -DisplayName "sim_server.exe" \| Set-NetFirewallApplicationFilter -Program "<sim_server.exeの現在のフルパス>"`を実行してルールのパスを更新する。localhostはループバック通信のためFirewallの影響を受けず、この不一致に気付きにくい |
+| 開発中のBrowserペイン(Claude Codeの組み込みブラウザ)から`http://192.168.x.x:8081`(プライベートIP)へ接続すると`ERR_BLOCKED_BY_CLIENT` | ペイン側の制限でネットワーク疎通とは無関係。実疎通は`Test-NetConnection -ComputerName <IP> -Port 8081`/`-Port 9001`で確認する。ペインでの動作確認は`http://localhost:8081`で行う |
+| ブラウザペインを非表示のままページを開くと、canvasが300×150のまま引き伸ばされて地形が歪む/欠ける | 非表示タブではResizeObserverが発火しないことがある(タブが可視になった時点で`TerrainView`が取り直す実装済み)。動作確認は実際にペインを表示した状態で行う |
 
 ---
 
@@ -227,4 +238,5 @@ C++シミュレータ本体・Web UI(サンプルアプリ)とも実装・動作
 - [sim3dview/README.md](sim3dview/README.md) — `sim3dview`ライブラリの使い方(開発者向け)
 - [BASIC_DESIGN.md](BASIC_DESIGN.md) — 基本設計書(要求仕様・確定した設計方針・全体構成)
 - [DETAILED_DESIGN.md](DETAILED_DESIGN.md) — 詳細設計書(データフォーマット・プロトコル・UML図)
-- [CLAUDE.md](CLAUDE.md) — 開発環境固有の申し送り事項(このリポジトリで作業するAIエージェント/開発者向け)
+- [DEVELOPMENT_HISTORY.md](DEVELOPMENT_HISTORY.md) — 実装の経緯・ハマりどころの記録(機能ごとの「要望→原因→修正→確認」)
+- [CLAUDE.md](CLAUDE.md) — AIエージェント向けの作業方針・要点(短い索引)

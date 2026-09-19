@@ -155,7 +155,9 @@ GDALをリンクしない。
 Sim3dView/
 ├── BASIC_DESIGN.md            # 本書
 ├── DETAILED_DESIGN.md         # 詳細設計書(数式・プロトコル・UML)
-├── CLAUDE.md                  # 開発環境・ビルド手順・セッション間の申し送り事項
+├── README.md                  # セットアップ・起動手順・環境問題の対処
+├── DEVELOPMENT_HISTORY.md     # 機能ごとの実装経緯・ハマりどころの記録
+├── CLAUDE.md                  # AIエージェント向けの作業方針・要点(短い索引)
 ├── Cargo.toml                  # ワークスペースルート(members: sim3dview, sample/sim_frontend)
 ├── map_data/                  # 入力: ALOS DSM GeoTIFFタイル(17枚、既存・変更しない)
 │   └── ALPSMLC30_N###E###_DSM.tif ...
@@ -251,7 +253,7 @@ Sim3dView/
 
 **全11フェーズ、完了・動作確認済み**(フェーズ9の状況パネルはフェーズ3時点で、フェーズ11の3項目は
 それぞれフェーズ2・3・4時点で既に実装済みだったため、実質的な残作業はフェーズ8・9の原点フォーム部分・
-フェーズ10のみだった)。詳細な確認内容はCLAUDE.mdの「現在の実装状況」を参照。
+フェーズ10のみだった)。詳細な確認内容はDEVELOPMENT_HISTORY.mdの「現在の実装状況」を参照。
 
 ---
 
@@ -270,4 +272,6 @@ Sim3dView/
 
 - [DETAILED_DESIGN.md](DETAILED_DESIGN.md) — 詳細設計書。データフォーマット・座標変換の数式・通信プロトコルの
   バイト定義・クラス図/シーケンス図/状態遷移図(UML)を含む
-- [CLAUDE.md](CLAUDE.md) — 開発環境固有の情報(ビルド手順、既知の環境問題と回避策、動作確認済み事項)
+- [README.md](README.md) — セットアップ・ビルド・起動手順、既知の環境問題と回避策
+- [DEVELOPMENT_HISTORY.md](DEVELOPMENT_HISTORY.md) — 機能ごとの実装経緯・動作確認済み事項・ハマりどころ
+- [CLAUDE.md](CLAUDE.md) — AIエージェント向けの作業方針・要点(短い索引)

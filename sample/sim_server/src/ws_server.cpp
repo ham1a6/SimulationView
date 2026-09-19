@@ -30,7 +30,7 @@ struct PerSocketData {
 using ServerWebSocket = uWS::WebSocket<false, true, PerSocketData>;
 
 // 地形データ(heightmap.bin/metadata.json)の簡易静的ファイル配信。
-// 想定CWDは sim_server/ (CLAUDE.md記載の起動手順に合わせた相対パス)。
+// 想定CWDは sim_server/ (README.md記載の起動手順に合わせた相対パス)。
 void serve_terrain_file(uWS::HttpResponse<false>* res, const char* path,
                          const char* content_type) {
     std::ifstream file(path, std::ios::binary);
