@@ -362,6 +362,27 @@ fn append_background_skirt(
         let quad = [ring_inner[i], ring_inner[j], ring_outer[j], ring_outer[i]];
         add_skirt_quad(mesh, up, &quad);
     }
+
+    // 保険の全面板(このリングよりさらに深い位置)。上記のリング単体では、俯瞰プリセットの
+    // 3D表示でのみ画面最上部にごく小さい未描画領域(黒い三角形)が生じる不具合が実機で
+    // 見つかったが、5通りの異なるリング実装すべてで同一の症状が再現し、2D表示や
+    // 以前の「一律の全面板」方式では発生しないため原因を完全には切り分けられなかった
+    // (リング内周と実地形の頂点座標を独立に計算していることによる浮動小数点誤差か、
+    // リングの三角形が中心からの半径方向に非常に細長い形状になること自体が要因である
+    // 可能性が高いと考えている)。原因を保留したまま、リングよりさらに約4,500m低い位置に
+    // 同じ半径の一律の全面板を保険として敷いておくことで、リング側に万一未描画領域が
+    // あってもこの板が見えるようにした。実地形(標高0m付近を含む)からは
+    // 5,000m以上離れているため、以前問題になっていた沈み込み(Zファイティング)が
+    // 再発する余地はない。
+    let safety_up = up - 4_500.0;
+    let s = BACKGROUND_OUTER_RADIUS_M;
+    let safety_quad = [
+        [center_x - s, center_y - s],
+        [center_x + s, center_y - s],
+        [center_x + s, center_y + s],
+        [center_x - s, center_y + s],
+    ];
+    add_skirt_quad(mesh, safety_up, &safety_quad);
 }
 
 fn add_skirt_quad(mesh: &mut TerrainMesh, up: f32, quad: &[[f32; 2]; 4]) {
