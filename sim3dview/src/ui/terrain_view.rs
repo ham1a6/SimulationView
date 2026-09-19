@@ -359,11 +359,31 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 return;
             }
             let new_mesh = mesh::build_mesh(&terrain, &new_origin);
-            // 注視点の高さも新しい原点の地表標高へ更新する(古い標高のままだと、
-            // 原点移動後にズームインした際カメラが地面に埋まって真っ黒になりうる)。
+            let new_transform = mesh::EnuTransform::new(&new_origin, &terrain.metadata.ellipsoid);
+            // 注視点(中心点)の扱い: 原点の真上を見ていた(x=y=0)なら新しい原点に追従する。
+            // パンして別の場所を見ていたなら、ENU座標のオフセットが新しい原点基準のまま残って
+            // 表示が飛んでしまわないよう、同じ緯度経度を見続けるよう新しいENU座標へ変換し直す。
+            let follows_origin = s.camera.target.x == 0.0 && s.camera.target.y == 0.0;
             s.target_up =
                 mesh::sample_heightmap(&terrain, new_origin.lat_deg, new_origin.lon_deg).unwrap_or(0.0);
-            s.camera.target.z = s.target_up;
+            if follows_origin {
+                // 高さも新しい原点の地表標高へ更新する(古い標高のままだと、原点移動後に
+                // ズームインした際カメラが地面に埋まって真っ黒になりうる)。
+                s.camera.target.z = s.target_up;
+            } else if let Some(old_origin) = s.mesh_origin {
+                let old_transform =
+                    mesh::EnuTransform::new(&old_origin, &terrain.metadata.ellipsoid);
+                let (lat, lon, _) = mesh::ground_at_enu(
+                    &terrain,
+                    &old_transform,
+                    s.camera.target.x as f64,
+                    s.camera.target.y as f64,
+                );
+                let (x, y, up) = mesh::ground_at_geodetic(&terrain, &new_transform, lat, lon);
+                s.camera.target.x = x;
+                s.camera.target.y = y;
+                s.camera.target.z = up;
+            }
             let renderer = s.renderer.as_ref().expect("checked is_some above");
             renderer.update_vertices(&new_mesh);
             let camera = s.camera.to_camera(renderer.aspect_ratio());
@@ -458,19 +478,22 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                             let canvas_h =
                                 s.renderer.as_ref().map(|r| r.canvas_height_px()).unwrap_or(1).max(1);
                             s.camera.pan_orbit_target(dx, dy, canvas_h as f32);
-                            // 移動先の実際の地表標高へtarget.zを更新する(古い標高のまま
-                            // だと、原点変更時と同様にズームインした際カメラが地面に
-                            // 埋まって真っ黒になりうる)。
+                            // 移動先の実際の地表(ENU上座標)へtarget.zを更新する(古い高さの
+                            // ままだと、原点変更時と同様にズームインした際カメラが地面に
+                            // 埋まって真っ黒になりうる)。原点から遠いほど地球の丸みで地表が
+                            // 下がるため、標高ではなく丸みを含む上座標を使う。
                             if let (Some(terrain), Some(mesh_origin)) =
                                 (s.terrain.clone(), s.mesh_origin)
                             {
                                 let transform =
                                     mesh::EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
-                                let (lat, lon) = transform
-                                    .inverse(s.camera.target.x as f64, s.camera.target.y as f64);
-                                if let Some(elev) = mesh::sample_heightmap(&terrain, lat, lon) {
-                                    s.camera.target.z = elev;
-                                }
+                                let (_, _, up) = mesh::ground_at_enu(
+                                    &terrain,
+                                    &transform,
+                                    s.camera.target.x as f64,
+                                    s.camera.target.y as f64,
+                                );
+                                s.camera.target.z = up;
                             }
                         } else {
                             s.camera.orbit(dx * ORBIT_SENSITIVITY, dy * ORBIT_SENSITIVITY);

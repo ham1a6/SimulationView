@@ -54,6 +54,12 @@ impl EnuTransform {
     }
 
     pub fn transform(&self, lat_deg: f64, lon_deg: f64, h: f64) -> [f32; 3] {
+        let [east, north, up] = self.transform_f64(lat_deg, lon_deg, h);
+        [east as f32, north as f32, up as f32]
+    }
+
+    /// `transform`のf64版(遠方の地表の上座標を丸めずに扱いたい呼び出し側用)。
+    pub fn transform_f64(&self, lat_deg: f64, lon_deg: f64, h: f64) -> [f64; 3] {
         let lat = lat_deg.to_radians();
         let lon = lon_deg.to_radians();
         let (x, y, z) = geodetic_to_ecef(lat, lon, h, self.a, self.e2);
@@ -69,8 +75,32 @@ impl EnuTransform {
         let east = -sin_lon0 * dx + cos_lon0 * dy;
         let north = -sin_lat0 * cos_lon0 * dx - sin_lat0 * sin_lon0 * dy + cos_lat0 * dz;
         let up = cos_lat0 * cos_lon0 * dx + cos_lat0 * sin_lon0 * dy + sin_lat0 * dz;
+        [east, north, up]
+    }
 
-        [east as f32, north as f32, up as f32]
+    /// `transform`の厳密な逆: ENU座標(東, 北, 上。メートル)から(緯度, 経度, 楕円体高)を求める。
+    /// ENU→ECEF(原点の回転行列の転置)→測地座標(反復法)。原点から数千km離れた点でも
+    /// 地球の丸み・楕円体を正しく扱う(下の`inverse`は原点近傍の接平面近似)。
+    pub fn enu_to_geodetic(&self, east: f64, north: f64, up: f64) -> (f64, f64, f64) {
+        let sin_lat0 = self.origin_lat_rad.sin();
+        let cos_lat0 = self.origin_lat_rad.cos();
+        let sin_lon0 = self.origin_lon_rad.sin();
+        let cos_lon0 = self.origin_lon_rad.cos();
+
+        let x = self.origin_x - sin_lon0 * east - sin_lat0 * cos_lon0 * north + cos_lat0 * cos_lon0 * up;
+        let y = self.origin_y + cos_lon0 * east - sin_lat0 * sin_lon0 * north + cos_lat0 * sin_lon0 * up;
+        let z = self.origin_z + cos_lat0 * north + sin_lat0 * up;
+
+        let p = x.hypot(y);
+        let lon = y.atan2(x);
+        let mut lat = z.atan2(p * (1.0 - self.e2));
+        let mut h = 0.0;
+        for _ in 0..6 {
+            let n = self.a / (1.0 - self.e2 * lat.sin().powi(2)).sqrt();
+            h = p / lat.cos() - n;
+            lat = z.atan2(p * (1.0 - self.e2 * n / (n + h)));
+        }
+        (lat.to_degrees(), lon.to_degrees(), h)
     }
 
     /// `transform`の逆(近似): 原点からのENUオフセット(東, 北。メートル)から緯度経度を求める。
@@ -160,6 +190,43 @@ pub fn sample_heightmap(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> Optio
     Some(if result.is_nan() { 0.0 } else { result })
 }
 
+/// ENUの水平位置(東, 北)の真上/真下にある地表点の(緯度, 経度, ENU上座標)。
+/// 地形メッシュの頂点は楕円体上の地表をENUへ変換したもの(遠方ほど丸みで下がる)なので、
+/// 視線との交差判定・注視点の高さ合わせには、標高そのものではなくこの上座標を使うこと。
+/// 「(東, 北)を通る鉛直線」と地表の交点は、上座標を仮定→測地座標へ戻す→その地点の地表の
+/// 上座標で更新、を数回繰り返して求める(地表の傾きが小さいので速やかに収束する)。
+/// 地形データ範囲外・海域(NaN)は標高0mとして扱う。
+pub fn ground_at_enu(
+    data: &TerrainData,
+    transform: &EnuTransform,
+    east: f64,
+    north: f64,
+) -> (f64, f64, f32) {
+    // 丸みによる低下量の第一近似を初期値にする(0から始めるより収束が速い)。
+    let mut up = -(east * east + north * north) / (2.0 * transform.a);
+    let mut lat_lon = (0.0, 0.0);
+    for _ in 0..4 {
+        let (lat, lon, _h) = transform.enu_to_geodetic(east, north, up);
+        let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0);
+        up = transform.transform_f64(lat, lon, elevation as f64)[2];
+        lat_lon = (lat, lon);
+    }
+    (lat_lon.0, lat_lon.1, up as f32)
+}
+
+/// 地表上の(緯度, 経度)のENU座標(東, 北, 上)。`ground_at_enu`の逆向き。
+/// 地形データ範囲外・海域(NaN)は標高0mとして扱う。
+pub fn ground_at_geodetic(
+    data: &TerrainData,
+    transform: &EnuTransform,
+    lat_deg: f64,
+    lon_deg: f64,
+) -> (f32, f32, f32) {
+    let elevation = sample_heightmap(data, lat_deg, lon_deg).unwrap_or(0.0);
+    let [east, north, up] = transform.transform(lat_deg, lon_deg, elevation as f64);
+    (east, north, up)
+}
+
 /// heightmap全体からメッシュを構築する。原点変更時にも呼び直す(DETAILED_DESIGN.md 3.3節)。
 pub fn build_mesh(data: &TerrainData, origin: &Origin) -> TerrainMesh {
     let width = data.metadata.width as usize;
@@ -209,4 +276,39 @@ pub fn build_mesh(data: &TerrainData, origin: &Origin) -> TerrainMesh {
     }
 
     TerrainMesh { vertices, indices }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transform_at(lat: f64, lon: f64) -> EnuTransform {
+        EnuTransform::new(
+            &Origin { lat_deg: lat, lon_deg: lon },
+            &Ellipsoid { a_m: 6378137.0, inv_f: 298.257222101 },
+        )
+    }
+
+    // 原点から数千km離れた点でも、transform_f64とenu_to_geodeticが往復で一致すること。
+    #[test]
+    fn enu_round_trip_far_from_origin() {
+        let t = transform_at(35.355556, 138.859722);
+        for &(lat, lon, h) in &[(24.34, 124.16, 0.0), (33.0, 130.0, 500.0), (37.5, 127.0, 100.0), (49.0, 121.0, 3000.0)] {
+            let [e, n, u] = t.transform_f64(lat, lon, h);
+            let (lat2, lon2, h2) = t.enu_to_geodetic(e, n, u);
+            assert!((lat - lat2).abs() < 1e-9, "lat {lat} vs {lat2}");
+            assert!((lon - lon2).abs() < 1e-9, "lon {lon} vs {lon2}");
+            assert!((h - h2).abs() < 1e-3, "h {h} vs {h2}");
+        }
+    }
+
+    // 丸みで遠方の地表が下がる量が概算(d^2/2R)と同程度であること(石垣島は原点から約2,000km)。
+    #[test]
+    fn far_ground_curves_down() {
+        let t = transform_at(35.355556, 138.859722);
+        let [e, n, u] = t.transform_f64(24.34, 124.16, 0.0);
+        let d = e.hypot(n);
+        assert!(d > 1_800_000.0 && d < 2_000_000.0, "d={d}");
+        assert!(u < -250_000.0 && u > -350_000.0, "u={u}");
+    }
 }

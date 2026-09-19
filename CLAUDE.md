@@ -51,6 +51,12 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
 - メッシュ解像度は2048×2048固定(単一メッシュを丸ごとGPUへ。これ以上はLOD化が必要)、標高グラデーション着色のみ
 - 海域はheightmapのNaN(`*_MSK.tif`の海+欠損タイル)で表し、フロントはNaN頂点を含む三角形を描画しない
   (海・データ範囲外は背景の黒。水色の海レイヤーは撤去済み。`mesh.rs`の`build_mesh`)
+- 地形は楕円体(WGS84相当)をENUへ変換した曲面で、遠方ほど丸みで下がる(原点から1,000kmで約80km)。
+  遠方の地表の高さ・クリック判定は標高ではなく`mesh.rs`の`ground_at_enu`(丸み込みのENU上座標)を使うこと。
+  `EnuTransform::inverse`は原点近傍の接平面近似なので遠方には使わない。2Dモードの奥行き範囲
+  (`camera.rs`の`ORTHO_DEPTH_RANGE_M`)も丸みを含めて決めてある
+- サーバーの原点受理範囲は起動時に`assets/terrain/metadata.json`の`geodetic_bounds`から読む
+  (`simulation.cpp`。読めなければチェック無効+警告)。`map_data/`を変えたらsim_serverの再起動が必要
 - 描画は**反転Z**(Depth32Float、`depth_compare: Greater`、深度クリア値0.0、透視は有限far)+ MSAA 4x +
   2倍スーパーサンプリング。深度・射影を触るときは`camera.rs`の`screen_to_ray`(ピッキング)も整合させること
 - VABは開発用ダミー値 rows=4, cols=6・空ラベルはDOM生成しない。状況パネル項目はC++から`StatusPanelConfig`で動的配信
@@ -99,9 +105,6 @@ cd sample/sim_frontend && trunk serve                          # 開発サーバ
 
 ## 既知の技術的負債(未修正。着手前に方針確認を推奨)
 
-- `sample/sim_server/include/simulation.hpp`の原点バリデーション範囲(`kMinLat`等 35/40/135/140)がハードコードのまま。
-  `geotiff_preprocess`は外接矩形を自動計算するので、`map_data/`にタイルを追加するとサーバーが新範囲の原点を
-  `CommandError`で拒否する。根本修正にはsim_serverが`metadata.json`を起動時に読む仕組みが必要
 - `sim3dview/src/terrain/renderer.rs`のパイプラインが`cull_mode: None`(裏面カリング無効)のまま。
   描画結果は正しいがGPU時間を余分に使う。コメント(巻き順を確認して有効化する)と実装が食い違っている
 - VABの中段・下段はフロント側だけのダミーボタン(`vab_dummy_*`)で、C++は存在を知らない(`VabConfig`は先頭行のみ)。

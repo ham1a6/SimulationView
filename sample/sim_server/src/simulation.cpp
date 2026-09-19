@@ -1,7 +1,9 @@
 #include "simulation.hpp"
 
 #include <cmath>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 
 namespace sim3dview {
 
@@ -46,11 +48,52 @@ protocol::StatusPanelConfig make_dummy_status_panel_config() {
     return config;
 }
 
+// metadata.jsonから`"<key>": <数値>`の数値を取り出す最小限のパーサ(JSONライブラリを
+// 足すほどではないため。geotiff_preprocessが書き出す単純な固定形式だけを想定する)。
+// startより後ろで最初に見つかったkeyを対象にする。
+std::optional<double> find_number(const std::string& text, const std::string& key, size_t start) {
+    const size_t key_pos = text.find("\"" + key + "\"", start);
+    if (key_pos == std::string::npos) {
+        return std::nullopt;
+    }
+    const size_t colon = text.find(':', key_pos);
+    if (colon == std::string::npos) {
+        return std::nullopt;
+    }
+    try {
+        return std::stod(text.substr(colon + 1));
+    } catch (const std::exception&) {
+        return std::nullopt;
+    }
+}
+
 } // namespace
 
-Simulation::Simulation()
+Simulation::Simulation(const std::string& terrain_metadata_path)
     : vab_config_(make_dummy_vab_config()),
-      status_panel_config_(make_dummy_status_panel_config()) {}
+      status_panel_config_(make_dummy_status_panel_config()) {
+    std::ifstream file(terrain_metadata_path);
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+    const std::string text = buffer.str();
+
+    const size_t section = text.find("\"geodetic_bounds\"");
+    if (section != std::string::npos) {
+        const auto min_lat = find_number(text, "min_lat", section);
+        const auto max_lat = find_number(text, "max_lat", section);
+        const auto min_lon = find_number(text, "min_lon", section);
+        const auto max_lon = find_number(text, "max_lon", section);
+        if (min_lat && max_lat && min_lon && max_lon) {
+            bounds_ = GeodeticBounds{*min_lat, *max_lat, *min_lon, *max_lon};
+            std::cout << "[simulation] terrain bounds: lat " << *min_lat << ".." << *max_lat
+                      << ", lon " << *min_lon << ".." << *max_lon << std::endl;
+        }
+    }
+    if (!bounds_) {
+        std::cerr << "[simulation] WARNING: failed to read geodetic_bounds from "
+                  << terrain_metadata_path << " (origin range check disabled)" << std::endl;
+    }
+}
 
 void Simulation::enqueue_command(ClientId client_id, protocol::ClientCommand cmd) {
     std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -127,8 +170,8 @@ void Simulation::apply_set_origin(const protocol::ClientCommand& cmd, ClientId c
     }
 
     // DETAILED_DESIGN.md 3.5節: geodetic_bounds範囲外はサーバー側でも拒否する(防御的チェック)。
-    if (cmd.lat_deg < kMinLat || cmd.lat_deg > kMaxLat || cmd.lon_deg < kMinLon ||
-        cmd.lon_deg > kMaxLon) {
+    if (bounds_ && (cmd.lat_deg < bounds_->min_lat || cmd.lat_deg > bounds_->max_lat ||
+                    cmd.lon_deg < bounds_->min_lon || cmd.lon_deg > bounds_->max_lon)) {
         out_errors.push_back(OutgoingCommandError{
             client_id,
             protocol::CommandError{cmd.type, "指定された緯度経度が地形データの範囲外です"}});

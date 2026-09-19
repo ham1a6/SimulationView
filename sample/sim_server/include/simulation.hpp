@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -49,7 +50,9 @@ struct SimulationTickResult {
 
 class Simulation {
 public:
-    Simulation();
+    // terrain_metadata_path: 地形データのmetadata.json。原点の受理範囲(geodetic_bounds)を
+    // ここから読む(想定CWDはsim_server/。ws_server.cppの地形配信と同じ相対パス)。
+    explicit Simulation(const std::string& terrain_metadata_path = "assets/terrain/metadata.json");
 
     // コマンドをキューに積む。どのスレッドからでも呼べる(スレッドセーフ)。
     void enqueue_command(ClientId client_id, protocol::ClientCommand cmd);
@@ -80,13 +83,13 @@ private:
                            std::vector<OutgoingCommandError>& out_errors,
                            bool& out_origin_changed);
 
-    // 地形データの緯度経度範囲(DETAILED_DESIGN.md 1.2節)。geotiff_preprocess/main.cpp の
-    // kMosaicMinLat等と同じ値を独立にハードコードしている。値は現状一致しているが、
-    // metadata.jsonから読む形にはなっていない(既知の技術的負債。CLAUDE.md参照)。
-    static constexpr double kMinLat = 35.0;
-    static constexpr double kMaxLat = 40.0;
-    static constexpr double kMinLon = 135.0;
-    static constexpr double kMaxLon = 140.0;
+    // 地形データの緯度経度範囲(metadata.jsonのgeodetic_bounds)。起動時に一度だけ読む。
+    // 読めなかった場合は範囲チェックを行わない(警告を出す。フロント側の入力段階でも
+    // 同じ範囲でブロックしているため、サーバー側は防御的な二重チェックの位置づけ)。
+    struct GeodeticBounds {
+        double min_lat, max_lat, min_lon, max_lon;
+    };
+    std::optional<GeodeticBounds> bounds_;
 
     mutable std::mutex state_mutex_; // origin_ / running_ / t_ / frame_id_ を保護
 
