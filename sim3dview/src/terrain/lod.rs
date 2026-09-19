@@ -24,12 +24,22 @@ use super::mesh::{tile_vertex_count, EnuTransform};
 
 /// チャンクの頂点数の合計の上限。全タイル分のレベル0(約155万頂点)に、この分を足したものが
 /// 常駐する頂点の総数になる(従来の単一メッシュは約420万頂点)。最細(30m)のチャンクは
-/// 1個で約36万頂点なので、最細のチャンクは同時に8個程度まで。
-pub const DETAIL_VERTEX_BUDGET: usize = 3_000_000;
+/// 1個で約36万頂点なので、最細のチャンクは同時に16個程度まで。300万から倍にしたのは、
+/// チャンクのレベル選択を細かくした(`CHUNK_TARGET_CELL_PX`)ぶん、細かいレベルが必要な
+/// 範囲が広がるため。
+pub const DETAIL_VERTEX_BUDGET: usize = 6_000_000;
 
-/// 画面(CSSピクセル)上で1セルがこのピクセル数以下になる最も粗いレベルを選ぶ。
-/// 描画は2倍スーパーサンプリングなので、2ピクセルなら描画解像度では約4ピクセル分。
+/// タイル全体(レベル0)で足りるかの判定に使う: 画面(CSSピクセル)上で1セルがこのピクセル数以下に
+/// なるなら、タイルはチャンクにせず全体1枚で描く。描画は2倍スーパーサンプリングなので、
+/// 2ピクセルなら描画解像度では約4ピクセル分。
 const TARGET_CELL_PX: f32 = 2.0;
+
+/// チャンクのレベル選択に使う: 画面上で1セルがこのピクセル数以下になる最も粗いレベルを選ぶ。
+/// `TARGET_CELL_PX`より小さくして、チャンクは細かめのレベルを選ぶ(最細の30mは、1ピクセルが
+/// 約62m未満、canvas高さ700pxで視点から約46km以内で使われる)。全体→チャンクの切り替え
+/// (`TARGET_CELL_PX`)まで小さくすると、遠くの多数のタイルが一斉にチャンク化して予算を
+/// 食い、近くの細かさに回らなくなるので、別の定数にしてある。
+const CHUNK_TARGET_CELL_PX: f32 = 1.0;
 
 /// タイル全体(レベル0)からチャンクへ切り替える/戻すときのヒステリシス。チャンクにしている
 /// タイルは、レベル0で足りるとみなせる距離の`REVERT_MARGIN`倍まで近づけないと全体表示へ戻さない。
@@ -140,11 +150,11 @@ impl ViewInfo<'_> {
     }
 }
 
-/// 1セルが画面上で`TARGET_CELL_PX`以下になる最も粗いレベル(`from`以上)。どれも満たさなければ最細。
+/// 1セルが画面上で`CHUNK_TARGET_CELL_PX`以下になる最も粗いレベル(`from`以上)。どれも満たさなければ最細。
 fn ideal_level(data: &TerrainData, pixel_m: f32, from: usize) -> usize {
     let max_level = data.num_levels() - 1;
     (from..=max_level)
-        .find(|&k| cell_size_m(data, k) <= TARGET_CELL_PX * pixel_m)
+        .find(|&k| cell_size_m(data, k) <= CHUNK_TARGET_CELL_PX * pixel_m)
         .unwrap_or(max_level)
 }
 
