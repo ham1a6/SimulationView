@@ -1,6 +1,7 @@
-//! 地形データ(heightmap.bin/metadata.json)を全パネルで共有するためのストア。
+//! 地形データ(metadata.json/tile_index.json/base.bin。細かいレベルのタイルは`ui::terrain_view`が
+//! 必要に応じて追加取得する)を全パネルで共有するためのストア。
 //! BASIC_DESIGN.md 6節フェーズ10: 中央の地図・右パネル下部の側面図は「同一の地形メッシュ」に
-//! 異なるカメラを適用する構成。フェッチ(4MBのheightmap.bin)は1回だけ行い、
+//! 異なるカメラを適用する構成。フェッチ(起動時のmetadata・タイル索引・ベース約3MB)は1回だけ行い、
 //! `terrain_view.rs`が使う各パネルはこのストアから同じデータを参照する。
 
 use std::rc::Rc;
@@ -13,7 +14,7 @@ use super::loader::{self, TerrainData};
 // (wasm32-unknown-unknownはシングルスレッドなので安全。ws.rsのWsConnectionと同じ理由)。
 #[derive(Clone, Copy)]
 pub struct TerrainStore {
-    /// `{base_url}/metadata.json`・`{base_url}/heightmap.bin`から取得する
+    /// `{base_url}/metadata.json`・`tile_index.json`・`base.bin`から取得する
     /// (`terrain::loader`参照)。サーバーのホスト名・ポート・ルートパスは呼び出し側が決める。
     base_url: RwSignal<String>,
     data: RwSignal<Option<Rc<TerrainData>>, LocalStorage>,

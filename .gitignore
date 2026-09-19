@@ -9,6 +9,7 @@ tools/geotiff_preprocess/build/
 sample/sim_server/assets/terrain/*.bin
 sample/sim_server/assets/terrain/*.json
 sample/sim_server/assets/terrain/*.png
+sample/sim_server/assets/terrain/tiles/
 
 # Rust (workspace: sim3dview ライブラリ + sample/sim_frontend サンプルアプリ)
 /target/

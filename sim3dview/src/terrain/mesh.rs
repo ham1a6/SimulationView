@@ -1,6 +1,6 @@
 //! 地形メッシュ生成。DETAILED_DESIGN.md 3.2節(ENU変換)・6.5節(頂点構造)・6.7節(配色)。
 
-use super::loader::{Ellipsoid, TerrainData};
+use super::loader::{Ellipsoid, TerrainData, TileEntry, NO_DATA};
 
 /// 頂点構造(DETAILED_DESIGN.md 6.5節)。UV座標は使わず、標高由来の色を直接持たせる。
 #[repr(C)]
@@ -126,6 +126,11 @@ fn geodetic_to_ecef(lat: f64, lon: f64, h: f64, a: f64, e2: f64) -> (f64, f64, f
     (x, y, z)
 }
 
+/// 色の正規化に使う標高の下限(メートル)。元データ(DSM)には水面などのノイズによる大きな
+/// 負の値が一部のタイルにあり、`metadata.elevation_min`をそのまま下限にすると低地全体の
+/// 色がずれるため、0m以下はまとめて低地の色にする。
+const COLOR_MIN_ELEVATION_M: f32 = 0.0;
+
 /// 標高を正規化し、低地(深緑)→高山(白に近い明色)の地形図的カラーランプへ写像する
 /// (DETAILED_DESIGN.md 6.7節)。カラーストップは実装時に調整可能な固定テーブル。
 fn elevation_to_color(elevation: f32, min: f32, max: f32) -> [f32; 3] {
@@ -158,36 +163,27 @@ fn elevation_to_color(elevation: f32, min: f32, max: f32) -> [f32; 3] {
     STOPS[STOPS.len() - 1].1
 }
 
-/// heightmapを双線形補間でサンプリングする。範囲外ならNone。海域(周辺4点のいずれかがNaN)は
-/// 標高0mとして扱う(NaNをそのまま返すと呼び出し側の計算がNaN汚染されるため)。
-/// `terrain/profile.rs`(断面図)・`components/terrain_view.rs`(カメラ注視点の高さ)から使う。
+/// 標高を双線形補間でサンプリングする。範囲外ならNone。タイルが無い・海域(周辺4ノードの
+/// いずれかがデータなし)は標高0mとして扱う(欠損をそのまま返すと呼び出し側の計算が破綻するため)。
+/// 各タイル(のチャンク)は、いま画面に出しているレベルのグリッド(`TerrainData::set_chunk_level`)
+/// で引くので、描画されている地形と観測点・見通し計算・クリック判定の標高が一致する。
+/// `terrain/los.rs`(見通し)・`terrain/markers.rs`(観測点)・`terrain/profile.rs`(断面図)・
+/// `terrain/pick.rs`(クリック判定)・`ui/terrain_view.rs`(カメラ注視点の高さ)から使う。
 pub fn sample_heightmap(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> Option<f32> {
     let b = &data.metadata.geodetic_bounds;
     if lat_deg < b.min_lat || lat_deg > b.max_lat || lon_deg < b.min_lon || lon_deg > b.max_lon {
         return None;
     }
 
-    let width = data.metadata.width as usize;
-    let height = data.metadata.height as usize;
-    // 行順は南→北(DETAILED_DESIGN.md 2.6節の座標復元式と同じ向き。build_meshも同様)。
-    let fx = (lon_deg - b.min_lon) / (b.max_lon - b.min_lon) * (width - 1) as f64;
-    let fy = (lat_deg - b.min_lat) / (b.max_lat - b.min_lat) * (height - 1) as f64;
-
-    let x0 = fx.floor().clamp(0.0, (width - 1) as f64) as usize;
-    let y0 = fy.floor().clamp(0.0, (height - 1) as f64) as usize;
-    let x1 = (x0 + 1).min(width - 1);
-    let y1 = (y0 + 1).min(height - 1);
-    let tx = (fx - x0 as f64) as f32;
-    let ty = (fy - y0 as f64) as f32;
-
-    let h00 = data.heightmap[y0 * width + x0];
-    let h10 = data.heightmap[y0 * width + x1];
-    let h01 = data.heightmap[y1 * width + x0];
-    let h11 = data.heightmap[y1 * width + x1];
-    let h0 = h00 + (h10 - h00) * tx;
-    let h1 = h01 + (h11 - h01) * tx;
-    let result = h0 + (h1 - h0) * ty;
-    Some(if result.is_nan() { 0.0 } else { result })
+    // 東端・北端ちょうどは、その内側のタイルの端として扱う。
+    let lat0 = (lat_deg.floor() as i32).min(b.max_lat as i32 - 1);
+    let lon0 = (lon_deg.floor() as i32).min(b.max_lon as i32 - 1);
+    let Some(tile) = data.tile((lat0, lon0)) else {
+        return Some(0.0);
+    };
+    let u = (lon_deg - lon0 as f64).clamp(0.0, 1.0);
+    let v = (lat_deg - lat0 as f64).clamp(0.0, 1.0);
+    Some(data.sample_bilinear(tile, u, v))
 }
 
 /// ENUの水平位置(東, 北)の真上/真下にある地表点の(緯度, 経度, ENU上座標)。
@@ -227,55 +223,204 @@ pub fn ground_at_geodetic(
     (east, north, up)
 }
 
-/// heightmap全体からメッシュを構築する。原点変更時にも呼び直す(DETAILED_DESIGN.md 3.3節)。
-pub fn build_mesh(data: &TerrainData, origin: &Origin) -> TerrainMesh {
-    let width = data.metadata.width as usize;
-    let height = data.metadata.height as usize;
-    let bounds = &data.metadata.geodetic_bounds;
-    let transform = EnuTransform::new(origin, &data.metadata.ellipsoid);
+/// メッシュの縁に沿って下へ垂らす「スカート」の深さ(メートル)。解像度の違う隣のメッシュ同士は、
+/// 縁のノードの高さがわずかに食い違い、縁に隙間ができて背景の黒が見える。縁から下向きの壁
+/// (スカート)を付けて隙間を隠す。粗いレベルほど食い違いが大きいので深くしてある。
+fn skirt_depth_m(level: usize) -> f32 {
+    const DEPTHS: [f32; 5] = [800.0, 400.0, 250.0, 150.0, 100.0];
+    DEPTHS[level.min(DEPTHS.len() - 1)]
+}
 
-    let mut vertices = Vec::with_capacity(width * height);
-    for j in 0..height {
-        let lat = bounds.min_lat
-            + (j as f64 / (height - 1) as f64) * (bounds.max_lat - bounds.min_lat);
-        for i in 0..width {
-            let lon = bounds.min_lon
-                + (i as f64 / (width - 1) as f64) * (bounds.max_lon - bounds.min_lon);
-            let elevation = data.heightmap[j * width + i];
-            // NaN = データなし(海域、geotiff_preprocess参照)。頂点位置はNaNだと破綻するため
-            // 標高0mとして配置するが、この頂点を含む三角形は下のindices生成で捨てるので描画されない。
-            let is_ocean = elevation.is_nan();
-            let position = transform.transform(lat, lon, if is_ocean { 0.0 } else { elevation as f64 });
-            let color = if is_ocean {
-                [0.0; 3]
+/// グリッド1枚(一辺`cells`セル)のメッシュの頂点数(ノード(N+1)^2 + 縁4辺のスカート4(N+1))。
+/// タイル全体(レベル0)でもチャンクでも同じ式。
+pub fn tile_vertex_count(cells: usize) -> usize {
+    let n = cells + 1;
+    n * n + 4 * n
+}
+
+/// スカートの辺e(0=南,1=東,2=北,3=西)のk番目のノードの、グリッド内の番号。
+fn edge_node(edge: usize, k: usize, cells: usize) -> usize {
+    let n = cells + 1;
+    match edge {
+        0 => k,
+        1 => k * n + cells,
+        2 => cells * n + k,
+        _ => k * n,
+    }
+}
+
+/// メッシュにするグリッド1枚の位置決め: ノード(列i, 行j)は緯度`lat_start + j*step_deg`、
+/// 経度`lon_start + i*step_deg`にある。
+struct GridPlacement {
+    lat_start: f64,
+    lon_start: f64,
+    step_deg: f64,
+    skirt_depth: f32,
+}
+
+/// グリッドの頂点列を、指定した原点のENU座標で作る。並びは、ノード(行=南→北、列=西→東)の後に、
+/// スカート4辺(南・東・北・西)の順。頂点数と並びは原点に依存しない(原点変更時は
+/// `TerrainRenderer::update_mesh_vertices`で位置だけを書き換える)。行(緯度)・列(経度)ごとの
+/// 三角関数を前計算して、1頂点あたりの計算を軽くしてある(原点変更時に全メッシュの頂点を
+/// 作り直すため)。
+fn grid_vertices(
+    grid: &[i16],
+    cells: usize,
+    place: &GridPlacement,
+    max_elevation: f32,
+    transform: &EnuTransform,
+) -> Vec<TerrainVertex> {
+    let n = cells + 1;
+    let (a, e2) = (transform.a, transform.e2);
+
+    // 行(緯度)ごと: (sinφ, cosφ, 卯酉線曲率半径N)。列(経度)ごと: (sinλ, cosλ)。
+    let rows: Vec<(f64, f64, f64)> = (0..n)
+        .map(|j| {
+            let (s, c) = (place.lat_start + j as f64 * place.step_deg).to_radians().sin_cos();
+            (s, c, a / (1.0 - e2 * s * s).sqrt())
+        })
+        .collect();
+    let cols: Vec<(f64, f64)> = (0..n)
+        .map(|i| (place.lon_start + i as f64 * place.step_deg).to_radians().sin_cos())
+        .collect();
+
+    let (slat0, clat0) = transform.origin_lat_rad.sin_cos();
+    let (slon0, clon0) = transform.origin_lon_rad.sin_cos();
+
+    let mut vertices = Vec::with_capacity(tile_vertex_count(cells));
+    for j in 0..n {
+        let (s, c, prime) = rows[j];
+        for i in 0..n {
+            let (sl, cl) = cols[i];
+            let value = grid[j * n + i];
+            // データなし(海域)の頂点位置はNaNだと破綻するため標高0mで配置するが、この頂点を
+            // 含む三角形は`grid_indices`で捨てるので描画されない。
+            let (h, color) = if value == NO_DATA {
+                (0.0, [0.0; 3])
             } else {
-                elevation_to_color(elevation, data.metadata.elevation_min, data.metadata.elevation_max)
+                (
+                    value as f64,
+                    elevation_to_color(value as f32, COLOR_MIN_ELEVATION_M, max_elevation),
+                )
             };
-            vertices.push(TerrainVertex { position, color });
+            let x = (prime + h) * c * cl - transform.origin_x;
+            let y = (prime + h) * c * sl - transform.origin_y;
+            let z = (prime * (1.0 - e2) + h) * s - transform.origin_z;
+            let east = -slon0 * x + clon0 * y;
+            let north = -slat0 * clon0 * x - slat0 * slon0 * y + clat0 * z;
+            let up = clat0 * clon0 * x + clat0 * slon0 * y + slat0 * z;
+            vertices.push(TerrainVertex { position: [east as f32, north as f32, up as f32], color });
         }
     }
 
-    // 海域(NaN)の頂点を1つでも含む三角形は張らない(海は描画せず、背景色のまま見える)。
-    // 三角形の有無はheightmapだけで決まり原点に依存しないため、原点変更時に再構築しても
-    // インデックス数は変わらない(`TerrainRenderer::update_vertices`は頂点だけを書き換える)。
-    let is_land = |k: u32| !data.heightmap[k as usize].is_nan();
-    let mut indices = Vec::with_capacity((width - 1) * (height - 1) * 6);
-    for j in 0..height - 1 {
-        for i in 0..width - 1 {
-            let i0 = (j * width + i) as u32;
-            let i1 = (j * width + i + 1) as u32;
-            let i2 = ((j + 1) * width + i) as u32;
-            let i3 = ((j + 1) * width + i + 1) as u32;
-            if is_land(i0) && is_land(i1) && is_land(i2) {
-                indices.extend_from_slice(&[i0, i1, i2]);
+    for edge in 0..4 {
+        for k in 0..n {
+            let mut v = vertices[edge_node(edge, k, cells)];
+            v.position[2] -= place.skirt_depth;
+            vertices.push(v);
+        }
+    }
+    vertices
+}
+
+/// グリッドの三角形インデックスを作る。データなし(海域)のノードを1つでも含む三角形は張らない
+/// (海は描画せず背景色のまま見える)。スカートは、隣り合う2ノードがどちらも陸のときだけ壁を張る。
+/// 三角形の有無はグリッドだけで決まり原点に依存しない。
+fn grid_indices(grid: &[i16], cells: usize) -> Vec<u32> {
+    let n = cells + 1;
+    let land = |k: usize| grid[k] != NO_DATA;
+
+    let mut indices = Vec::with_capacity(cells * cells * 6);
+    for j in 0..cells {
+        for i in 0..cells {
+            let i0 = j * n + i;
+            let i1 = i0 + 1;
+            let i2 = i0 + n;
+            let i3 = i2 + 1;
+            if land(i0) && land(i1) && land(i2) {
+                indices.extend_from_slice(&[i0 as u32, i1 as u32, i2 as u32]);
             }
-            if is_land(i1) && is_land(i3) && is_land(i2) {
-                indices.extend_from_slice(&[i1, i3, i2]);
+            if land(i1) && land(i3) && land(i2) {
+                indices.extend_from_slice(&[i1 as u32, i3 as u32, i2 as u32]);
             }
         }
     }
 
-    TerrainMesh { vertices, indices }
+    let skirt_base = n * n;
+    for edge in 0..4 {
+        for k in 0..cells {
+            let (a, b) = (edge_node(edge, k, cells), edge_node(edge, k + 1, cells));
+            if land(a) && land(b) {
+                let (sa, sb) =
+                    ((skirt_base + edge * n + k) as u32, (skirt_base + edge * n + k + 1) as u32);
+                indices.extend_from_slice(&[a as u32, b as u32, sa, b as u32, sb, sa]);
+            }
+        }
+    }
+    indices
+}
+
+/// タイル全体(レベル0)の頂点列。
+pub fn build_whole_tile_vertices(
+    data: &TerrainData,
+    tile: &TileEntry,
+    transform: &EnuTransform,
+) -> Vec<TerrainVertex> {
+    let cells = data.level_cells(0);
+    let place = GridPlacement {
+        lat_start: tile.key.0 as f64,
+        lon_start: tile.key.1 as f64,
+        step_deg: 1.0 / cells as f64,
+        skirt_depth: skirt_depth_m(0),
+    };
+    grid_vertices(data.whole_grid(tile), cells, &place, data.metadata.elevation_max, transform)
+}
+
+/// タイル全体(レベル0)のメッシュ。
+pub fn build_whole_tile_mesh(
+    data: &TerrainData,
+    tile: &TileEntry,
+    transform: &EnuTransform,
+) -> TerrainMesh {
+    TerrainMesh {
+        vertices: build_whole_tile_vertices(data, tile, transform),
+        indices: grid_indices(data.whole_grid(tile), data.level_cells(0)),
+    }
+}
+
+/// チャンク(行(南→北)*分割数+列(西→東))・レベル(1以上)の頂点列。グリッドが未取得ならNone。
+pub fn build_chunk_vertices(
+    data: &TerrainData,
+    tile: &TileEntry,
+    chunk: usize,
+    level: usize,
+    transform: &EnuTransform,
+) -> Option<Vec<TerrainVertex>> {
+    let grid = data.chunk_grid(tile, level, chunk)?;
+    let k = data.chunks_per_tile();
+    let (cx, cy) = (chunk % k, chunk / k);
+    let cells = data.chunk_cells(level);
+    let step_deg = 1.0 / data.level_cells(level) as f64;
+    let place = GridPlacement {
+        lat_start: tile.key.0 as f64 + (cy * cells) as f64 * step_deg,
+        lon_start: tile.key.1 as f64 + (cx * cells) as f64 * step_deg,
+        step_deg,
+        skirt_depth: skirt_depth_m(level),
+    };
+    Some(grid_vertices(&grid, cells, &place, data.metadata.elevation_max, transform))
+}
+
+/// チャンク・レベル(1以上)のメッシュ。グリッドが未取得ならNone。
+pub fn build_chunk_mesh(
+    data: &TerrainData,
+    tile: &TileEntry,
+    chunk: usize,
+    level: usize,
+    transform: &EnuTransform,
+) -> Option<TerrainMesh> {
+    let vertices = build_chunk_vertices(data, tile, chunk, level, transform)?;
+    let grid = data.chunk_grid(tile, level, chunk)?;
+    Some(TerrainMesh { vertices, indices: grid_indices(&grid, data.chunk_cells(level)) })
 }
 
 #[cfg(test)]

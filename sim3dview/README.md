@@ -38,29 +38,46 @@ sim3dview = { git = "https://example.com/your-fork/Sim3dView.git" }
 
 ## サーバーに必要なもの(データ契約)
 
-このライブラリはHTTPで配信される地形データを前提とします。呼び出し側が用意するサーバーは、
-任意のベースURL(例: `http://localhost:9001/terrain`)の下に以下の2ファイルを返す必要が
-あります(`terrain::loader`参照)。
+このライブラリはHTTPで配信される地形データを前提とします。地形は**1度x1度のタイル単位で、タイルごとに
+複数の解像度レベル**を持ちます(地形LOD。離れたタイルは全体で1枚の粗いメッシュ、カメラに近いタイルは
+6x6のチャンクに分けて、近いチャンクほど細かいレベル(最細は元データの30m)を取得して描画します。
+`terrain::lod`・DETAILED_DESIGN.md 6.10節)。呼び出し側が用意するサーバーは、任意のベースURL
+(例: `http://localhost:9001/terrain`)の下に以下を返す必要があります(`terrain::loader`参照)。
 
 - `{base_url}/metadata.json`(`Content-Type: application/json`):
 
   ```json
   {
-    "width": 2048,
-    "height": 2048,
-    "elevation_min": -22.0247,
-    "elevation_max": 3710.76,
-    "geodetic_bounds": { "min_lat": 35.0, "max_lat": 40.0, "min_lon": 135.0, "max_lon": 140.0 },
-    "ellipsoid": { "a_m": 6378137.0, "inv_f": 298.257223563 },
+    "tile_levels": [60, 180, 600, 1800, 3600],
+    "chunks_per_tile": 6,
+    "elevation_min": -330.0,
+    "elevation_max": 3937.0,
+    "geodetic_bounds": { "min_lat": 20.0, "max_lat": 50.0, "min_lon": 120.0, "max_lon": 150.0 },
+    "ellipsoid": { "a_m": 6378137.0, "inv_f": 298.257222101 },
     "has_texture": false,
     "default_origin": { "lat_deg": 35.355556, "lon_deg": 138.859722 }
   }
   ```
 
-- `{base_url}/heightmap.bin`(`Content-Type: application/octet-stream`): `width * height * 4`
-  バイトのリトルエンディアンf32配列(row-major、南→北の行順)。NODATA/海は`NaN`。
+  `tile_levels`はレベルごとの1度タイル1辺のセル数(先頭がレベル0=最粗)。レベル1以上は
+  `chunks_per_tile`で割り切れること。
 
-このリポジトリの`tools/geotiff_preprocess`(C++ + GDAL)は、ALOS DSM GeoTIFFタイルからこの2ファイルを
+- `{base_url}/tile_index.json`: 存在するタイルの一覧
+  `{"tiles": [{"lat": 35, "lon": 138, "elevation_min": 0, "elevation_max": 3776}, ...]}`
+  (`lat`/`lon`はタイル南西角の整数度。陸のないタイルは含めない)。
+- `{base_url}/base.bin`(`application/octet-stream`): レベル0(タイル全体で1枚)を全タイル分、
+  `tile_index.json`の順に連結したもの。
+- `{base_url}/tiles/L{k}/N035E138.bin`(k=1以上): レベルkのタイル別ファイル。1度タイルを
+  `chunks_per_tile`x`chunks_per_tile`のチャンクに分け、チャンク(行(南→北)*分割数+列(西→東)の順)ごとの
+  グリッドを**固定サイズのレコード**として連結したもの。大きいファイル(最細で約26MB)は、フロントが
+  **HTTP Range**(`bytes=a-b`、単一範囲)でチャンク1個分だけ取得するので、サーバーはRangeに対応してください
+  (未対応でも全体を返せば動きますが、毎回全体を転送することになります)。
+
+各グリッドは`(N+1)x(N+1)`ノード(`N`は一辺のセル数。レベル0はタイル全体、レベル1以上はチャンク)の
+int16(標高メートル)、リトルエンディアン、row-major、**行は南→北・列は西→東**。データなし(海)は
+`-32768`。隣のチャンクとは縁のノードを共有します。
+
+このリポジトリの`tools/geotiff_preprocess`(C++ + GDAL)は、ALOS DSM GeoTIFFタイルからこれらを
 生成する前処理ツールで、ライブラリの一部として提供しています。同じ形式さえ満たせば
 サーバーの実装言語・データソースは問いません。
 

@@ -127,8 +127,9 @@ $toolchain = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\vcpkg\s
 
 ### 4. 地形データの生成(初回のみ・1回だけ実行)
 
-`sim_server.exe`はHTTPで`/terrain/heightmap.bin`・`/terrain/metadata.json`を配信するが、
-これらのファイルは**リポジトリに含まれておらず**、初回起動前に前処理ツールで生成する必要がある。
+`sim_server.exe`はHTTPで`/terrain/`以下の地形データ(`metadata.json`・`tile_index.json`・`base.bin`・
+`tiles/L*/*.bin`)を配信するが、これらのファイルは**リポジトリに含まれておらず**、初回起動前に
+前処理ツールで生成する必要がある。
 **リポジトリのルートディレクトリから**実行すること(`map_data/`と`sample/sim_server/assets/terrain/`を
 相対パスで参照するため):
 
@@ -136,22 +137,29 @@ $toolchain = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\vcpkg\s
 tools\geotiff_preprocess\build\Debug\geotiff_preprocess.exe
 ```
 
-`map_data/`内のGeoTIFFタイル(現在17枚同梱済み)を自動検出し、モザイク→ダウンサンプリング
-して`sample/sim_server/assets/terrain/heightmap.bin`と`metadata.json`を書き出す(数秒〜数十秒)。
-モザイクの対象範囲(外接矩形)はハードコードではなく、実際に見つかったタイルの緯度経度から
-毎回自動計算されるため、`map_data/`に別の場所のタイルを追加/削除してもコード変更は不要。
+`map_data/`内のGeoTIFFタイルを自動検出し、**1度タイルごとに複数の解像度レベル**(約1.85km / 620m /
+185m / 62m / 31m。最細は元データの30m)の標高グリッドを`sample/sim_server/assets/terrain/`へ書き出す
+(`metadata.json`・`tile_index.json`・`base.bin`・`tiles/L1〜L4/*.bin`。レベル1以上は1度タイルを6x6の
+チャンクに分けて連結した形式)。タイルを1枚ずつ並列に処理するので、メモリは数百MB/スレッド程度で、
+390タイル(DSM約10GB)で数分〜十数分かかる(Release構成の実行を推奨)。出力は約12GB(`tiles/`が
+ほぼ全部)で、`.gitignore`済み。対象範囲(外接矩形)はハードコードではなく、実際に見つかったタイルの
+緯度経度から毎回自動計算されるため、`map_data/`に別の場所のタイルを追加/削除してもコード変更は不要
+(ただし`sim_server`は起動時に`metadata.json`を読むので再起動が必要)。
+フロントは全タイルの最粗レベルだけを起動時に取得し、カメラに近いチャンクだけ細かいレベルをその都度
+取得して描画する(地形LOD。DETAILED_DESIGN.md 6.10節)。
 成功すると以下のようなログが出る:
 
 ```
-[geotiff_preprocess] found 17 tile(s), mosaic bounds: lat 35..40, lon 135..140 (18000x18000px)
-[geotiff_preprocess] composited 17 tile(s) into 18000x18000 mosaic (missing cells left as NaN = ocean)
-[geotiff_preprocess] wrote sample/sim_server/assets/terrain\heightmap.bin and sample/sim_server/assets/terrain\metadata.json
-[geotiff_preprocess] elevation range: -22.0... .. 3710.8...
+[geotiff_preprocess] found 390 tile(s), bounds: lat 20..50, lon 120..150
+[geotiff_preprocess] (1/390) N020E121
+...
+[geotiff_preprocess] wrote 390 tile(s) with 5 level(s) to sample/sim_server/assets/terrain
+[geotiff_preprocess] elevation range: -330 .. 3937
 ```
 
 存在しないタイル・各タイル内のNODATA画素・マスクファイル(`*_MSK.tif`、同梱)が海と示す画素は
-NaNとして出力され、Web UI側ではその部分の三角形を描画しない(背景の黒のまま見える。標高0mとは
-区別される)。
+「データなし」として出力され、Web UI側ではその部分の三角形を描画しない(背景の黒のまま見える。
+標高0mとは区別される)。
 
 ---
 

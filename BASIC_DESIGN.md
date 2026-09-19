@@ -53,15 +53,15 @@ WebSocketサーバーとHTTP静的ファイルサーバーを兼ねる。
 ### 2.3 地形データ連携(HTTP静的配信, 起動時1回)
 
 ```
-[map_data/ 内のALOS DSM GeoTIFF ×17]
+[map_data/ 内のALOS DSM GeoTIFF(現在390タイル)]
     ↓
   前処理ツール(C++, GDAL使用。geotiff_preprocessという単発CLI)
-    - モザイク(17タイルを緯度経度グリッドのまま敷き詰め。再投影は不要)
-    - ダウンサンプリング(平均法で2048×2048へ)
+    - タイルごとに複数の解像度レベル(平均法、一辺60/180/600/1800/3600セル。最細は元データの30m。レベル1以上は6x6のチャンクに分割。再投影は不要。地形LOD)
     ↓
   出力アセット(静的ファイル。sim_server/assets/terrain/)
-    - heightmap.bin (標高の生バイナリ、f32)
-    - metadata.json (緯度経度範囲・楕円体パラメータ等)
+    - base.bin (全タイルの最粗レベルの連結、int16) / tiles/L{k}/*.bin (細かいレベルのタイル別グリッド)
+    - tile_index.json (存在するタイルの一覧)
+    - metadata.json (緯度経度範囲・楕円体パラメータ・レベル定義等)
     ↓
   HTTP静的配信(sim_serverが/terrain/*で配信。WebSocketの/simとは別ルート)
     ↓
@@ -106,7 +106,7 @@ GDALをリンクしない。
 | rmp-serde | MessagePack(Rust実装) | MIT |
 | serde / serde_json | シリアライズフレームワーク | MIT / Apache-2.0 |
 | gloo-timers | タイマー(再接続バックオフ、レイアウト安定待ち) | MIT / Apache-2.0 |
-| gloo-net | HTTP fetch(heightmap.bin/metadata.json取得) | MIT / Apache-2.0 |
+| gloo-net | HTTP fetch(metadata.json/tile_index.json/base.bin/タイルグリッド取得) | MIT / Apache-2.0 |
 | trunk | WASMビルド・開発サーバー | MIT / Apache-2.0 |
 | wgpu | 地形メッシュのGPU描画(WebGPU) | MIT / Apache-2.0 |
 | bytemuck | 頂点データのGPUバッファキャスト | MIT / Apache-2.0 |
@@ -130,7 +130,7 @@ GDALをリンクしない。
 | 6 | 左右パネルのレスポンシブ対応 | 左パネルは固定でレスポンシブ不要。**地図(中央)と右パネルはレスポンシブ対応 + ユーザーがUIでサイズ変更可能** |
 | 7 | 地形エリアの規模 | `map_data`内**17タイル全体をモザイク**し、単一の広域メッシュとする |
 | 8 | オルソ画像の有無 | RGBオルソ画像なし。パンクロ画像(STK.tif)も**使用せず、標高グラデーション着色のみ** |
-| 9 | メッシュ解像度 | **2048×2048**(約419万頂点。当初1024×1024だったが、「マップの解像度を上げてほしい」との要望により2048×2048へ引き上げた。当初の5°四方≒555kmでは1グリッドセルは約271mだったが、その後`map_data/`のタイルが増え現在のデータは30°四方(緯度20〜50・経度120〜150)で1セル約1.6km。単一の固定メッシュ全体を丸ごとGPUに載せる設計のままなので、これ以上の大幅な引き上げにはLOD化等の設計変更が必要) |
+| 9 | メッシュ解像度 | **1度タイル単位のLOD+近いタイルは6x6チャンク**(全タイルを最粗約1.85km/セルで常駐し、カメラに近いチャンクだけ620m/185m/62m/31m(元データの30m)のレベルを取得して差し替える。チャンクの頂点は合計300万まで)。経緯: 当初は全域を1枚の単一メッシュにして1024×1024→2048×2048へ引き上げたが、`map_data/`のタイルが増え対象域が30°四方(緯度20〜50・経度120〜150、390タイル)になると1セル約1.6kmまで粗くなり、単一メッシュのままでは頂点バッファがWebGPUの上限(既定256MB)を超えるため、LOD化した(DETAILED_DESIGN.md 2.4節・6.10節) |
 | 10 | 垂直誇張の要否 | **不要**。実メートル値のまま描画する(誇張機能は実装しない) |
 | 11 | 座標系のすり合わせ | 原点は**UIから緯度経度を入力**して指定。原点=入力地点の海抜0m地点。**東=X、北=Y、鉛直上向き=Z**の局所ENU座標系。**C++側もUIと全く同じ座標系・原点を用いる**。デフォルト原点は**北緯35°21'20"、東経138°51'35"**(35.355556°, 138.859722°) |
 | 12 | カメラの自由視点化 | **ズーム・角度切り替え(回転)・視点切り替えを自由に操作できる**カメラとする(実装中。詳細設計書参照) |
@@ -162,7 +162,7 @@ Sim3dView/
 ├── map_data/                  # 入力: ALOS DSM GeoTIFFタイル(17枚、既存・変更しない)
 │   └── ALPSMLC30_N###E###_DSM.tif ...
 ├── tools/                       # ライブラリの一部として提供する開発ツール(サンプルではない)
-│   └── geotiff_preprocess/        # GeoTIFF→heightmap.bin/metadata.json前処理CLI(C++, GDAL依存はここに限定)
+│   └── geotiff_preprocess/        # GeoTIFF→タイル別多段解像度グリッド/metadata.json前処理CLI(C++, GDAL依存はここに限定)
 │       ├── CMakeLists.txt           # sim_serverとは独立したCMakeプロジェクト
 │       ├── vcpkg.json               # gdal
 │       └── main.cpp
@@ -175,7 +175,7 @@ Sim3dView/
 │       ├── lib.rs
 │       ├── terrain/                # データ取得・座標変換・カメラ・wgpu描画・覆域/見通し計算
 │       │   ├── mod.rs
-│       │   ├── loader.rs             # heightmap.bin/metadata.json取得(base_urlは呼び出し側が指定)
+│       │   ├── loader.rs             # metadata/タイル索引/タイルグリッド取得(base_urlは呼び出し側が指定)
 │       │   ├── mesh.rs                # ENU変換・メッシュ生成
 │       │   ├── camera.rs              # カメラ(ビュー・射影行列、2D/3D)
 │       │   ├── renderer.rs            # wgpu描画パイプライン
@@ -209,7 +209,7 @@ Sim3dView/
     │   │   ├── simulation.cpp
     │   │   └── ws_server.cpp
     │   └── assets/
-    │       └── terrain/                 # 前処理ツールの出力(heightmap.bin/metadata.json)
+    │       └── terrain/                 # 前処理ツールの出力(metadata.json/tile_index.json/base.bin/tiles/)
     └── sim_frontend/                # sim3dviewライブラリを使うサンプルアプリ(Rust)
         ├── Cargo.toml                 # sim3dviewをpath依存として使う
         ├── index.html                  # sim3dview.css・app.cssの両方を読み込む

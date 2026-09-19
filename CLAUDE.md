@@ -36,8 +36,8 @@ sample/
   sim_server/            # C++側(シミュレーション本体 + WebSocketサーバー)
   sim_frontend/          # sim3dviewを使うサンプルアプリ。VAB・状況パネル・メニュー・通信プロトコル等
 tools/
-  geotiff_preprocess/    # ライブラリの一部の前処理CLI(C++/GDAL)。GeoTIFF→heightmap.bin/metadata.json。独立CMakeプロジェクト
-map_data/             # 入力: ALOS DSM GeoTIFFタイル(17枚、既存・変更しない)
+  geotiff_preprocess/    # ライブラリの一部の前処理CLI(C++/GDAL)。GeoTIFF→1度タイルごとの多段解像度グリッド+metadata.json。独立CMakeプロジェクト
+map_data/             # 入力: ALOS DSM GeoTIFFタイル(現在390枚、既存・変更しない)
 Cargo.toml             # ワークスペースルート(members: sim3dview, sample/sim_frontend)
 ```
 
@@ -48,7 +48,11 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
 - 地形前処理は**原点非依存**(緯度経度グリッドのまま出力)。ENU変換はフロント(Rust/WASM)がランタイムに行う(詳細設計書2.2・3節)
 - **原点**(ENU座標系の基準、`OriginState`)はサーバー(C++)が正の状態を持ち、変更は**シミュレーション停止中のみ**
   (3.4節)。カメラの**中心点**(注視点`OrbitCamera::target`)は別物で、動かしても原点・メッシュ・観測点は変わらない
-- メッシュ解像度は2048×2048固定(単一メッシュを丸ごとGPUへ。これ以上はLOD化が必要)、標高グラデーション着色のみ
+- 地形は**1度タイル単位のLOD+近いタイルは6x6チャンク**: 全タイルをレベル0(約1.85km/セル、タイル全体で1枚)で
+  常駐し、カメラに近いタイルはチャンクに分けて、近いチャンクほど細かいレベル(620m/185m/62m/最細31m=元データ
+  の30m)をサーバーから取得して差し替える(`terrain/lod.rs`が計画、`ui/terrain_view.rs`が適用。チャンクの
+  頂点は合計300万まで)。大きいレベルはHTTP Rangeでチャンク1個分だけ取得する。標高サンプリングは各チャンクの
+  「いま画面に出しているレベル」で引く。標高グラデーション着色のみ。詳細はDETAILED_DESIGN.md 6.10節
 - 海域はheightmapのNaN(`*_MSK.tif`の海+欠損タイル)で表し、フロントはNaN頂点を含む三角形を描画しない
   (海・データ範囲外は背景の黒。水色の海レイヤーは撤去済み。`mesh.rs`の`build_mesh`)
 - 地形は楕円体(WGS84相当)をENUへ変換した曲面で、遠方ほど丸みで下がる(原点から1,000kmで約80km)。
@@ -71,7 +75,7 @@ cargo check -p sim_frontend --target wasm32-unknown-unknown   # サンプルア�
 cd sample/sim_frontend && trunk serve                          # 開発サーバー(ポート8081、Trunk.toml参照)
 ```
 
-- `sim_server.exe`(既定ポート9001)を先に起動。地形データ(`heightmap.bin`/`metadata.json`)は
+- `sim_server.exe`(既定ポート9001)を先に起動。地形データ(`metadata.json`/`tile_index.json`/`base.bin`/`tiles/`、約12GB)は
   `geotiff_preprocess.exe`をリポジトリルートから実行して生成する(リポジトリには含まれない)
 - `trunk`実行前に`$env:NO_COLOR = "true"`が必要。`Start-Process`でのexe起動はブロックされるので直接実行する
 - **ライブラリ(`sim3dview`)側だけを編集した場合はtrunkを再起動する**(path依存先は自動watchされない)

@@ -1971,6 +1971,7 @@ dependencies = [
  "bytemuck",
  "glam",
  "gloo-net 0.7.0",
+ "gloo-timers",
  "js-sys",
  "leptos",
  "log",

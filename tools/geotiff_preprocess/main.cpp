@@ -1,36 +1,58 @@
 // GeoTIFF前処理ツール(単発実行CLI)。DETAILED_DESIGN.md 2節・5.5節。
 //
-// map_data/ 内の *_DSM.tif を機械的に列挙し(DETAILED_DESIGN.md 2.1節)、緯度経度グリッド上の
-// ピクセル位置にそのまま敷き詰めてモザイクする。モザイクの外接矩形は**固定値ではなく、
-// 実際に見つかったタイルの緯度経度範囲から実行時に自動的に決める**(1.2節・2.3節)。
-// そのため map_data/ に別の場所のタイルを追加/削除しても、コード変更なしに追従する。
-// データが存在しない領域(モザイクの外接矩形内でタイルが見つからないセル + 各タイル内の
-// NODATA画素のうち埋められなかったもの + マスクファイル(*_MSK.tif)が海と示す画素)は
-// NaNで埋め、標高0mとは区別する(海の色で塗るための目印。1.4節)。タイル内部の海域は
-// DSM側では単に標高0mとして格納されておりNODATAセンチネルでは検出できないため、
-// マスクファイルを別途読んで補っている。タイル内のNODATA画素のうち、海ではなく
-// かつ小さい(kMaxFillableHolePixels以下の)ものは、周囲の有効画素から補間して埋める
-// (雲の影・センサー欠損等を想定。「タイル内の小さなNODATA穴だけ補完してほしい」との
-// 要望による。タイル自体が丸ごと存在しない大きな欠損・海は補間の対象外)。
-// 再投影は行わない: 入力GeoTIFF(ALOS DSM)は既にEPSG:4326の緯度経度グリッドに
-// 1タイル=1度×1度ちょうどで整列しているため、単純に読み取って敷き詰め、
-// 平均法でダウンサンプリングするだけでよい(2.2節)。
+// map_data/ 内の *_DSM.tif(ALOS World 3D-30m、1タイル=1度x1度=3600x3600画素)を機械的に列挙し
+// (DETAILED_DESIGN.md 2.1節)、**タイルごとに複数の解像度レベルの標高グリッド**を書き出す
+// (地形LOD。フロントはカメラに近いタイルだけ細かいレベルを取得する)。以前は全タイルを1枚の
+// モザイクに敷き詰めて2048x2048へ縮小していたが、対象域が広がる(現在は30度四方・390タイル)と
+// 1セル約1.6kmまで粗くなり、メモリ(全域モザイクは約46GB)も限界だったため、タイル単位の
+// ストリーミング処理に変更した(1タイルずつ読み込むので、メモリは数百MB程度で済む)。
+//
+// データが存在しない領域(タイルが無い/各タイル内のNODATA画素のうち埋められなかったもの/
+// マスクファイル(*_MSK.tif)が海と示す画素)はNaN(出力上はint16の最小値)にして標高0mとは
+// 区別する(1.4節)。タイル内部の海域はDSM側では単に標高0mとして格納されておりNODATA
+// センチネルでは検出できないため、マスクファイルを別途読んで補っている。タイル内のNODATA画素の
+// うち、海ではなくかつ小さい(kMaxFillableHolePixels以下の)ものは、周囲の有効画素から補間して
+// 埋める(雲の影・センサー欠損等を想定)。
+// 再投影は行わない: 入力GeoTIFFは既にEPSG:4326の緯度経度グリッドに1タイル=1度x1度ちょうどで
+// 整列しているため、単純に読み取って平均法で縮小するだけでよい(2.2節)。
+//
+// 出力(出力ディレクトリ直下):
+//   metadata.json            ... 全体の範囲・標高の最小最大・楕円体・解像度レベル・チャンク分割数
+//   tile_index.json          ... 存在するタイルの一覧(緯度経度・標高範囲)
+//   base.bin                 ... レベル0(最粗、タイル全体で1枚)を全タイル分連結したもの(tile_index.jsonの順)
+//   tiles/L{k}/N035E138.bin  ... レベルk(1以上)のタイル別ファイル(下記のチャンク単位のグリッドを連結)
+// グリッドは(N+1)x(N+1)ノード(Nは一辺のセル数)のint16(メートル、リトルエンディアン)で、
+// 行は南→北・列は西→東のrow-major、NaN(データなし)はint16の最小値(-32768)。
+// ノード(i,j)は1度タイル内の(i/N, j/N)の位置にあり、値はそのノードを中心とする
+// 1セル幅の窓内の有効画素の平均(窓内に有効画素が1つでもあれば陸、全部NaNなら海)。
+//
+// レベル1以上は、1度タイルを`kChunksPerTile`x`kChunksPerTile`のチャンクに分け、チャンクごとに
+// (N/kChunksPerTile+1)^2ノードのグリッドを持つ(隣のチャンクと縁のノードを共有するので、同じ
+// レベルのチャンク同士は縁が一致する)。ファイルには、チャンクを行(南→北)・列(西→東)の順に
+// 固定サイズのレコードとして連結する(フロントはHTTP Rangeで必要なチャンクだけ取得できる)。
+// これは最細レベルを元データの解像度(30m)にするため: 1度タイル全体の30mグリッドは約1300万頂点で
+// GPUバッファの上限を超えるので、カメラのすぐ近くのチャンクだけを細かくする。
 //
 // 使い方: geotiff_preprocess [map_dataディレクトリ] [出力ディレクトリ]
 //   既定値はリポジトリルートから実行する前提のパス。
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <queue>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gdal_priv.h>
@@ -39,15 +61,16 @@ namespace fs = std::filesystem;
 
 namespace {
 
-// 目標解像度。当初1024×1024だったが、「マップの解像度を上げてほしい」との要望により
-// 2048×2048に引き上げた(5°四方≒555kmに対し1グリッドセルが約542m→約271mになる)。
-// 単一の固定メッシュ全体を丸ごとGPUに載せる設計のまま(LODは導入していない)なので、
-// 際限なく上げられるわけではない。頂点数は概算で(kTargetWidth)^2、インデックス数は
-// その約6倍(u32)になるため、例えば4096×4096まで上げると頂点・インデックスとも
-// 2048×2048の4倍(合計で1024×1024の16倍)になり、ブラウザのWASMメモリ・GPUバッファ
-// サイズの両方でかなり重くなる。2048×2048は実機(Windows、AMD統合/専用GPU)で動作確認済み。
-constexpr int kTargetWidth = 2048;
-constexpr int kTargetHeight = 2048;
+// 解像度レベル(1度タイル1枚の一辺を何セルに分割するか)。レベル0はフロントが全タイルを常時
+// 保持する最粗のベース(約1.85km/セル)、以降ほど細かい(約620m/185m/62m/31m)。最細の3600は
+// 元データ(ALOS 30m、1度=3600画素)の解像度そのもの。フロントはカメラに近いチャンクにだけ
+// 細かいレベルを取得する。各値は`kChunksPerTile`で割り切れること(レベル1以上のチャンク分割のため)。
+// 値を変えたらフロント側のレベル情報(metadata.jsonのtile_levels)は自動で追従する。
+constexpr int kLevelCells[] = {60, 180, 600, 1800, 3600};
+constexpr int kNumLevels = static_cast<int>(sizeof(kLevelCells) / sizeof(kLevelCells[0]));
+// 1度タイルを何x何のチャンクに分けるか(レベル1以上)。1チャンクは緯度経度とも1/6度(約18km x 15km)。
+constexpr int kChunksPerTile = 6;
+constexpr int16_t kNoDataInt16 = std::numeric_limits<int16_t>::min();
 
 // GRS80楕円体パラメータ(DETAILED_DESIGN.md 3.2節・metadata.jsonスキーマ)。
 constexpr double kEllipsoidA = 6378137.0;
@@ -149,8 +172,8 @@ constexpr int kMaxFillableHolePixels = 2000;
 // 「小さなNODATA穴」(海ではない、周囲を有効な陸地画素に囲まれた小さな欠損領域)を、
 // 周囲の有効画素の平均値で埋める。海(`is_sea`)は補間の材料にも対象にもしない
 // (海は「データが欠損している」のではなく「実際に海である」ため、要望により対象外にした)。
-// タイル自体が丸ごと存在しない大きな欠損は、このタイル内補間の対象外(build_mosaic側で
-// 引き続きNaNのまま=水色で表示される)。
+// タイル自体が丸ごと存在しない大きな欠損は、このタイル内補間の対象外(タイルが
+// 出力されず、フロントでは海と同じ「データなし」として扱われる)。
 //
 // アルゴリズム: 8連結で穴画素を連結成分に分け、`kMaxFillableHolePixels`を超える成分は
 // 埋めずスキップする。埋める成分は、穴の境界(有効画素に隣接する穴画素)からBFSで内側へ
@@ -335,8 +358,7 @@ SourceGrid load_dsm_tile(const std::string& path) {
     }
 
     // タイル内に残ったNODATA画素(大きすぎて埋められなかった穴を含む)をNaNへ置き換える。
-    // 海の色で塗る目印として使う(build_mosaic/downsample_averageもNaNを「データなし」として
-    // 扱う)。
+    // 「データなし」の目印として使う(レベルグリッドの平均計算もNaNを除外する)。
     if (has_nodata) {
         const float nodata_f = static_cast<float>(nodata_value);
         for (float& v : elevation) {
@@ -449,110 +471,172 @@ MosaicBounds compute_mosaic_bounds(const std::vector<DiscoveredTile>& tiles) {
     return bounds;
 }
 
-// 見つかったタイル群を、computed_mosaic_bounds()が決めた外接矩形のcanvas上に敷き詰める
-// (DETAILED_DESIGN.md 2.3節)。タイルが存在しないセル・各タイル内のNODATA画素はNaNのまま
-// (「データなし」=海域の目印。0mで埋めると実際の海抜0m付近の陸地と区別がつかなくなるため)。
-std::vector<float> build_mosaic(const std::vector<DiscoveredTile>& tiles,
-                                 const MosaicBounds& bounds, int mosaic_w, int mosaic_h) {
-    std::vector<float> canvas(static_cast<size_t>(mosaic_w) * static_cast<size_t>(mosaic_h),
-                               std::numeric_limits<float>::quiet_NaN());
-
-    int tiles_found = 0;
-    for (const auto& tile : tiles) {
-        const std::string filename = tile.path.filename().string();
-        std::cout << "[geotiff_preprocess] loading tile: " << filename << std::endl;
-        const SourceGrid grid = load_dsm_tile(tile.path.string());
-        if (grid.width != kTileFullPx || grid.height != kTileFullPx) {
-            std::cerr << "[geotiff_preprocess] skip (unexpected size " << grid.width << "x"
-                       << grid.height << ", expected " << kTileFullPx << "x" << kTileFullPx
-                       << "): " << filename << std::endl;
-            continue;
-        }
-
-        // タイル南西角(tile.id)から、モザイクcanvas上の配置位置(北→南、西→東)を求める。
-        const int row_offset = (bounds.max_lat - (tile.id.lat + 1)) * kTileFullPx;
-        const int col_offset = (tile.id.lon - bounds.min_lon) * kTileFullPx;
-
-        for (int ty = 0; ty < kTileFullPx; ++ty) {
-            const float* src_row = grid.elevation.data() + static_cast<size_t>(ty) * kTileFullPx;
-            float* dst_row = canvas.data() +
-                              static_cast<size_t>(row_offset + ty) * static_cast<size_t>(mosaic_w) +
-                              static_cast<size_t>(col_offset);
-            std::copy(src_row, src_row + kTileFullPx, dst_row);
-        }
-        ++tiles_found;
-    }
-
-    std::cout << "[geotiff_preprocess] composited " << tiles_found << " tile(s) into "
-               << mosaic_w << "x" << mosaic_h << " mosaic (missing cells left as NaN = ocean)"
-               << std::endl;
-    return canvas;
+// タイルID(南西角の整数度)から "N035E138" 形式の名前を作る(フロントのタイルURLと一致させる)。
+std::string tile_name(const TileId& id) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%c%03d%c%03d", id.lat >= 0 ? 'N' : 'S', std::abs(id.lat),
+                  id.lon >= 0 ? 'E' : 'W', std::abs(id.lon));
+    return buf;
 }
 
-// 平均法(average)でダウンサンプリングする(DETAILED_DESIGN.md 2.4節)。行順は入力と同じ(北→南)。
-// NaN(データなし=海域、load_dsm_tile/build_mosaic参照)は平均から除外する。ブロック内に
-// 実データが1画素でもあればその平均を採用し、ブロック全体がNaNの場合のみ出力もNaN(海)にする
-// (陸地の縁で実データを最大限活かすため)。
-std::vector<float> downsample_average(const std::vector<float>& src, int src_w, int src_h,
-                                       int dst_w, int dst_h) {
-    std::vector<float> dst(static_cast<size_t>(dst_w) * static_cast<size_t>(dst_h),
-                            std::numeric_limits<float>::quiet_NaN());
+// 1度タイルの標高(row0=北端の3600x3600、NaN=データなし)から、cells分割の(cells+1)x(cells+1)
+// ノードのint16グリッド(行は南→北、列は西→東)を作る。ノードは1度タイル内のi/cells, j/cellsの
+// 位置にあり、値はそのノードを中心とする1セル幅の窓(タイルの縁では半分)内の有効画素の平均。
+// 窓内に有効画素が1つでもあれば陸(平均)、全部NaNならデータなし。
+std::vector<int16_t> build_level_grid(const std::vector<float>& src, int cells) {
+    const int nodes = cells + 1;
+    const double cell_px = static_cast<double>(kTileFullPx) / cells;
 
-    for (int dy = 0; dy < dst_h; ++dy) {
-        const int sy0 = static_cast<int>(static_cast<int64_t>(dy) * src_h / dst_h);
-        const int sy1 =
-            std::max(sy0 + 1, static_cast<int>(static_cast<int64_t>(dy + 1) * src_h / dst_h));
-        for (int dx = 0; dx < dst_w; ++dx) {
-            const int sx0 = static_cast<int>(static_cast<int64_t>(dx) * src_w / dst_w);
-            const int sx1 =
-                std::max(sx0 + 1, static_cast<int>(static_cast<int64_t>(dx + 1) * src_w / dst_w));
+    // ノード位置(画素座標、0=タイル端=画素の境界)を中心とする窓の画素範囲[start, end)。
+    // 窓の半幅は1セル幅の半分だが、最低でも1画素(セルが1画素以下のとき、画素の中心ではなく
+    // 境界にあるノードを、周囲2x2画素の平均で決める)。
+    const double half_px = std::max(cell_px / 2.0, 1.0);
+    auto window = [&](double center) {
+        int start = static_cast<int>(std::floor(center - half_px + 0.5));
+        int end = static_cast<int>(std::floor(center + half_px + 0.5));
+        start = std::clamp(start, 0, kTileFullPx - 1);
+        end = std::clamp(end, start + 1, kTileFullPx);
+        return std::pair<int, int>(start, end);
+    };
+    std::vector<std::pair<int, int>> col_windows(nodes);
+    std::vector<std::pair<int, int>> row_windows(nodes); // 南→北のノード番号jに対する、北端基準の行範囲
+    for (int i = 0; i < nodes; ++i) {
+        col_windows[i] = window(i * cell_px);
+        row_windows[i] = window((cells - i) * cell_px);
+    }
 
+    std::vector<int16_t> grid(static_cast<size_t>(nodes) * nodes, kNoDataInt16);
+    for (int j = 0; j < nodes; ++j) {
+        const auto [r0, r1] = row_windows[j];
+        for (int i = 0; i < nodes; ++i) {
+            const auto [c0, c1] = col_windows[i];
             double sum = 0.0;
-            int64_t count = 0;
-            for (int sy = sy0; sy < sy1 && sy < src_h; ++sy) {
-                const size_t row_offset = static_cast<size_t>(sy) * static_cast<size_t>(src_w);
-                for (int sx = sx0; sx < sx1 && sx < src_w; ++sx) {
-                    const float v = src[row_offset + static_cast<size_t>(sx)];
+            int count = 0;
+            for (int r = r0; r < r1; ++r) {
+                const float* row = src.data() + static_cast<size_t>(r) * kTileFullPx;
+                for (int c = c0; c < c1; ++c) {
+                    const float v = row[c];
                     if (!std::isnan(v)) {
                         sum += v;
                         ++count;
                     }
                 }
             }
-            dst[static_cast<size_t>(dy) * static_cast<size_t>(dst_w) + static_cast<size_t>(dx)] =
-                count > 0 ? static_cast<float>(sum / static_cast<double>(count))
-                          : std::numeric_limits<float>::quiet_NaN();
+            if (count > 0) {
+                const long rounded = std::lround(sum / count);
+                grid[static_cast<size_t>(j) * nodes + i] =
+                    static_cast<int16_t>(std::clamp<long>(rounded, -32767, 32767));
+            }
         }
     }
-    return dst;
+    return grid;
 }
 
-// 行順をGDAL標準(北→南、row0=max_lat)からDETAILED_DESIGN.md 2.6節の座標復元式が前提とする
-// 順序(南→北、row0=min_lat: `lat = min_lat + (j/(height-1))*(max_lat-min_lat)`)へ反転する。
-// これを行わないと、フロント側で地形が南北反転して描画されてしまう。
-std::vector<float> flip_rows_north_to_south(const std::vector<float>& src, int w, int h) {
-    std::vector<float> dst(src.size());
-    for (int y = 0; y < h; ++y) {
-        const auto begin = src.begin() + static_cast<std::ptrdiff_t>(y) * w;
-        std::copy(begin, begin + w,
-                  dst.begin() + static_cast<std::ptrdiff_t>(h - 1 - y) * w);
-    }
-    return dst;
-}
-
-void write_heightmap_bin(const fs::path& path, const std::vector<float>& data) {
+void write_int16_file(const fs::path& path, const std::vector<int16_t>& data) {
     std::ofstream out(path, std::ios::binary);
     if (!out) {
         throw std::runtime_error("failed to open output file: " + path.string());
     }
+    // int16のリトルエンディアン(x86/x64ホスト前提。フロントもリトルエンディアンで読む)。
     out.write(reinterpret_cast<const char*>(data.data()),
-              static_cast<std::streamsize>(data.size() * sizeof(float)));
+              static_cast<std::streamsize>(data.size() * sizeof(int16_t)));
+}
+
+// タイル全体のグリッド(cells+1)^2を、kChunksPerTile x kChunksPerTileのチャンク(それぞれ
+// (cells/kChunksPerTile+1)^2ノード。隣のチャンクと縁のノードを共有)に分け、行(南→北)・
+// 列(西→東)の順に連結して書き出す。
+void write_chunked_level_file(const fs::path& path, const std::vector<int16_t>& grid, int cells) {
+    const int nodes = cells + 1;
+    const int chunk_cells = cells / kChunksPerTile;
+    std::ofstream out(path, std::ios::binary);
+    if (!out) {
+        throw std::runtime_error("failed to open output file: " + path.string());
+    }
+    std::vector<int16_t> record(static_cast<size_t>(chunk_cells + 1) * (chunk_cells + 1));
+    for (int cy = 0; cy < kChunksPerTile; ++cy) {
+        for (int cx = 0; cx < kChunksPerTile; ++cx) {
+            for (int j = 0; j <= chunk_cells; ++j) {
+                const int16_t* src =
+                    grid.data() + static_cast<size_t>(cy * chunk_cells + j) * nodes + cx * chunk_cells;
+                std::copy(src, src + chunk_cells + 1,
+                          record.begin() + static_cast<size_t>(j) * (chunk_cells + 1));
+            }
+            out.write(reinterpret_cast<const char*>(record.data()),
+                      static_cast<std::streamsize>(record.size() * sizeof(int16_t)));
+        }
+    }
+}
+
+// 1タイル分の処理結果。level0はベース(base.bin)へ連結するためメインスレッドへ返す。
+struct TileResult {
+    TileId id;
+    bool has_land = false;
+    float elevation_min = 0.0f;
+    float elevation_max = 0.0f;
+    std::vector<int16_t> level0;
+};
+
+// タイル1枚を読み込み、全レベルのグリッドを作る。レベル1以上はその場でファイルへ書き出す。
+TileResult process_tile(const DiscoveredTile& tile, const fs::path& out_dir) {
+    TileResult result;
+    result.id = tile.id;
+
+    const SourceGrid grid = load_dsm_tile(tile.path.string());
+    if (grid.width != kTileFullPx || grid.height != kTileFullPx) {
+        std::cerr << "[geotiff_preprocess] skip (unexpected size " << grid.width << "x"
+                   << grid.height << ", expected " << kTileFullPx << "x" << kTileFullPx
+                   << "): " << tile.path.filename().string() << std::endl;
+        return result;
+    }
+
+    float lo = std::numeric_limits<float>::infinity();
+    float hi = -std::numeric_limits<float>::infinity();
+    for (float v : grid.elevation) {
+        if (!std::isnan(v)) {
+            lo = std::min(lo, v);
+            hi = std::max(hi, v);
+        }
+    }
+    if (!(lo <= hi)) {
+        return result; // 全域がデータなし(海のみのタイル)。
+    }
+    result.has_land = true;
+    result.elevation_min = lo;
+    result.elevation_max = hi;
+
+    const std::string name = tile_name(tile.id);
+    for (int level = 0; level < kNumLevels; ++level) {
+        std::vector<int16_t> level_grid = build_level_grid(grid.elevation, kLevelCells[level]);
+        if (level == 0) {
+            result.level0 = std::move(level_grid);
+        } else {
+            write_chunked_level_file(
+                out_dir / "tiles" / ("L" + std::to_string(level)) / (name + ".bin"), level_grid,
+                kLevelCells[level]);
+        }
+    }
+    return result;
+}
+
+void write_tile_index_json(const fs::path& path, const std::vector<TileResult>& tiles) {
+    std::ofstream out(path);
+    if (!out) {
+        throw std::runtime_error("failed to open output file: " + path.string());
+    }
+    out << "{\n  \"tiles\": [\n";
+    for (size_t i = 0; i < tiles.size(); ++i) {
+        const TileResult& t = tiles[i];
+        out << "    {\"lat\": " << t.id.lat << ", \"lon\": " << t.id.lon
+            << ", \"elevation_min\": " << t.elevation_min << ", \"elevation_max\": "
+            << t.elevation_max << "}" << (i + 1 < tiles.size() ? "," : "") << "\n";
+    }
+    out << "  ]\n}\n";
 }
 
 // DETAILED_DESIGN.md 2.6節のスキーマに従ってmetadata.jsonを書き出す。
 // フィールド構成が固定・少数なので、JSONライブラリは使わず手書きで組み立てる。
-void write_metadata_json(const fs::path& path, int width, int height, float elevation_min,
-                          float elevation_max, const GeodeticBounds& bounds) {
+void write_metadata_json(const fs::path& path, float elevation_min, float elevation_max,
+                          const GeodeticBounds& bounds) {
     std::ofstream out(path);
     if (!out) {
         throw std::runtime_error("failed to open output file: " + path.string());
@@ -561,8 +645,12 @@ void write_metadata_json(const fs::path& path, int width, int height, float elev
     // 途中で丸められてしまう(例: 138.859722 -> 138.86)ため、明示的に精度を上げておく。
     out << std::setprecision(15);
     out << "{\n"
-        << "  \"width\": " << width << ",\n"
-        << "  \"height\": " << height << ",\n"
+        << "  \"tile_levels\": [";
+    for (int level = 0; level < kNumLevels; ++level) {
+        out << kLevelCells[level] << (level + 1 < kNumLevels ? ", " : "");
+    }
+    out << "],\n"
+        << "  \"chunks_per_tile\": " << kChunksPerTile << ",\n"
         << "  \"elevation_min\": " << elevation_min << ",\n"
         << "  \"elevation_max\": " << elevation_max << ",\n"
         << "  \"geodetic_bounds\": {\n"
@@ -600,54 +688,105 @@ int main(int argc, char** argv) {
     GDALAllRegister();
 
     try {
+        for (int level = 1; level < kNumLevels; ++level) {
+            if (kLevelCells[level] % kChunksPerTile != 0) {
+                throw std::runtime_error("kLevelCells must be divisible by kChunksPerTile");
+            }
+        }
         std::cout << "[geotiff_preprocess] scanning: " << map_data_dir << std::endl;
-        const std::vector<DiscoveredTile> tiles = discover_tiles(map_data_dir);
+        std::vector<DiscoveredTile> tiles = discover_tiles(map_data_dir);
         const MosaicBounds mosaic_bounds = compute_mosaic_bounds(tiles);
-        const int mosaic_w = (mosaic_bounds.max_lon - mosaic_bounds.min_lon) * kTileFullPx;
-        const int mosaic_h = (mosaic_bounds.max_lat - mosaic_bounds.min_lat) * kTileFullPx;
-        std::cout << "[geotiff_preprocess] found " << tiles.size() << " tile(s), mosaic bounds: "
+        // 出力順(tile_index.json・base.bin)を実行ごとに安定させる。
+        std::sort(tiles.begin(), tiles.end(), [](const DiscoveredTile& a, const DiscoveredTile& b) {
+            return a.id.lat != b.id.lat ? a.id.lat < b.id.lat : a.id.lon < b.id.lon;
+        });
+        std::cout << "[geotiff_preprocess] found " << tiles.size() << " tile(s), bounds: "
                    << "lat " << mosaic_bounds.min_lat << ".." << mosaic_bounds.max_lat << ", lon "
-                   << mosaic_bounds.min_lon << ".." << mosaic_bounds.max_lon << " (" << mosaic_w
-                   << "x" << mosaic_h << "px)" << std::endl;
+                   << mosaic_bounds.min_lon << ".." << mosaic_bounds.max_lon << std::endl;
 
-        std::vector<float> mosaic = build_mosaic(tiles, mosaic_bounds, mosaic_w, mosaic_h);
+        const fs::path out_dir(output_dir);
+        for (int level = 1; level < kNumLevels; ++level) {
+            fs::create_directories(out_dir / "tiles" / ("L" + std::to_string(level)));
+        }
 
-        std::cout << "[geotiff_preprocess] downsampling to " << kTargetWidth << "x"
-                   << kTargetHeight << " (average)" << std::endl;
-        const std::vector<float> downsampled =
-            downsample_average(mosaic, mosaic_w, mosaic_h, kTargetWidth, kTargetHeight);
-        // 巨大な中間canvas(モザイク全体)はもう不要なので明示的に解放する。
-        mosaic.clear();
-        mosaic.shrink_to_fit();
+        // タイルを並列処理する。1スレッドあたりのメモリは数百MB(標高52MB+マスク13MB+穴埋め等)
+        // なので、コア数の半分(上限8)に抑える。
+        const unsigned hardware = std::max(1u, std::thread::hardware_concurrency());
+        const unsigned num_workers = std::min(8u, std::max(1u, hardware / 2));
+        std::vector<TileResult> results(tiles.size());
+        std::atomic<size_t> next_tile{0};
+        std::atomic<size_t> done_tiles{0};
+        std::mutex log_mutex;
+        std::string first_error;
+        std::vector<std::thread> workers;
+        for (unsigned w = 0; w < num_workers; ++w) {
+            workers.emplace_back([&]() {
+                while (true) {
+                    const size_t index = next_tile.fetch_add(1);
+                    if (index >= tiles.size()) {
+                        return;
+                    }
+                    try {
+                        results[index] = process_tile(tiles[index], out_dir);
+                    } catch (const std::exception& e) {
+                        std::lock_guard<std::mutex> lock(log_mutex);
+                        if (first_error.empty()) {
+                            first_error = e.what();
+                        }
+                        return;
+                    }
+                    const size_t done = done_tiles.fetch_add(1) + 1;
+                    std::lock_guard<std::mutex> lock(log_mutex);
+                    std::cout << "[geotiff_preprocess] (" << done << "/" << tiles.size() << ") "
+                               << tile_name(tiles[index].id)
+                               << (results[index].has_land ? "" : " (no land, skipped)")
+                               << std::endl;
+                }
+            });
+        }
+        for (auto& worker : workers) {
+            worker.join();
+        }
+        if (!first_error.empty()) {
+            throw std::runtime_error(first_error);
+        }
 
-        const std::vector<float> output =
-            flip_rows_north_to_south(downsampled, kTargetWidth, kTargetHeight);
-
-        // std::minmax_elementはNaNを正しく除外できない(NaNとの比較は常にfalseになるため)。
-        // 海(NaN)を除いた実データだけでmin/maxを求める。
+        // 陸のあるタイルだけを索引・ベースへ書き出す。
+        std::vector<TileResult> land_tiles;
+        std::vector<int16_t> base;
         float elevation_min = std::numeric_limits<float>::infinity();
         float elevation_max = -std::numeric_limits<float>::infinity();
-        for (float v : output) {
-            if (std::isnan(v)) {
+        for (TileResult& r : results) {
+            if (!r.has_land) {
                 continue;
             }
-            elevation_min = std::min(elevation_min, v);
-            elevation_max = std::max(elevation_max, v);
+            elevation_min = std::min(elevation_min, r.elevation_min);
+            elevation_max = std::max(elevation_max, r.elevation_max);
+            base.insert(base.end(), r.level0.begin(), r.level0.end());
+            r.level0.clear();
+            r.level0.shrink_to_fit();
+            land_tiles.push_back(std::move(r));
+        }
+        if (land_tiles.empty()) {
+            throw std::runtime_error("no tile with land data");
         }
 
         const GeodeticBounds bounds{
             static_cast<double>(mosaic_bounds.min_lat), static_cast<double>(mosaic_bounds.max_lat),
             static_cast<double>(mosaic_bounds.min_lon), static_cast<double>(mosaic_bounds.max_lon)};
 
-        const fs::path out_dir(output_dir);
-        fs::create_directories(out_dir);
+        write_int16_file(out_dir / "base.bin", base);
+        write_tile_index_json(out_dir / "tile_index.json", land_tiles);
+        write_metadata_json(out_dir / "metadata.json", elevation_min, elevation_max, bounds);
 
-        write_heightmap_bin(out_dir / "heightmap.bin", output);
-        write_metadata_json(out_dir / "metadata.json", kTargetWidth, kTargetHeight, elevation_min,
-                             elevation_max, bounds);
+        // 旧方式(全域を1枚のheightmap.binへ縮小)の出力は使われなくなったので削除する。
+        std::error_code ec;
+        if (fs::remove(out_dir / "heightmap.bin", ec)) {
+            std::cout << "[geotiff_preprocess] removed obsolete heightmap.bin" << std::endl;
+        }
 
-        std::cout << "[geotiff_preprocess] wrote " << (out_dir / "heightmap.bin").string()
-                   << " and " << (out_dir / "metadata.json").string() << std::endl;
+        std::cout << "[geotiff_preprocess] wrote " << land_tiles.size() << " tile(s) with "
+                   << kNumLevels << " level(s) to " << out_dir.string() << std::endl;
         std::cout << "[geotiff_preprocess] elevation range: " << elevation_min << " .. "
                    << elevation_max << std::endl;
     } catch (const std::exception& e) {

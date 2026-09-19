@@ -9,6 +9,7 @@
 //! 左クリック(ドラッグではない単発クリック)の地点を原点として`on_pick`へ渡す。
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use leptos::prelude::*;
@@ -16,7 +17,8 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 use crate::terrain::camera::{CameraPreset, OrbitCamera, ViewMode};
-use crate::terrain::loader::TerrainData;
+use crate::terrain::loader::{self, MeshKey, TerrainData, TileKey, WHOLE_TILE};
+use crate::terrain::lod::{self, Resident, TilePlan};
 use crate::terrain::markers::{self, RadarMarkersState};
 use crate::terrain::mesh::{self, Origin};
 use crate::terrain::origin::OriginState;
@@ -43,7 +45,32 @@ struct ViewState {
     /// ボタンを押した位置。離した位置との距離で「クリック」か「ドラッグ」かを判別する。
     down_x: f64,
     down_y: f64,
+    radar_markers: RadarMarkersState,
+    /// 各タイルの、いまGPUに載っている状態(全体1枚か、チャンクごとのレベルか。`terrain::lod`参照)。
+    resident: HashMap<TileKey, Resident>,
+    /// 取得中のグリッド。
+    loading: HashSet<FetchKey>,
+    /// 取得に失敗したグリッド。同じ取得を延々と繰り返さないよう覚えておく。
+    failed: HashSet<FetchKey>,
+    /// LOD更新のタイマー待ち中か(連続する操作をまとめるため)。
+    lod_pending: bool,
 }
+
+/// 取得するグリッドの識別子: (タイル, レベル, チャンク)。チャンクがNoneなら、タイル1枚分・
+/// 1レベルのファイル全体(小さいレベル)を指す(`loader::WHOLE_FILE_MAX_LEVEL`)。
+type FetchKey = (TileKey, usize, Option<usize>);
+
+/// 操作が止まってからLODを更新するまでの待ち時間(ミリ秒)。
+const LOD_DEBOUNCE_MS: u32 = 150;
+/// 1回のLOD更新でメッシュを作ってGPUへ上げる頂点数の上限(最細レベルのチャンク1個で約36万
+/// 頂点。メッシュ生成は頂点数に比例して時間がかかるため、一度に大量に処理して画面が固まらない
+/// よう、この数を超えたら残りは次の更新に回す)。
+const MAX_UPLOAD_VERTICES_PER_ROUND: usize = 1_000_000;
+/// 同時に取得するタイル数の上限。
+const MAX_CONCURRENT_TILE_FETCHES: usize = 6;
+/// 取得済みタイルグリッド(細かいレベル)をメモリに残す上限。超えたら、いま使っていないものから
+/// 古い順に捨てる。
+const DETAIL_CACHE_LIMIT_BYTES: usize = 300 * 1024 * 1024;
 
 /// この距離(CSSピクセル)未満の移動なら、ドラッグではなく単発クリックとして扱う。
 const CLICK_MAX_MOVE_PX: f64 = 5.0;
@@ -104,18 +131,27 @@ fn try_init(
         lat_deg: data.metadata.default_origin.lat_deg,
         lon_deg: data.metadata.default_origin.lon_deg,
     });
-    let terrain_mesh = mesh::build_mesh(&data, &origin);
     // 注視点は原点の実際の地表標高に置く(Vec3::ZEROのままだと、原点が高山の
     // 斜面にある場合にズームインした際カメラが地面に埋まって真っ黒になる)。
     let target_up = mesh::sample_heightmap(&data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0);
 
     wasm_bindgen_futures::spawn_local(async move {
-        match TerrainRenderer::new(canvas, &terrain_mesh).await {
-            Ok(renderer) => {
+        match TerrainRenderer::new(canvas).await {
+            Ok(mut renderer) => {
+                // 全タイルを最粗のレベル0(タイル全体で1枚)で載せる(細かいレベルはカメラに近い
+                // チャンクだけ、あとから`update_lod`が差し替える)。
+                let transform = mesh::EnuTransform::new(&origin, &data.metadata.ellipsoid);
+                let mut resident = HashMap::new();
+                for tile in data.tiles() {
+                    let tile_mesh = mesh::build_whole_tile_mesh(&data, tile, &transform);
+                    renderer.set_mesh((tile.key.0, tile.key.1, WHOLE_TILE), &tile_mesh);
+                    resident.insert(tile.key, Resident::Whole);
+                }
                 {
                     let mut s = state.borrow_mut();
                     s.target_up = target_up;
                     s.camera.target.z = target_up;
+                    s.resident = resident;
                 }
                 let camera = state.borrow().camera.to_camera(renderer.aspect_ratio());
                 if let Err(e) = renderer.render(&camera) {
@@ -140,13 +176,276 @@ fn try_init(
     });
 }
 
-fn render_now(state: &Rc<RefCell<ViewState>>) {
+/// 現在の状態で1フレーム描くだけ(LODの更新は予約しない)。
+fn render_frame(state: &Rc<RefCell<ViewState>>) {
     let s = state.borrow();
     if let Some(renderer) = s.renderer.as_ref() {
         let camera = s.camera.to_camera(renderer.aspect_ratio());
         if let Err(e) = renderer.render(&camera) {
             log::error!("[terrain] render failed: {e}");
         }
+    }
+}
+
+/// 1フレーム描き、カメラなどが変わった可能性があるのでLODの更新を予約する。
+fn render_now(state: &Rc<RefCell<ViewState>>) {
+    render_frame(state);
+    schedule_lod(state);
+}
+
+/// 少し待ってからLODを更新する。待っている間に来た予約はまとめる(操作が続く間は
+/// メッシュ生成・取得を繰り返さず、操作が落ち着いた時点の最新のカメラで一度だけ計画し直す)。
+fn schedule_lod(state: &Rc<RefCell<ViewState>>) {
+    {
+        let mut s = state.borrow_mut();
+        if s.lod_pending || s.terrain.is_none() {
+            return;
+        }
+        s.lod_pending = true;
+    }
+    let state = state.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        gloo_timers::future::TimeoutFuture::new(LOD_DEBOUNCE_MS).await;
+        state.borrow_mut().lod_pending = false;
+        update_lod(&state);
+    });
+}
+
+/// カメラに合わせて各タイルの描き方(全体1枚か、チャンクごとのレベルか)を更新する: 必要な
+/// グリッドが取得済みならメッシュを作ってGPUへ差し替え、未取得なら取得を始める(届いたら再度
+/// この関数が走る)。取得済みの範囲で少しずつ細かくしていく(たとえば、レベル1→2→最細)。
+fn update_lod(state: &Rc<RefCell<ViewState>>) {
+    let (terrain, origin, plan) = {
+        let s = state.borrow();
+        if s.dragging {
+            drop(s);
+            schedule_lod(state); // ドラッグ中は重い処理を避け、落ち着いてからやり直す。
+            return;
+        }
+        let (Some(terrain), Some(origin), Some(renderer)) =
+            (s.terrain.clone(), s.mesh_origin, s.renderer.as_ref())
+        else {
+            return;
+        };
+        let transform = mesh::EnuTransform::new(&origin, &terrain.metadata.ellipsoid);
+        let camera = s.camera.to_camera(renderer.aspect_ratio());
+        let plan = lod::plan_levels(
+            &terrain,
+            &transform,
+            &camera,
+            renderer.canvas_height_px() as f32,
+            &s.resident,
+        );
+        (terrain, origin, plan)
+    };
+    let transform = mesh::EnuTransform::new(&origin, &terrain.metadata.ellipsoid);
+    let chunk_count = terrain.chunk_count();
+
+    let mut uploaded_vertices = 0usize;
+    let mut changed = false;
+    let mut deferred = false;
+    let mut to_fetch: Vec<FetchKey> = Vec::new();
+    // 取得が必要なグリッドを登録する(同じものは重複させず、同時取得数の上限を守る)。
+    let mut request = |state: &Rc<RefCell<ViewState>>, key: TileKey, level: usize, chunk: usize| {
+        let fetch_key: FetchKey = if level <= loader::WHOLE_FILE_MAX_LEVEL {
+            (key, level, None)
+        } else {
+            (key, level, Some(chunk))
+        };
+        let mut s = state.borrow_mut();
+        if s.failed.contains(&fetch_key) || s.loading.contains(&fetch_key) {
+            return false;
+        }
+        if s.loading.len() >= MAX_CONCURRENT_TILE_FETCHES {
+            return true; // 上限に達したので、あとの更新に回す。
+        }
+        s.loading.insert(fetch_key);
+        to_fetch.push(fetch_key);
+        false
+    };
+
+    for (key, tile_plan) in plan {
+        let Some(tile) = terrain.tile(key) else { continue };
+        let whole_key: MeshKey = (key.0, key.1, WHOLE_TILE);
+        let current: Option<Vec<u8>> = match state.borrow().resident.get(&key) {
+            Some(Resident::Chunks(v)) => Some(v.clone()),
+            _ => None,
+        };
+
+        match tile_plan {
+            TilePlan::Whole => {
+                if current.is_some() {
+                    // タイル全体の1枚のメッシュへ戻す(小さいので頂点数の上限には数えない)。
+                    let whole = mesh::build_whole_tile_mesh(&terrain, tile, &transform);
+                    let mut s = state.borrow_mut();
+                    if let Some(renderer) = s.renderer.as_mut() {
+                        renderer.set_mesh(whole_key, &whole);
+                        for c in 0..chunk_count {
+                            renderer.remove_mesh((key.0, key.1, c as u8));
+                        }
+                    }
+                    s.resident.insert(key, Resident::Whole);
+                    drop(s);
+                    terrain.set_whole_tile(key);
+                    changed = true;
+                }
+            }
+            TilePlan::Chunks(targets) => {
+                // 各チャンクの目標レベルのうち、取得済みで最も細かいレベル(無ければ0)。
+                let available: Vec<usize> = (0..chunk_count)
+                    .map(|c| terrain.best_cached_level(tile, c, targets[c] as usize))
+                    .collect();
+
+                let mut levels: Vec<u8> = match current {
+                    Some(levels) => levels,
+                    None => {
+                        // 全体表示からチャンク表示へ切り替えるには、全チャンクのレベル1が要る。
+                        if available.iter().any(|&l| l == 0) {
+                            if request(state, key, 1, 0) {
+                                deferred = true;
+                            }
+                            continue;
+                        }
+                        let cost: usize =
+                            available.iter().map(|&l| lod::chunk_vertex_cost(&terrain, l)).sum();
+                        if uploaded_vertices > 0 && uploaded_vertices + cost > MAX_UPLOAD_VERTICES_PER_ROUND
+                        {
+                            deferred = true;
+                            continue;
+                        }
+                        let mut s = state.borrow_mut();
+                        for c in 0..chunk_count {
+                            if let Some(m) = mesh::build_chunk_mesh(&terrain, tile, c, available[c], &transform)
+                            {
+                                if let Some(renderer) = s.renderer.as_mut() {
+                                    renderer.set_mesh((key.0, key.1, c as u8), &m);
+                                }
+                                terrain.set_chunk_level(key, c, available[c]);
+                            }
+                        }
+                        if let Some(renderer) = s.renderer.as_mut() {
+                            renderer.remove_mesh(whole_key);
+                        }
+                        let levels: Vec<u8> = available.iter().map(|&l| l as u8).collect();
+                        s.resident.insert(key, Resident::Chunks(levels.clone()));
+                        uploaded_vertices += cost;
+                        changed = true;
+                        levels
+                    }
+                };
+
+                // 目標レベルへ近づける。目標のグリッドが取得済みならそのレベルへ(上げ下げとも)、
+                // 未取得なら取得を始め、取得済みの範囲でより細かければ先にそこまで上げる。
+                let mut resident_changed = false;
+                for c in 0..chunk_count {
+                    let want = targets[c] as usize;
+                    let have = levels[c] as usize;
+                    let now = available[c];
+                    let new_level = if now == 0 {
+                        have
+                    } else if want < have {
+                        now
+                    } else {
+                        now.max(have)
+                    };
+                    if !terrain.has_chunk_grid(tile, want, c) && request(state, key, want, c) {
+                        deferred = true;
+                    }
+                    if new_level == have {
+                        continue;
+                    }
+                    let cost = lod::chunk_vertex_cost(&terrain, new_level);
+                    if uploaded_vertices > 0 && uploaded_vertices + cost > MAX_UPLOAD_VERTICES_PER_ROUND {
+                        deferred = true;
+                        continue;
+                    }
+                    if let Some(m) = mesh::build_chunk_mesh(&terrain, tile, c, new_level, &transform) {
+                        let mut s = state.borrow_mut();
+                        if let Some(renderer) = s.renderer.as_mut() {
+                            renderer.set_mesh((key.0, key.1, c as u8), &m);
+                        }
+                        drop(s);
+                        terrain.set_chunk_level(key, c, new_level);
+                        levels[c] = new_level as u8;
+                        uploaded_vertices += cost;
+                        resident_changed = true;
+                        changed = true;
+                    }
+                }
+                if resident_changed {
+                    state.borrow_mut().resident.insert(key, Resident::Chunks(levels));
+                }
+            }
+        }
+    }
+
+    for fetch_key in to_fetch {
+        let state = state.clone();
+        let terrain = terrain.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let (key, level, chunk) = fetch_key;
+            let result = match chunk {
+                None => loader::fetch_tile_level(
+                    &terrain.base_url,
+                    key,
+                    level,
+                    terrain.chunk_cells(level),
+                    terrain.chunk_count(),
+                )
+                .await
+                .map(|all| terrain.insert_tile_level(key, level, &all)),
+                Some(c) => loader::fetch_chunk_grid(
+                    &terrain.base_url,
+                    key,
+                    level,
+                    c,
+                    terrain.chunk_cells(level),
+                )
+                .await
+                .map(|grid| terrain.insert_chunk_grid(key, level, c, grid)),
+            };
+            {
+                let mut s = state.borrow_mut();
+                s.loading.remove(&fetch_key);
+                if let Err(e) = result {
+                    log::warn!("[terrain] tile fetch failed: {e}");
+                    s.failed.insert(fetch_key);
+                }
+            }
+            schedule_lod(&state);
+        });
+    }
+
+    if changed {
+        // 地形の高さが変わったので、注視点の高さ(ズームインしても地面に埋まらないように)と、
+        // 地表に貼り付いている観測点・覆域を合わせ直す。
+        {
+            let mut s = state.borrow_mut();
+            s.target_up = mesh::sample_heightmap(&terrain, origin.lat_deg, origin.lon_deg)
+                .unwrap_or(0.0);
+            let (tx, ty) = (s.camera.target.x as f64, s.camera.target.y as f64);
+            s.camera.target.z = mesh::ground_at_enu(&terrain, &transform, tx, ty).2;
+            let chunks = terrain.chunks_per_tile() * terrain.chunks_per_tile();
+            let resident = &s.resident;
+            terrain.evict_unused(
+                |key, chunk, level| match resident.get(&key) {
+                    Some(Resident::Chunks(levels)) => {
+                        chunk < chunks && levels[chunk] as usize == level
+                    }
+                    _ => false,
+                },
+                DETAIL_CACHE_LIMIT_BYTES,
+            );
+        }
+        let has_markers = !state.borrow().radar_markers.markers.get_untracked().is_empty();
+        if has_markers {
+            let radar_markers = state.borrow().radar_markers;
+            rebuild_markers(state, radar_markers);
+        }
+        render_frame(state);
+    }
+    if deferred {
+        schedule_lod(state);
     }
 }
 
@@ -217,6 +516,11 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         last_y: 0.0,
         down_x: 0.0,
         down_y: 0.0,
+        radar_markers,
+        resident: HashMap::new(),
+        loading: HashSet::new(),
+        failed: HashSet::new(),
+        lod_pending: false,
     }));
 
     // --- Effect 1: canvasのマウント + ResizeObserver(初回サイズ確定・以後のリサイズ追従) ---
@@ -358,7 +662,6 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             if s.mesh_origin == Some(new_origin) {
                 return;
             }
-            let new_mesh = mesh::build_mesh(&terrain, &new_origin);
             let new_transform = mesh::EnuTransform::new(&new_origin, &terrain.metadata.ellipsoid);
             // 注視点(中心点)の扱い: 原点の真上を見ていた(x=y=0)なら新しい原点に追従する。
             // パンして別の場所を見ていたなら、ENU座標のオフセットが新しい原点基準のまま残って
@@ -384,8 +687,31 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 s.camera.target.y = y;
                 s.camera.target.z = up;
             }
+            // 常駐している全メッシュ(タイル全体・各チャンク、各自の解像度レベル)の頂点位置を、新しい原点のENU座標で
+            // 作り直してアップロードする(頂点数・並びは原点に依存しない)。
             let renderer = s.renderer.as_ref().expect("checked is_some above");
-            renderer.update_vertices(&new_mesh);
+            for (&key, resident) in s.resident.iter() {
+                let Some(tile) = terrain.tile(key) else { continue };
+                match resident {
+                    Resident::Whole => {
+                        let vertices = mesh::build_whole_tile_vertices(&terrain, tile, &new_transform);
+                        renderer.update_mesh_vertices((key.0, key.1, WHOLE_TILE), &vertices);
+                    }
+                    Resident::Chunks(levels) => {
+                        for (c, &level) in levels.iter().enumerate() {
+                            if let Some(vertices) = mesh::build_chunk_vertices(
+                                &terrain,
+                                tile,
+                                c,
+                                level as usize,
+                                &new_transform,
+                            ) {
+                                renderer.update_mesh_vertices((key.0, key.1, c as u8), &vertices);
+                            }
+                        }
+                    }
+                }
+            }
             let camera = s.camera.to_camera(renderer.aspect_ratio());
             if let Err(e) = renderer.render(&camera) {
                 log::error!("[terrain] re-render after origin change failed: {e}");

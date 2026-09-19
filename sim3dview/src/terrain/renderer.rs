@@ -5,8 +5,11 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+use std::collections::HashMap;
+
 use super::camera::Camera;
-use super::mesh::TerrainMesh;
+use super::loader::MeshKey;
+use super::mesh::{TerrainMesh, TerrainVertex};
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -15,7 +18,7 @@ struct CameraUniform {
 }
 
 /// マルチサンプルアンチエイリアシング(MSAA)のサンプル数。地形メッシュの解像度を
-/// 2048×2048に引き上げた後、遠景で多数の細かい三角形が1画素に収まりきらず
+/// 高解像度化した後、遠景で多数の細かい三角形が1画素に収まりきらず
 /// エイリアシング(市松状のちらつき/斑点)を起こすようになったため導入した。
 /// 4はWebGPU実装で広くサポートされる標準的な値(8はハードウェアによって非対応。実機で
 /// `createTexture({sampleCount: 8, ...})`がエラーになることを確認済み)。
@@ -39,15 +42,21 @@ fn supersample_size(width: u32, height: u32) -> (u32, u32) {
     (w, h)
 }
 
+/// 地形メッシュ1個分のGPUバッファ(タイル全体、またはチャンク1個)。メッシュごとに頂点・
+/// インデックスを別々に持ち、解像度レベルの切り替え(`set_mesh`)を1個ずつ行えるようにしてある。
+struct MeshGpu {
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    num_indices: u32,
+}
+
 pub struct TerrainRenderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-    num_indices: u32,
+    meshes: HashMap<MeshKey, MeshGpu>,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     depth_view: wgpu::TextureView,
@@ -76,7 +85,7 @@ pub struct TerrainRenderer {
 }
 
 impl TerrainRenderer {
-    pub async fn new(canvas: web_sys::HtmlCanvasElement, mesh: &TerrainMesh) -> Result<Self, String> {
+    pub async fn new(canvas: web_sys::HtmlCanvasElement) -> Result<Self, String> {
         let width = canvas.width().max(1);
         let height = canvas.height().max(1);
 
@@ -405,27 +414,13 @@ impl TerrainRenderer {
             &supersample_color_view,
         );
 
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("terrain_vertex_buffer"),
-            contents: bytemuck::cast_slice(&mesh.vertices),
-            // COPY_DST: 原点変更時にupdate_vertices()で頂点データを書き換えられるようにする。
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("terrain_index_buffer"),
-            contents: bytemuck::cast_slice(&mesh.indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-
         Ok(Self {
             surface,
             device,
             queue,
             config,
             pipeline,
-            vertex_buffer,
-            index_buffer,
-            num_indices: mesh.indices.len() as u32,
+            meshes: HashMap::new(),
             camera_buffer,
             camera_bind_group,
             depth_view,
@@ -476,12 +471,46 @@ impl TerrainRenderer {
         self.num_dome_vertices = vertices.len() as u32;
     }
 
+    /// メッシュ1個を登録する。同じキーが既にあれば(解像度レベルの切り替え)置き換える。
+    pub fn set_mesh(&mut self, key: MeshKey, mesh: &TerrainMesh) {
+        if mesh.indices.is_empty() {
+            self.meshes.remove(&key);
+            return;
+        }
+        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("terrain_mesh_vertex_buffer"),
+            contents: bytemuck::cast_slice(&mesh.vertices),
+            // COPY_DST: 原点変更時にupdate_mesh_vertices()で頂点データを書き換えられるようにする。
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+        let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("terrain_mesh_index_buffer"),
+            contents: bytemuck::cast_slice(&mesh.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        self.meshes.insert(
+            key,
+            MeshGpu { vertex_buffer, index_buffer, num_indices: mesh.indices.len() as u32 },
+        );
+    }
+
+    /// メッシュ1個を取り除く(GPUバッファは解放される)。
+    pub fn remove_mesh(&mut self, key: MeshKey) {
+        self.meshes.remove(&key);
+    }
+
     /// 原点変更時など、頂点数は変わらないまま座標(位置)だけを更新したいときに使う。
     /// DETAILED_DESIGN.md 3.3節: 原点を変更したら頂点バッファを再計算・再アップロードする
-    /// (heightmap.bin/metadata.jsonの再フェッチは不要)。
-    pub fn update_vertices(&self, mesh: &TerrainMesh) {
-        self.queue
-            .write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&mesh.vertices));
+    /// (タイルデータの再フェッチは不要)。登録されていないキーは何もしない。
+    pub fn update_mesh_vertices(&self, key: MeshKey, vertices: &[TerrainVertex]) {
+        if let Some(mesh) = self.meshes.get(&key) {
+            self.queue.write_buffer(&mesh.vertex_buffer, 0, bytemuck::cast_slice(vertices));
+        }
+    }
+
+    /// 登録済みのメッシュ数(デバッグ・確認用)。
+    pub fn mesh_count(&self) -> usize {
+        self.meshes.len()
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
@@ -575,9 +604,11 @@ impl TerrainRenderer {
 
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+            for mesh in self.meshes.values() {
+                render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
+            }
 
             if let Some(marker_buffer) = self.marker_vertex_buffer.as_ref() {
                 if self.num_marker_vertices > 0 {

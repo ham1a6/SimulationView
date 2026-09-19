@@ -1,12 +1,15 @@
 #include "ws_server.hpp"
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <fstream>
 #include <iostream>
 #include <mutex>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <unordered_map>
 
@@ -29,22 +32,79 @@ struct PerSocketData {
 
 using ServerWebSocket = uWS::WebSocket<false, true, PerSocketData>;
 
-// 地形データ(heightmap.bin/metadata.json)の簡易静的ファイル配信。
+// "bytes=START-END"または"bytes=START-"(単一範囲のみ)を解釈する。解釈できなければfalse。
+// endは含む(HTTPのRangeの仕様どおり)。END省略時は末尾まで。
+bool parse_byte_range(std::string_view header, std::uintmax_t total, std::uintmax_t& start,
+                      std::uintmax_t& end) {
+    constexpr std::string_view kPrefix = "bytes=";
+    if (header.substr(0, kPrefix.size()) != kPrefix) {
+        return false;
+    }
+    const std::string spec(header.substr(kPrefix.size()));
+    const size_t dash = spec.find('-');
+    if (dash == std::string::npos || dash == 0 || spec.find(',') != std::string::npos) {
+        return false; // "-N"(末尾からN)と複数範囲は使わない。
+    }
+    try {
+        start = std::stoull(spec.substr(0, dash));
+        end = (dash + 1 < spec.size()) ? std::stoull(spec.substr(dash + 1)) : total - 1;
+    } catch (const std::exception&) {
+        return false;
+    }
+    if (total == 0 || start >= total) {
+        return false;
+    }
+    end = std::min<std::uintmax_t>(end, total - 1);
+    return start <= end;
+}
+
+// 地形データ(metadata.json/tile_index.json/base.bin/tiles/L*/*.bin)の簡易静的ファイル配信。
 // 想定CWDは sim_server/ (README.md記載の起動手順に合わせた相対パス)。
-void serve_terrain_file(uWS::HttpResponse<false>* res, const char* path,
-                         const char* content_type) {
-    std::ifstream file(path, std::ios::binary);
+// HTTP Range(単一範囲)に対応する: 細かいレベルのタイルファイルは大きい(最細で1タイル約26MB)
+// ので、フロントは必要なチャンク1個分だけをRangeで取得する。
+void serve_terrain_file(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+                         const std::string& path, const char* content_type) {
+    std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file) {
         res->writeStatus("404 Not Found");
         res->writeHeader("Access-Control-Allow-Origin", "*");
         res->end("Not Found");
         return;
     }
-    std::ostringstream buffer;
-    buffer << file.rdbuf();
+    const auto total = static_cast<std::uintmax_t>(file.tellg());
+
+    std::uintmax_t start = 0;
+    std::uintmax_t end = total > 0 ? total - 1 : 0;
+    bool partial = false;
+    const std::string_view range_header = req->getHeader("range");
+    if (!range_header.empty()) {
+        partial = parse_byte_range(range_header, total, start, end);
+    }
+
+    std::string body(total == 0 ? 0 : static_cast<size_t>(end - start + 1), '\0');
+    file.seekg(static_cast<std::streamoff>(start));
+    file.read(body.data(), static_cast<std::streamsize>(body.size()));
+
+    if (partial) {
+        res->writeStatus("206 Partial Content");
+        res->writeHeader("Content-Range", "bytes " + std::to_string(start) + "-" +
+                                              std::to_string(end) + "/" + std::to_string(total));
+    }
+    res->writeHeader("Accept-Ranges", "bytes");
     res->writeHeader("Content-Type", content_type);
     res->writeHeader("Access-Control-Allow-Origin", "*");
-    res->end(buffer.str());
+    res->end(body);
+}
+
+// URLのパス要素(タイルのレベル・ファイル名)として安全か: 英数字・'_'・'.'だけで、".."を
+// 含まない(パストラバーサルで任意のファイルを読ませないための入力検証)。
+bool is_safe_path_component(const std::string& name) {
+    if (name.empty() || name.size() > 64 || name.find("..") != std::string::npos) {
+        return false;
+    }
+    return std::all_of(name.begin(), name.end(), [](unsigned char c) {
+        return std::isalnum(c) || c == '_' || c == '.';
+    });
 }
 
 } // namespace
@@ -148,11 +208,29 @@ void WsServer::run() {
 
     // 地形データの静的配信(DETAILED_DESIGN.md 5.4節: WebSocketの/simエンドポイントとは独立したHTTPルート)。
     // フロント(trunk serve)とは別オリジンからfetchされるためCORSヘッダーを付与する。
-    app.get("/terrain/metadata.json", [](uWS::HttpResponse<false>* res, uWS::HttpRequest*) {
-        serve_terrain_file(res, "assets/terrain/metadata.json", "application/json");
+    app.get("/terrain/metadata.json", [](uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+        serve_terrain_file(res, req, "assets/terrain/metadata.json", "application/json");
     });
-    app.get("/terrain/heightmap.bin", [](uWS::HttpResponse<false>* res, uWS::HttpRequest*) {
-        serve_terrain_file(res, "assets/terrain/heightmap.bin", "application/octet-stream");
+    app.get("/terrain/tile_index.json", [](uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+        serve_terrain_file(res, req, "assets/terrain/tile_index.json", "application/json");
+    });
+    // 全タイルの最粗レベルを連結したもの(起動時にフロントが一度だけ取得する)。
+    app.get("/terrain/base.bin", [](uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+        serve_terrain_file(res, req, "assets/terrain/base.bin", "application/octet-stream");
+    });
+    // 細かいレベルのタイル(例: /terrain/tiles/L2/N035E138.bin)。カメラに近いチャンクだけ
+    // フロントが必要に応じて取得する(大きいファイルはHTTP Rangeで部分取得)。
+    app.get("/terrain/tiles/:level/:name", [](uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+        const std::string level(req->getParameter(0));
+        const std::string name(req->getParameter(1));
+        if (!is_safe_path_component(level) || !is_safe_path_component(name)) {
+            res->writeStatus("400 Bad Request");
+            res->writeHeader("Access-Control-Allow-Origin", "*");
+            res->end("Bad Request");
+            return;
+        }
+        serve_terrain_file(res, req, "assets/terrain/tiles/" + level + "/" + name,
+                            "application/octet-stream");
     });
 
     // "0.0.0.0"を明示し、全ネットワークインターフェースでバインドする
