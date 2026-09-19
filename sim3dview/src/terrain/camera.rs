@@ -9,7 +9,7 @@
 //! フェーズ10: 自由視点カメラ(ズーム・回転・視点プリセット)。BASIC_DESIGN.md 6節フェーズ10。
 
 use glam::camera::rh::{proj::directx, view::look_at_mat4};
-use glam::{Mat4, Vec3, Vec4};
+use glam::{Mat4, Vec3};
 
 /// レンズの種類。3D(自由視点)は透視投影、2D(地図モード)は真上からの正射影を使う
 /// (`ViewMode`参照)。
@@ -80,18 +80,25 @@ impl Camera {
     pub fn screen_to_ray(&self, x: f32, y: f32, width: f32, height: f32) -> (Vec3, Vec3) {
         let ndc_x = (x / width) * 2.0 - 1.0;
         let ndc_y = 1.0 - (y / height) * 2.0;
-        let inv_vp = self.view_proj_matrix().inverse();
-        let unproject = |ndc_z: f32| -> Vec3 {
-            let p = inv_vp * Vec4::new(ndc_x, ndc_y, ndc_z, 1.0);
-            p.truncate() / p.w
-        };
-        // 反転Z(camera.rs冒頭のview_proj_matrix参照): NDC z=1がnear、z=0がfarに対応する。
-        // near/farとも有限なのでz=0を直接逆変換しても問題は起きないが、near(z=1)と
-        // 適当な中間点(z=0.5)の2点を取り、その差からレイの向きを求める実装のままにしてある
-        // (直線上の異なる2点があれば方向は定まるため、厳密にnear/farである必要はない)。
-        let near = unproject(1.0);
-        let mid = unproject(0.5);
-        (near, mid - near)
+        // カメラの基底(look_atと同じ右手系)から直接レイを求める。以前は逆VP行列でnear点と
+        // 中間点(反転Zでnearの約2倍)を逆変換してその差を向きにしていたが、この2点の差は
+        // 約1mしかなく、カメラが数百km〜2,000km離れるとf32の丸め誤差(0.1m超)で向きが
+        // 大きくずれ、ズームアウト時にクリック位置と別の地点を拾う不具合になっていた。
+        let forward = (self.target - self.eye).normalize();
+        let right = forward.cross(self.up).normalize();
+        let up = right.cross(forward);
+        match self.projection {
+            Projection::Perspective { fov_y_radians } => {
+                let half_h = (fov_y_radians * 0.5).tan();
+                let half_w = half_h * self.aspect;
+                (self.eye, forward + right * (ndc_x * half_w) + up * (ndc_y * half_h))
+            }
+            Projection::Orthographic { view_height_m } => {
+                let half_h = view_height_m * 0.5;
+                let half_w = half_h * self.aspect;
+                (self.eye + right * (ndc_x * half_w) + up * (ndc_y * half_h), forward)
+            }
+        }
     }
 }
 

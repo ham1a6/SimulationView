@@ -7,10 +7,11 @@ use super::camera::Camera;
 use super::loader::TerrainData;
 use super::mesh::{sample_heightmap, EnuTransform, Origin};
 
-/// レイをマーチングする最大距離(メートル)。地形データ範囲(対角線で約780km)を
-/// 確実にカバーできる値にしておく。
-const MAX_MARCH_DISTANCE: f32 = 900_000.0;
-const NUM_MARCH_STEPS: usize = 400;
+/// レイをマーチングする最大距離(メートル)。カメラは最大ズームアウト(`camera.rs`の
+/// MAX_DISTANCE=2,000,000m)まで地形から離れうるため、そこから地形データ範囲(対角線で
+/// 約780km)の遠端まで届く値にしておく。刻み幅(約1.5km)は従来(約2.25km)以下を保つ。
+const MAX_MARCH_DISTANCE: f32 = 3_000_000.0;
+const NUM_MARCH_STEPS: usize = 2000;
 const NUM_BISECT_STEPS: usize = 24;
 
 fn terrain_up_at(data: &TerrainData, transform: &EnuTransform, east: f64, north: f64) -> f32 {

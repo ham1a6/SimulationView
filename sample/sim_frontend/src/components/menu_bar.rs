@@ -1,4 +1,6 @@
 //! 画面最上部のメニューバー。ファイル/設定/表示/ヘルプの4項目。
+//! 「設定」→「原点をクリックで指定」は地図クリックによる原点指定モード
+//! (`sim3dview::terrain::origin_pick::OriginPickState`)を有効にする。
 //! 「設定」→「原点設定...」/「覆域高度設定...」を選ぶと、sim3dviewライブラリが提供する
 //! フローティングパネル(`ui::origin_dialog`/`ui::coverage_altitude_dialog`)を開く
 //! (パネル本体・開閉状態の型ともライブラリ側にあり、このメニューは開閉のトリガーのみ)。
@@ -15,6 +17,7 @@
 use leptos::prelude::*;
 
 use sim3dview::terrain::display::WaterVisibilityState;
+use sim3dview::terrain::origin_pick::OriginPickState;
 use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::ui::coverage_altitude_dialog::CoverageAltitudeDialogState;
 use sim3dview::ui::origin_dialog::OriginDialogState;
@@ -32,6 +35,8 @@ pub fn MenuBar() -> impl IntoView {
     let open_menu = RwSignal::new(None::<MenuId>);
     let origin_dialog =
         use_context::<OriginDialogState>().expect("OriginDialogState context not found");
+    let origin_pick =
+        use_context::<OriginPickState>().expect("OriginPickState context not found");
     let coverage_altitude_dialog = use_context::<CoverageAltitudeDialogState>()
         .expect("CoverageAltitudeDialogState context not found");
     let water_visibility =
@@ -52,6 +57,15 @@ pub fn MenuBar() -> impl IntoView {
                             }
                         >
                             "原点設定..."
+                        </button>
+                        <button
+                            class="menu-dropdown-item"
+                            on:click=move |_| {
+                                open_menu.set(None);
+                                origin_pick.active.set(true);
+                            }
+                        >
+                            "原点をクリックで指定"
                         </button>
                         <button
                             class="menu-dropdown-item"

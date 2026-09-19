@@ -5,6 +5,8 @@
 //! 3DモードではShift+ドラッグで注視点(中心点)を平行移動できる(シミュレーション原点
 //! [`terrain::origin::OriginState`]は変更しない)。`terrain::recenter::RecenterRequestState`
 //! contextの通知(表示メニューの「中心点を原点に戻す」ボタン)で中心点を原点へ戻す。
+//! `terrain::origin_pick::OriginPickState` contextが提供されていて`active`の間は、地図の
+//! 左クリック(ドラッグではない単発クリック)の地点を原点として`on_pick`へ渡す。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,6 +21,7 @@ use crate::terrain::loader::TerrainData;
 use crate::terrain::markers::{self, RadarMarkersState};
 use crate::terrain::mesh::{self, Origin};
 use crate::terrain::origin::OriginState;
+use crate::terrain::origin_pick::OriginPickState;
 use crate::terrain::pick;
 use crate::terrain::recenter::RecenterRequestState;
 use crate::terrain::renderer::TerrainRenderer;
@@ -38,6 +41,37 @@ struct ViewState {
     dragging: bool,
     last_x: f64,
     last_y: f64,
+    /// ボタンを押した位置。離した位置との距離で「クリック」か「ドラッグ」かを判別する。
+    down_x: f64,
+    down_y: f64,
+}
+
+/// この距離(CSSピクセル)未満の移動なら、ドラッグではなく単発クリックとして扱う。
+const CLICK_MAX_MOVE_PX: f64 = 5.0;
+
+/// canvas上の画面座標(client座標)が指す地表の緯度経度。地形データ範囲外・未初期化ならNone。
+fn pick_at_client(
+    state: &Rc<RefCell<ViewState>>,
+    canvas: &web_sys::HtmlCanvasElement,
+    client_x: f64,
+    client_y: f64,
+) -> Option<(f64, f64)> {
+    let rect = canvas.get_bounding_client_rect();
+    let x = client_x as f32 - rect.left() as f32;
+    let y = client_y as f32 - rect.top() as f32;
+    let s = state.borrow();
+    let (terrain, mesh_origin, renderer) =
+        (s.terrain.clone()?, s.mesh_origin?, s.renderer.as_ref()?);
+    let camera = s.camera.to_camera(renderer.aspect_ratio());
+    pick::pick_lat_lon(
+        &terrain,
+        &mesh_origin,
+        &camera,
+        x,
+        y,
+        canvas.width() as f32,
+        canvas.height() as f32,
+    )
 }
 
 /// 現在の状態でレンダラーを構築できるなら構築する。
@@ -170,6 +204,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let water_visibility = use_context::<WaterVisibilityState>().unwrap_or_default();
     // 未提供でもデフォルト(何もしない)で動作するよう、water_visibilityと同じくunwrap_or_defaultにしてある。
     let recenter_request = use_context::<RecenterRequestState>().unwrap_or_default();
+    // 未提供なら「クリックで原点指定」機能なしで動作する(上と同じく後付けのオプション機能)。
+    let origin_pick = use_context::<OriginPickState>();
 
     terrain_store.ensure_loaded();
 
@@ -184,6 +220,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         dragging: false,
         last_x: 0.0,
         last_y: 0.0,
+        down_x: 0.0,
+        down_y: 0.0,
     }));
 
     // --- Effect 1: canvasのマウント + ResizeObserver(初回サイズ確定・以後のリサイズ追従) ---
@@ -410,6 +448,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             s.dragging = true;
             s.last_x = ev.client_x() as f64;
             s.last_y = ev.client_y() as f64;
+            s.down_x = s.last_x;
+            s.down_y = s.last_y;
         }
         if let Some(target) = ev.target() {
             if let Ok(el) = target.dyn_into::<web_sys::Element>() {
@@ -474,9 +514,43 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         }
     };
 
+    let state_pc = state.clone();
+    let on_pointer_cancel = move |_ev: leptos::ev::PointerEvent| {
+        state_pc.borrow_mut().dragging = false;
+    };
+
+    // 「クリックで原点指定」モード中に、ドラッグではない左クリックが離されたら、その地点を
+    // 原点として`on_pick`へ渡してモードを解除する(通常のドラッグ=回転・パンは従来通り動く)。
     let state_pu = state.clone();
-    let on_pointer_up = move |_ev: leptos::ev::PointerEvent| {
-        state_pu.borrow_mut().dragging = false;
+    let on_pointer_up = move |ev: leptos::ev::PointerEvent| {
+        let (down_x, down_y) = {
+            let mut s = state_pu.borrow_mut();
+            s.dragging = false;
+            (s.down_x, s.down_y)
+        };
+        let Some(pick_state) = origin_pick else {
+            return;
+        };
+        if !pick_state.active.get_untracked() || ev.button() != 0 {
+            return;
+        }
+        let moved = (ev.client_x() as f64 - down_x).hypot(ev.client_y() as f64 - down_y);
+        if moved >= CLICK_MAX_MOVE_PX {
+            return;
+        }
+        let Some(target) = ev.target() else {
+            return;
+        };
+        let Ok(canvas) = target.dyn_into::<web_sys::HtmlCanvasElement>() else {
+            return;
+        };
+        // 地形データ範囲外(海の外側など)をクリックした場合は、モードを維持して指定し直せるようにする。
+        if let Some((lat, lon)) =
+            pick_at_client(&state_pu, &canvas, ev.client_x() as f64, ev.client_y() as f64)
+        {
+            pick_state.active.set(false);
+            pick_state.on_pick.run((lat, lon));
+        }
     };
 
     let state_wheel = state.clone();
@@ -498,22 +572,9 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         let Ok(canvas) = target.dyn_into::<web_sys::HtmlCanvasElement>() else {
             return;
         };
-        let rect = canvas.get_bounding_client_rect();
-        let x = ev.client_x() as f32 - rect.left() as f32;
-        let y = ev.client_y() as f32 - rect.top() as f32;
-        let canvas_w = canvas.width() as f32;
-        let canvas_h = canvas.height() as f32;
-
-        let s = state_ctx.borrow();
-        let (Some(terrain), Some(mesh_origin), Some(renderer)) =
-            (s.terrain.clone(), s.mesh_origin, s.renderer.as_ref())
-        else {
-            return;
-        };
-        let camera = s.camera.to_camera(renderer.aspect_ratio());
-        let hit = pick::pick_lat_lon(&terrain, &mesh_origin, &camera, x, y, canvas_w, canvas_h);
-        drop(s);
-        if let Some((lat, lon)) = hit {
+        if let Some((lat, lon)) =
+            pick_at_client(&state_ctx, &canvas, ev.client_x() as f64, ev.client_y() as f64)
+        {
             radar_markers.add(lat, lon);
         }
     };
@@ -534,18 +595,31 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         render_now(&state_toggle);
     };
 
+    let pick_active = move || origin_pick.is_some_and(|p| p.active.get());
+
     view! {
         <div class="terrain-view">
             <canvas
                 node_ref=canvas_ref
                 class="terrain-canvas"
+                class:origin-pick-active=pick_active
                 on:pointerdown=on_pointer_down
                 on:pointermove=on_pointer_move
-                on:pointerup=on_pointer_up.clone()
-                on:pointercancel=on_pointer_up
+                on:pointerup=on_pointer_up
+                on:pointercancel=on_pointer_cancel
                 on:wheel=on_wheel
                 on:contextmenu=on_context_menu
             ></canvas>
+            {move || {
+                origin_pick.filter(|p| p.active.get()).map(|p| {
+                    view! {
+                        <div class="origin-pick-hint">
+                            <span>"原点にする地点をクリックしてください"</span>
+                            <button on:click=move |_| p.active.set(false)>"キャンセル"</button>
+                        </div>
+                    }
+                })
+            }}
             <div class="terrain-view-controls">
                 <button on:click=on_toggle_view_mode title="2D/3D表示切り替え">
                     {move || if view_mode.get() == ViewMode::ThreeD { "2D表示に切替" } else { "3D表示に切替" }}

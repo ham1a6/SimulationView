@@ -343,6 +343,42 @@
     cursor: grabbing;
 }
 
+/* 「クリックで原点指定」モード中(terrain::origin_pick::OriginPickState)。 */
+.terrain-canvas.origin-pick-active,
+.terrain-canvas.origin-pick-active:active {
+    cursor: crosshair;
+}
+
+.origin-pick-hint {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 0.3rem 0.6rem;
+    background: rgba(20, 20, 20, 0.85);
+    color: var(--fg);
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    font-size: 0.78rem;
+}
+
+.origin-pick-hint button {
+    background: transparent;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.15rem 0.5rem;
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.origin-pick-hint button:hover {
+    border-color: var(--accent);
+}
+
 .terrain-view-controls {
     position: absolute;
     top: 8px;

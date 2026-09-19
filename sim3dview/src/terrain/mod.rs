@@ -5,6 +5,7 @@ pub mod los;
 pub mod markers;
 pub mod mesh;
 pub mod origin;
+pub mod origin_pick;
 pub mod pick;
 pub mod profile;
 pub mod recenter;

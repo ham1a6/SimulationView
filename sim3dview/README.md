@@ -147,6 +147,21 @@ view! {
 }
 ```
 
+地図を直接クリックして原点を決めたい場合は、`terrain::origin_pick::OriginPickState`を
+`provide_context`し、メニュー等から`active`を`true`にします(未提供なら機能なし)。
+`TerrainView`は次の左クリック(ドラッグではない単発クリック)の緯度経度を`on_pick`へ渡し、
+`active`を自動で`false`に戻します。送信方法はここでもあなたのアプリに委ねられています。
+
+```rust
+use sim3dview::terrain::origin_pick::OriginPickState;
+
+let pick = OriginPickState::new(Callback::new(move |(lat, lon)| {
+    // ここであなたのプロトコルで原点変更を送信する。
+}));
+provide_context(pick);
+// メニュー項目などから: pick.active.set(true);
+```
+
 ## レーダー観測点(見通し範囲・覆域)
 
 `terrain::markers::RadarMarkersState`が観測点一覧・選択状態・(2D表示モード時の)覆域高度を

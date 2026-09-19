@@ -7,6 +7,7 @@ use wasm_bindgen::JsCast;
 use sim3dview::terrain::display::WaterVisibilityState;
 use sim3dview::terrain::markers::RadarMarkersState;
 use sim3dview::terrain::origin::OriginState;
+use sim3dview::terrain::origin_pick::OriginPickState;
 use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::terrain::store::TerrainStore;
 use sim3dview::ui::coverage_altitude_dialog::{CoverageAltitudeDialog, CoverageAltitudeDialogState};
@@ -57,6 +58,14 @@ pub fn App() -> impl IntoView {
     // WsConnectionはRc<RefCell<..>>を内部に持ちSend/Syncではないため、
     // provide_context(Leptos 0.8はSend+Sync境界を要求する)には乗せず、propとして子へ渡す。
     let conn: WsConnection = WsConnection::connect_new(default_ws_url(), signals);
+
+    // 「設定」→「原点をクリックで指定」で有効になる、地図クリックによる原点指定モード
+    // (sim3dviewライブラリの型)。クリックされた緯度経度を、原点設定パネルと同じ
+    // ClientCommand::set_originでサーバーへ送る(シミュレーション停止中のみ受理される)。
+    provide_context(OriginPickState::new(Callback::new({
+        let conn = conn.clone();
+        move |(lat, lon)| conn.send_command(&ClientCommand::set_origin(lat, lon))
+    })));
 
     // protocol::OriginState(サーバーから配信される生の値)→sim3dview::terrain::origin::OriginState
     // (ライブラリが読む値)への橋渡し。
