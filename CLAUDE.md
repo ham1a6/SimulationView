@@ -49,11 +49,10 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
 - **原点**(ENU座標系の基準、`OriginState`)はサーバー(C++)が正の状態を持ち、変更は**シミュレーション停止中のみ**
   (3.4節)。カメラの**中心点**(注視点`OrbitCamera::target`)は別物で、動かしても原点・メッシュ・観測点は変わらない
 - メッシュ解像度は2048×2048固定(単一メッシュを丸ごとGPUへ。これ以上はLOD化が必要)、標高グラデーション着色のみ
-- 海域はheightmapのNaN(`*_MSK.tif`の海+欠損タイル)で表し、フロントで水色(`WATER_COLOR`)に塗る。
-  低地の陸地色は水色と紛らわしくない緑にしてある(`mesh.rs`)
+- 海域はheightmapのNaN(`*_MSK.tif`の海+欠損タイル)で表し、フロントはNaN頂点を含む三角形を描画しない
+  (海・データ範囲外は背景の黒。水色の海レイヤーは撤去済み。`mesh.rs`の`build_mesh`)
 - 描画は**反転Z**(Depth32Float、`depth_compare: Greater`、深度クリア値0.0、透視は有限far)+ MSAA 4x +
   2倍スーパーサンプリング。深度・射影を触るときは`camera.rs`の`screen_to_ray`(ピッキング)も整合させること
-- 背景の海は実データの外側だけを覆うリング状スカート+保険の全面板(`mesh.rs`の`append_background_skirt`)
 - VABは開発用ダミー値 rows=4, cols=6・空ラベルはDOM生成しない。状況パネル項目はC++から`StatusPanelConfig`で動的配信
 - WebSocket自動再接続: 指数バックオフ+ジッター、タブ非表示中は一時停止(Page Visibility API)
 - `sim3dview`は通信プロトコル・サーバーのURLを一切知らない(URL組み立て・原点のミラーはアプリ側の責務)

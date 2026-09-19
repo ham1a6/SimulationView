@@ -96,26 +96,11 @@ fn geodetic_to_ecef(lat: f64, lon: f64, h: f64, a: f64, e2: f64) -> (f64, f64, f
     (x, y, z)
 }
 
-/// 海域(heightmapがNaN=データなし)の塗り色。DETAILED_DESIGN.md 2.3節: 元データが複数の
-/// GeoTIFFタイルに分かれており、タイルが存在しない領域・各タイル内のNODATA画素は
-/// geotiff_preprocessがNaNとして出力する(海の目印)。地形の標高グラデーションとは
-/// 明確に区別できる水色にする。
-const WATER_COLOR: [f32; 3] = [0.55, 0.78, 0.92];
-
-/// 標高を正規化し、低地(緑〜青みの低彩度)→高山(白に近い明色)の地形図的カラーランプへ写像する
+/// 標高を正規化し、低地(深緑)→高山(白に近い明色)の地形図的カラーランプへ写像する
 /// (DETAILED_DESIGN.md 6.7節)。カラーストップは実装時に調整可能な固定テーブル。
-///
-/// 低地(標高0付近)の色は元々[0.05, 0.35, 0.35](深緑がかった青緑)だったが、WATER_COLOR
-/// ([0.55, 0.78, 0.92])と同じ青緑系統の色相だったため、低地の陸地(NaN=海のセルと
-/// 隣接して細かく入り組む沿岸部)が遠景でMSAA/スーパーサンプリングによって周囲の海色と
-/// 混ざり、陸地の存在自体が視認できないほど海色に埋もれてしまう問題があった(「原点から
-/// 遠いところでは陸地があるはずなのに海になっている」と報告された不具合の実体。位置・
-/// 標高データ・NaN判定はすべて正しく、色のコントラスト不足が原因だったことをheightmap.bin
-/// の直接検証で確認済み)。水色(WATER_COLOR)から明確に離れた緑系の色相に変更し、
-/// どのズーム倍率・距離からでも低地の陸地が海と混同されないようにした。
 fn elevation_to_color(elevation: f32, min: f32, max: f32) -> [f32; 3] {
     const STOPS: [(f32, [f32; 3]); 5] = [
-        (0.0, [0.12, 0.4, 0.18]),   // 低地: 深緑(WATER_COLORの青緑系統から意図的に離した)
+        (0.0, [0.12, 0.4, 0.18]),   // 低地: 深緑
         (0.25, [0.15, 0.5, 0.2]),   // 緑
         (0.5, [0.55, 0.5, 0.25]),   // 黄土色
         (0.75, [0.45, 0.32, 0.22]), // 茶
@@ -191,11 +176,11 @@ pub fn build_mesh(data: &TerrainData, origin: &Origin) -> TerrainMesh {
                 + (i as f64 / (width - 1) as f64) * (bounds.max_lon - bounds.min_lon);
             let elevation = data.heightmap[j * width + i];
             // NaN = データなし(海域、geotiff_preprocess参照)。頂点位置はNaNだと破綻するため
-            // 標高0mとして配置し、色だけ地形グラデーションと区別できる水色にする。
+            // 標高0mとして配置するが、この頂点を含む三角形は下のindices生成で捨てるので描画されない。
             let is_ocean = elevation.is_nan();
             let position = transform.transform(lat, lon, if is_ocean { 0.0 } else { elevation as f64 });
             let color = if is_ocean {
-                WATER_COLOR
+                [0.0; 3]
             } else {
                 elevation_to_color(elevation, data.metadata.elevation_min, data.metadata.elevation_max)
             };
@@ -203,6 +188,10 @@ pub fn build_mesh(data: &TerrainData, origin: &Origin) -> TerrainMesh {
         }
     }
 
+    // 海域(NaN)の頂点を1つでも含む三角形は張らない(海は描画せず、背景色のまま見える)。
+    // 三角形の有無はheightmapだけで決まり原点に依存しないため、原点変更時に再構築しても
+    // インデックス数は変わらない(`TerrainRenderer::update_vertices`は頂点だけを書き換える)。
+    let is_land = |k: u32| !data.heightmap[k as usize].is_nan();
     let mut indices = Vec::with_capacity((width - 1) * (height - 1) * 6);
     for j in 0..height - 1 {
         for i in 0..width - 1 {
@@ -210,185 +199,14 @@ pub fn build_mesh(data: &TerrainData, origin: &Origin) -> TerrainMesh {
             let i1 = (j * width + i + 1) as u32;
             let i2 = ((j + 1) * width + i) as u32;
             let i3 = ((j + 1) * width + i + 1) as u32;
-            indices.push(i0);
-            indices.push(i1);
-            indices.push(i2);
-            indices.push(i1);
-            indices.push(i3);
-            indices.push(i2);
-        }
-    }
-
-    let mut mesh = TerrainMesh { vertices, indices };
-    append_background_skirt(&mut mesh, data.metadata.elevation_min, bounds, &transform);
-    mesh
-}
-
-/// メインパネルの背景(実データの外接矩形の外側)を「地平線から下は水色」に見せるための、
-/// 実データよりずっと広い水平な板(スカート)。標高は実データの最低標高より確実に低い位置に
-/// 置き、実際の地形(海面=標高0m付近を含む)が常に手前に描画されるようにする(同じ高さだと
-/// Zファイティングで点滅しうるため)。
-///
-/// 外周の半径は`terrain::camera`のZ_FAR・MAX_DISTANCEと整合させる必要がある: カメラは
-/// 原点から最大MAX_DISTANCE離れられるため、スカートの外周(隅ではコーナーウェッジ用に
-/// さらに2倍まで伸ばす、下記参照)がZ_FARを超えると、カメラの遠方クリップ面によって
-/// スカートの外周を切り取ってしまい、その先に何も描画されない黒い背景が見えてしまう
-/// (実機で確認した不具合。以前はZ_FARが無限遠だったため問題にならなかったが、有限の
-/// Z_FARに変更した際にこの制約を見落としていた。またこの半径を小さくしすぎても、
-/// 俯瞰プリセットの広いFOV+浅いピッチ角では画面端で地平線方向の視線がこの半径より
-/// 遠くまで届いてしまい、同様に黒い背景が見える不具合も実機で確認した。以前の
-/// 「一律の全面板」方式で使っていた半径と同じ4,000,000mまで戻すことで解消した)。
-/// 実地形が実際に必要とする範囲(MAX_DISTANCE+データ外接矩形の対角線長)はこれより
-/// 大幅に小さいままなので、Z_FARを大きくしても実地形側の深度精度には影響しない。
-const BACKGROUND_OUTER_RADIUS_M: f32 = 4_000_000.0;
-const BACKGROUND_MARGIN_BELOW_MIN_M: f32 = 500.0;
-
-/// スカートを1枚の全面板として実データの直下にも敷いていた際、実データ最低標高との差
-/// (`BACKGROUND_MARGIN_BELOW_MIN_M`)が数百m程度しかない低地の沿岸部で、遠景では
-/// 実地形側が負けてスカートに隠れる(=陸地が海に沈んで見える)報告を受けた対応。
-/// 「一律の平面ではなく、データの外接矩形の外側にだけ敷く」よう、実データの4隅をENU座標に
-/// 変換した四角形を「穴」として持つ、額縁状の構成に変更した。これにより実データの直下に
-/// スカートが存在すること自体がなくなり、上記の沈み込みが原理的に起こり得なくなる。
-///
-/// 「隅から辺ごとに個別の図形をつなぎ合わせる」方式(軸並行外接矩形での穴あけ、隅からの
-/// 放射状引き伸ばし、辺の法線オフセット+コーナーウェッジ、の3通りを試した)は、いずれも
-/// 特定の隅で図形同士の継ぎ目に隙間ができ、そこから何も描画されない黒い背景が見えてしまう
-/// 不具合が実機で繰り返し見つかった(実機のデバッグ配色で断片ごとに色分けして確認)。
-/// このような「複数図形を個別に計算してつなぎ合わせる」方式は継ぎ目の考慮漏れに弱いため、
-/// 代わりに中心から全方位角を一定刻みで走査し、各方位角について「実データの境界との交点」
-/// (内周)と「BACKGROUND_OUTER_RADIUS_M上の点」(外周)を求め、隣り合う方位角同士を
-/// 1枚の四角形でつなぐリング状のテッセレーションに変更した。
-///
-/// 内周は当初、実データの4隅だけを直線で結んだ四角形との交差で求めていたが、これでも
-/// 同じ隙間が再現し続けた。原因は緯度経度の矩形の辺(例えば緯度一定・経度が変化する辺)を
-/// ENU座標へ変換すると、地球が球面(正確には回転楕円体面)であるために直線にはならず
-/// わずかに湾曲すること。実際に検証したところ、原点から約465km離れた辺(5°×5°の矩形の
-/// 遠い側の辺)では、両端の隅を結んだ直線と実際の辺の中点との間に約2.7kmもの差があった
-/// (`EnuTransform`で数値検証済み)。これは無視できない大きさで、4隅だけの直線近似では
-/// スカートの内周と実際の地形メッシュの外周(2048点の格子)の間に隙間ができてしまう。
-/// 4辺それぞれを`BOUNDARY_SAMPLES_PER_EDGE`点で細かくサンプリングした多角形を使うことで
-/// この湾曲に追従させ、隙間を解消した。
-const SKIRT_RING_SEGMENTS: usize = 64;
-const BOUNDARY_SAMPLES_PER_EDGE: usize = 32;
-
-fn append_background_skirt(
-    mesh: &mut TerrainMesh,
-    elevation_min: f32,
-    bounds: &super::loader::GeodeticBounds,
-    transform: &EnuTransform,
-) {
-    let up = elevation_min - BACKGROUND_MARGIN_BELOW_MIN_M;
-
-    let to_xy = |lat: f64, lon: f64| -> [f32; 2] {
-        let p = transform.transform(lat, lon, 0.0);
-        [p[0], p[1]]
-    };
-
-    // 実データの外周を、4隅だけでなく各辺をBOUNDARY_SAMPLES_PER_EDGE点でサンプリングした
-    // 多角形として求める(地球の湾曲により、緯度経度の辺はENU座標上では直線にならないため)。
-    // 反時計回り(or 時計回り、原点次第)に、南辺→東辺→北辺→西辺の順で1周する。
-    let mut boundary: Vec<[f32; 2]> = Vec::with_capacity(BOUNDARY_SAMPLES_PER_EDGE * 4);
-    let n = BOUNDARY_SAMPLES_PER_EDGE;
-    for k in 0..n {
-        let t = k as f64 / n as f64;
-        let lon = bounds.min_lon + t * (bounds.max_lon - bounds.min_lon);
-        boundary.push(to_xy(bounds.min_lat, lon)); // 南辺: 西→東
-    }
-    for k in 0..n {
-        let t = k as f64 / n as f64;
-        let lat = bounds.min_lat + t * (bounds.max_lat - bounds.min_lat);
-        boundary.push(to_xy(lat, bounds.max_lon)); // 東辺: 南→北
-    }
-    for k in 0..n {
-        let t = k as f64 / n as f64;
-        let lon = bounds.max_lon - t * (bounds.max_lon - bounds.min_lon);
-        boundary.push(to_xy(bounds.max_lat, lon)); // 北辺: 東→西
-    }
-    for k in 0..n {
-        let t = k as f64 / n as f64;
-        let lat = bounds.max_lat - t * (bounds.max_lat - bounds.min_lat);
-        boundary.push(to_xy(lat, bounds.min_lon)); // 西辺: 北→南
-    }
-    let boundary_len = boundary.len();
-
-    let center_x = boundary.iter().map(|c| c[0]).sum::<f32>() / boundary_len as f32;
-    let center_y = boundary.iter().map(|c| c[1]).sum::<f32>() / boundary_len as f32;
-
-    // 方位角ごとに、中心からその方向へのレイが実データの境界多角形と交わる点(内周)を求める。
-    // 全辺を評価して条件を満たす候補を集め、その中から最小のt(中心に最も近い交点)を
-    // 採用する(凸多角形の内部の点から出るレイは幾何学的には辺をちょうど1つだけ通過する
-    // はずだが、浮動小数点誤差で複数の辺が条件を満たしてしまう場合に備え、最も近い交点を
-    // 選ぶことで頑健にしてある)。
-    let inner_point = |dx: f32, dy: f32| -> [f32; 2] {
-        let mut best_t: Option<f32> = None;
-        for k in 0..boundary_len {
-            let a = boundary[k];
-            let b = boundary[(k + 1) % boundary_len];
-            let ex = b[0] - a[0];
-            let ey = b[1] - a[1];
-            let denom = ex * dy - ey * dx;
-            if denom.abs() < 1e-3 {
-                continue; // レイと辺がほぼ平行
+            if is_land(i0) && is_land(i1) && is_land(i2) {
+                indices.extend_from_slice(&[i0, i1, i2]);
             }
-            let ax = a[0] - center_x;
-            let ay = a[1] - center_y;
-            let t = (ex * ay - ey * ax) / denom;
-            let s = (dx * ay - dy * ax) / denom;
-            if t > 0.0 && s.is_finite() && (-1e-3..=1.0 + 1e-3).contains(&s) {
-                if best_t.is_none_or(|bt| t < bt) {
-                    best_t = Some(t);
-                }
+            if is_land(i1) && is_land(i3) && is_land(i2) {
+                indices.extend_from_slice(&[i1, i3, i2]);
             }
         }
-        match best_t {
-            Some(t) => [center_x + dx * t, center_y + dy * t],
-            // 理論上はここに来ないはずだが、万一交点が見つからなければ中心そのものを返す
-            // (退化した三角形になるだけで、隙間や破綻にはならない)。
-            None => [center_x, center_y],
-        }
-    };
-
-    let mut ring_inner = Vec::with_capacity(SKIRT_RING_SEGMENTS);
-    let mut ring_outer = Vec::with_capacity(SKIRT_RING_SEGMENTS);
-    for i in 0..SKIRT_RING_SEGMENTS {
-        let theta = (i as f32) / (SKIRT_RING_SEGMENTS as f32) * std::f32::consts::TAU;
-        let (dy, dx) = theta.sin_cos();
-        ring_inner.push(inner_point(dx, dy));
-        ring_outer.push([center_x + dx * BACKGROUND_OUTER_RADIUS_M, center_y + dy * BACKGROUND_OUTER_RADIUS_M]);
     }
 
-    for i in 0..SKIRT_RING_SEGMENTS {
-        let j = (i + 1) % SKIRT_RING_SEGMENTS;
-        let quad = [ring_inner[i], ring_inner[j], ring_outer[j], ring_outer[i]];
-        add_skirt_quad(mesh, up, &quad);
-    }
-
-    // 保険の全面板(このリングよりさらに深い位置)。上記のリング単体では、俯瞰プリセットの
-    // 3D表示でのみ画面最上部にごく小さい未描画領域(黒い三角形)が生じる不具合が実機で
-    // 見つかったが、5通りの異なるリング実装すべてで同一の症状が再現し、2D表示や
-    // 以前の「一律の全面板」方式では発生しないため原因を完全には切り分けられなかった
-    // (リング内周と実地形の頂点座標を独立に計算していることによる浮動小数点誤差か、
-    // リングの三角形が中心からの半径方向に非常に細長い形状になること自体が要因である
-    // 可能性が高いと考えている)。原因を保留したまま、リングよりさらに約4,500m低い位置に
-    // 同じ半径の一律の全面板を保険として敷いておくことで、リング側に万一未描画領域が
-    // あってもこの板が見えるようにした。実地形(標高0m付近を含む)からは
-    // 5,000m以上離れているため、以前問題になっていた沈み込み(Zファイティング)が
-    // 再発する余地はない。
-    let safety_up = up - 4_500.0;
-    let s = BACKGROUND_OUTER_RADIUS_M;
-    let safety_quad = [
-        [center_x - s, center_y - s],
-        [center_x + s, center_y - s],
-        [center_x + s, center_y + s],
-        [center_x - s, center_y + s],
-    ];
-    add_skirt_quad(mesh, safety_up, &safety_quad);
-}
-
-fn add_skirt_quad(mesh: &mut TerrainMesh, up: f32, quad: &[[f32; 2]; 4]) {
-    let base = mesh.vertices.len() as u32;
-    for p in quad {
-        mesh.vertices.push(TerrainVertex { position: [p[0], p[1], up], color: WATER_COLOR });
-    }
-    mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    TerrainMesh { vertices, indices }
 }

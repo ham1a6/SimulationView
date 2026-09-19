@@ -150,7 +150,7 @@ tools\geotiff_preprocess\build\Debug\geotiff_preprocess.exe
 ```
 
 存在しないタイル・各タイル内のNODATA画素・マスクファイル(`*_MSK.tif`、同梱)が海と示す画素は
-NaNとして出力され、Web UI側で地形グラデーションとは別の水色として塗り分けられる(標高0mとは
+NaNとして出力され、Web UI側ではその部分の三角形を描画しない(背景の黒のまま見える。標高0mとは
 区別される)。
 
 ---

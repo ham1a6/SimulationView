@@ -1,5 +1,4 @@
 pub mod camera;
-pub mod display;
 pub mod loader;
 pub mod los;
 pub mod markers;

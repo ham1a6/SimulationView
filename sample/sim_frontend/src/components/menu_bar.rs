@@ -4,9 +4,7 @@
 //! 「設定」→「原点設定...」/「覆域高度設定...」を選ぶと、sim3dviewライブラリが提供する
 //! フローティングパネル(`ui::origin_dialog`/`ui::coverage_altitude_dialog`)を開く
 //! (パネル本体・開閉状態の型ともライブラリ側にあり、このメニューは開閉のトリガーのみ)。
-//! 「表示」→「海を表示」は海レイヤー(NaNセル・背景スカート)の表示/非表示を切り替える
-//! チェックボックス(状態自体はsim3dviewライブラリの`terrain::display::WaterVisibilityState`、
-//! 実際の描画反映は`ui::terrain_view::TerrainView`側)。「表示」→「中心点を原点に戻す」は、
+//! 「表示」→「中心点を原点に戻す」は、
 //! 3DモードのShift+ドラッグ・2Dモードの通常ドラッグで動かせるカメラの注視点(中心点)を
 //! シミュレーション原点の位置へ戻すボタン(`terrain::recenter::RecenterRequestState`
 //! 経由の通知、`TerrainView`側で実際にリセットする。シミュレーション原点自体は変更しない)。
@@ -16,7 +14,6 @@
 
 use leptos::prelude::*;
 
-use sim3dview::terrain::display::WaterVisibilityState;
 use sim3dview::terrain::origin_pick::OriginPickState;
 use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::ui::coverage_altitude_dialog::CoverageAltitudeDialogState;
@@ -39,8 +36,6 @@ pub fn MenuBar() -> impl IntoView {
         use_context::<OriginPickState>().expect("OriginPickState context not found");
     let coverage_altitude_dialog = use_context::<CoverageAltitudeDialogState>()
         .expect("CoverageAltitudeDialogState context not found");
-    let water_visibility =
-        use_context::<WaterVisibilityState>().expect("WaterVisibilityState context not found");
     let recenter_request =
         use_context::<RecenterRequestState>().expect("RecenterRequestState context not found");
 
@@ -81,16 +76,6 @@ pub fn MenuBar() -> impl IntoView {
                 .into_any(),
                 MenuId::View => view! {
                     <div class="menu-dropdown">
-                        <label class="menu-dropdown-item menu-dropdown-item--checkbox">
-                            <input
-                                type="checkbox"
-                                prop:checked=move || water_visibility.0.get()
-                                on:change=move |_| {
-                                    water_visibility.0.update(|v| *v = !*v);
-                                }
-                            />
-                            "海を表示"
-                        </label>
                         <button
                             class="menu-dropdown-item"
                             on:click=move |_| {

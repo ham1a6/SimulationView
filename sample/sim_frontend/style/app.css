@@ -319,16 +319,6 @@ body {
     cursor: default;
 }
 
-.menu-dropdown-item--checkbox {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-}
-
-.menu-dropdown-item--checkbox input[type="checkbox"] {
-    accent-color: var(--accent);
-}
-
 .menu-backdrop {
     position: fixed;
     inset: 0;
