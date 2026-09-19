@@ -1247,3 +1247,21 @@ C++/Rust全ソースを通読し、`cargo check`(警告ゼロ化)・CMakeビル�
   `#[allow(dead_code)]`+理由コメントを付与(msgpackが配列位置エンコードのためフィールド自体は削除不可、`protocol.rs`)
 - C++: `WsServer`(生ポインタ`impl_`を所有)にコピー/ムーブのdelete宣言を追加(二重解放防止の防御的修正)
 - C++: `main.cpp`のポート引数パース(`std::stoi`)が非数値入力で未処理例外crashしていたのをtry/catchで修正
+
+### 覆域の計算・境界を1mil刻み(6400方位)にした
+
+- **要望**: 「覆域について、1mil(360/6400度)単位で表示させることはできる?」→ 表示だけをmilにするか、計算・境界を
+  1mil刻みにするかを確認し、後者(計算・境界を1mil刻み)を選択。負荷が厳しければ相談してほしい、1周=6400milでよい、とのこと
+- **変更**: `terrain/los.rs`の`NUM_AZIMUTHS`を360→6400(`compute_los`・`compute_coverage_area`・`compute_los_dome`の共通刻み)。
+  `LosPoint::azimuth_deg`は従来どおり度で持つ(1mil=0.05625度)。3Dドームのリング間パッチは間引かず1mil刻みで三角形化し、
+  頂点はリングごと・方位角ごとに1回だけ計算(パッチが最大4回参照するため)。傘の部分だけ`DOME_APEX_AZIMUTH_STRIDE`(160)で
+  間引く(旧`DOME_MESH_AZIMUTH_STRIDE`。ちらつき対策の理由は上の「覆域ドーム導入後に「画面を操作するとマップがチカチカする」不具合を修正」の項のまま)
+- **負荷**: 計算量は約17.8倍。合成地形でのネイティブ計測(最大観測範囲200km): 変更前は`compute_los`約3.3ms・
+  `compute_los_dome`約2.6ms、変更後は約52ms・約47ms。そこで`EnuTransform::inverse`が呼び出しごとに求めていた曲率半径を
+  `new`で前計算(`compute_los`約36ms・`compute_coverage_area`約30msに短縮。ドームは約47msのまま)、2D覆域の塗りと輪郭線が
+  別々に呼んでいた`compute_coverage_area`を1回に統合(`build_coverage_2d_geometry`)
+- **実機確認**: リリースビルドのWASMで、レーダーのパラメータ編集1回あたり3Dで約120ms・2Dで約50ms。描画は従来と同じ形
+  (3Dドームの遮蔽された楔形、2D覆域の輪郭・塗り、極座標図)。開発ビルド(`trunk serve`、最適化なし)では3Dで約480msと
+  大きく遅いので、体感の確認は`trunk serve --release`で行うこと
+- **落とし穴**: Browserペインが非表示(`document.visibilityState === 'hidden'`)だと`setTimeout`が約1秒に間引かれ、
+  所要時間の計測が「常に約1000ms」になる。計測は`MessageChannel`のメッセージで完了を待つ

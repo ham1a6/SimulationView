@@ -9,7 +9,7 @@
 use leptos::prelude::*;
 
 use super::loader::TerrainData;
-use super::los::{compute_coverage_area, compute_los_dome, LosParams, LosPoint};
+use super::los::{compute_coverage_area, compute_los_dome, LosParams};
 use super::mesh::{sample_heightmap, EnuTransform, Origin, TerrainVertex};
 
 /// 地図上に配置したレーダー観測点1つ分の情報。
@@ -95,12 +95,13 @@ const DOME_RING_ELEVATIONS_DEG: [f64; 7] = [0.0, 5.0, 10.0, 20.0, 35.0, 55.0, 80
 /// (カメラ操作中にチカチカする現象の一因)を起こす。マーカー本体と同じ考え方で、
 /// ドーム全体を一律に少し持ち上げることで回避する。
 const DOME_HEIGHT_BIAS_M: f64 = 20.0;
-/// ドームの面(三角形)を作る際に方位角方向で間引く間隔(`compute_los_dome`自体は360方位角
-/// で計算するが、そのすべてを三角形化すると特に最上段リングを1点に閉じる傘の部分で
-/// 極端に細い三角形が大量に重なり、半透明合成(アルファブレンド)の描画順依存の副作用で
-/// カメラ操作中にチカチカして見えることが分かった。方位角を間引いて三角形数・重なりの
-/// 度合いを減らすことでこれを緩和する。値が大きいほど三角形が減り軽く/滑らかでなくなる)。
-const DOME_MESH_AZIMUTH_STRIDE: usize = 10;
+/// 最上段リングを1点(アペックス)に閉じる傘の三角形を作る際に、方位角方向で間引く間隔
+/// (インデックスの刻みはmil。160mil=9度なので40分割)。`compute_los_dome`の全方位角
+/// (6400)を傘に使うと、極端に細い三角形が大量に1点へ重なり、半透明合成(アルファブレンド)
+/// の描画順依存の副作用でカメラ操作中にチカチカして見えることが分かった(360方位角のときに
+/// 確認。10度刻み=36分割に間引いて解消)。リング間の四角形パッチは互いに重ならないので
+/// 間引かず、傘の部分だけを間引く。
+const DOME_APEX_AZIMUTH_STRIDE: usize = 160;
 
 /// 2D地図モードでの覆域表示(指定した海抜高度での探知可能領域)の塗り色。
 /// 3Dの覆域ドーム(`DOME_SURFACE_COLOR`)とは見た目で区別できる色にする。
@@ -163,34 +164,37 @@ fn push_dome_surface(
     let observer_height =
         sample_heightmap(data, marker.lat_deg, marker.lon_deg).unwrap_or(0.0) as f64 + marker.height_m;
 
-    // ドーム上の1点(リングインデックス, 方位角インデックス)を地形メッシュのENU座標へ変換する。
-    let dome_vertex = |ring_i: usize, az_i: usize| -> TerrainVertex {
-        let ring = &rings[ring_i];
-        let p = &ring.points[az_i % num_azimuths];
-        let az_rad = p.azimuth_deg.to_radians();
-        let el_rad = ring.elevation_deg.to_radians();
-        let horizontal = p.range_m * el_rad.cos();
-        let local_east = horizontal * az_rad.sin();
-        let local_north = horizontal * az_rad.cos();
-        let (lat, lon) = local_transform.inverse(local_east, local_north);
-        let absolute_height = observer_height + p.range_m * el_rad.sin() + DOME_HEIGHT_BIAS_M;
-        let pos = mesh_transform.transform(lat, lon, absolute_height);
-        TerrainVertex { position: pos, color: DOME_SURFACE_COLOR }
-    };
-
-    // 三角形化する方位角のインデックス一覧(間引き済み、`DOME_MESH_AZIMUTH_STRIDE`参照)。
-    let steps: Vec<usize> = (0..num_azimuths).step_by(DOME_MESH_AZIMUTH_STRIDE).collect();
+    // ドーム上の全頂点(リングごと・方位角ごと、1mil刻み)を地形メッシュのENU座標へ変換しておく。
+    // 四角形パッチが各頂点を最大4回使うので、先に1回ずつだけ計算する。
+    let dome_vertices: Vec<Vec<TerrainVertex>> = rings
+        .iter()
+        .map(|ring| {
+            let el_rad = ring.elevation_deg.to_radians();
+            ring.points
+                .iter()
+                .map(|p| {
+                    let az_rad = p.azimuth_deg.to_radians();
+                    let horizontal = p.range_m * el_rad.cos();
+                    let local_east = horizontal * az_rad.sin();
+                    let local_north = horizontal * az_rad.cos();
+                    let (lat, lon) = local_transform.inverse(local_east, local_north);
+                    let absolute_height = observer_height + p.range_m * el_rad.sin() + DOME_HEIGHT_BIAS_M;
+                    let pos = mesh_transform.transform(lat, lon, absolute_height);
+                    TerrainVertex { position: pos, color: DOME_SURFACE_COLOR }
+                })
+                .collect()
+        })
+        .collect();
 
     // リング間の四角形パッチ(三角形2枚ずつ)。表裏どちらも見えるよう(cull_mode: None)、
-    // 巻き順は特に気にしない。
+    // 巻き順は特に気にしない。方位角は間引かず1mil刻みのまま三角形化する(地形に遮蔽される
+    // 地表付近の輪郭を細かく表すため。パッチどうしは重ならないので半透明合成のちらつきは
+    // 起きない)。
     for ring_i in 0..rings.len() - 1 {
-        for k in 0..steps.len() {
-            let az_i = steps[k];
-            let az_next = steps[(k + 1) % steps.len()];
-            let a = dome_vertex(ring_i, az_i);
-            let b = dome_vertex(ring_i, az_next);
-            let c = dome_vertex(ring_i + 1, az_i);
-            let d = dome_vertex(ring_i + 1, az_next);
+        let (lower, upper) = (&dome_vertices[ring_i], &dome_vertices[ring_i + 1]);
+        for az_i in 0..num_azimuths {
+            let az_next = (az_i + 1) % num_azimuths;
+            let (a, b, c, d) = (lower[az_i], lower[az_next], upper[az_i], upper[az_next]);
             out.push(a);
             out.push(b);
             out.push(c);
@@ -213,23 +217,31 @@ fn push_dome_surface(
         observer_height + avg_height_above_observer + DOME_HEIGHT_BIAS_M,
     );
     let apex = TerrainVertex { position: apex_pos, color: DOME_SURFACE_COLOR };
+    // 傘の三角形は方位角を間引く(`DOME_APEX_AZIMUTH_STRIDE`参照)。
+    let steps: Vec<usize> = (0..num_azimuths).step_by(DOME_APEX_AZIMUTH_STRIDE).collect();
     for k in 0..steps.len() {
         let az_i = steps[k];
         let az_next = steps[(k + 1) % steps.len()];
-        out.push(dome_vertex(top_ring_i, az_i));
-        out.push(dome_vertex(top_ring_i, az_next));
+        out.push(dome_vertices[top_ring_i][az_i]);
+        out.push(dome_vertices[top_ring_i][az_next]);
         out.push(apex);
     }
 }
 
-/// 選択中マーカーの、指定した海抜高度での探知可能領域(2D地図モード用)を、地表面に
-/// 沿って貼り付けたSurface(TriangleList)として頂点列に追加する。`compute_coverage_area`が
-/// 全方位角について求める水平距離を境界とする、観測点を中心とした星形(star-shaped)
-/// 領域なので、観測点から境界上の隣接2点への三角形(ファン)を360個並べるだけで
-/// 自己交差のない面になる(3Dの覆域ドームのアペック付近のような、視点回転時の
-/// 半透明合成チカチカ対策の間引きは、2Dは常に真上固定視点で回転しないため不要)。
-fn push_coverage_area(
-    out: &mut Vec<TerrainVertex>,
+/// 選択中マーカーの、指定した海抜高度での探知可能領域(2D地図モード用)の塗り(地表面に
+/// 沿って貼り付けたSurface、TriangleList)と、その外周の輪郭線(不透明なLineList。マーカー
+/// 本体と同じ`TerrainRenderer::update_markers`のバッファ・パイプラインで描く)の頂点列を
+/// `area`・`outline`に追加する。塗り(半透明、アルファ0.22)だけでは地図上で見えにくいため、
+/// 輪郭線を別途重ねて一目で分かるようにする(`COVERAGE_OUTLINE_COLOR`の定義コメント参照)。
+///
+/// `compute_coverage_area`が全方位角(1mil刻み、6400方向)について求める水平距離を境界とする、
+/// 観測点を中心とした星形(star-shaped)領域なので、観測点から境界上の隣接2点への三角形
+/// (ファン)を並べるだけで自己交差のない面になる(3Dの覆域ドームのアペックス付近のような、
+/// 視点回転時の半透明合成チカチカ対策の間引きは、2Dは常に真上固定視点で回転しないため不要)。
+/// 境界の計算(6400本のレイ)が重いので、塗りと輪郭線で1回の結果を共有する。
+fn push_coverage_2d(
+    area: &mut Vec<TerrainVertex>,
+    outline: &mut Vec<TerrainVertex>,
     data: &TerrainData,
     mesh_transform: &EnuTransform,
     marker: &RadarMarker,
@@ -247,63 +259,33 @@ fn push_coverage_area(
     // 高さに置く(覆域そのものの高度target_altitude_mではない。あくまで地図上に貼る
     // 塗り分けのオーバーレイであり、3Dドームのように空間中の実際の高度を表現するもの
     // ではないため)。
-    let vertex_at = |lat: f64, lon: f64| -> TerrainVertex {
+    let position_at = |lat: f64, lon: f64| -> [f32; 3] {
         let ground = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
-        let pos = mesh_transform.transform(lat, lon, ground + COVERAGE_AREA_HEIGHT_BIAS_M);
-        TerrainVertex { position: pos, color: COVERAGE_AREA_COLOR }
+        mesh_transform.transform(lat, lon, ground + COVERAGE_AREA_HEIGHT_BIAS_M)
     };
-    let boundary_vertex = |p: &LosPoint| -> TerrainVertex {
-        let az_rad = p.azimuth_deg.to_radians();
-        let local_east = p.range_m * az_rad.sin();
-        let local_north = p.range_m * az_rad.cos();
-        let (lat, lon) = local_transform.inverse(local_east, local_north);
-        vertex_at(lat, lon)
-    };
+    let boundary: Vec<[f32; 3]> = points
+        .iter()
+        .map(|p| {
+            let az_rad = p.azimuth_deg.to_radians();
+            let local_east = p.range_m * az_rad.sin();
+            let local_north = p.range_m * az_rad.cos();
+            let (lat, lon) = local_transform.inverse(local_east, local_north);
+            position_at(lat, lon)
+        })
+        .collect();
 
-    let center = vertex_at(marker.lat_deg, marker.lon_deg);
-    let n = points.len();
+    let center = TerrainVertex {
+        position: position_at(marker.lat_deg, marker.lon_deg),
+        color: COVERAGE_AREA_COLOR,
+    };
+    let n = boundary.len();
     for i in 0..n {
-        let a = boundary_vertex(&points[i]);
-        let b = boundary_vertex(&points[(i + 1) % n]);
-        out.push(center);
-        out.push(a);
-        out.push(b);
-    }
-}
-
-/// `push_coverage_area`と同じ境界(指定した海抜高度での探知可能領域の外周)を、不透明な
-/// LineList(マーカー本体と同じ`TerrainRenderer::update_markers`のバッファ・パイプライン)
-/// として追加する。塗り(TriangleList、半透明)だけでは地図上で見えにくいため、輪郭線を
-/// 別途重ねて一目で分かるようにする(`COVERAGE_OUTLINE_COLOR`の定義コメント参照)。
-fn push_coverage_outline(
-    out: &mut Vec<TerrainVertex>,
-    data: &TerrainData,
-    mesh_transform: &EnuTransform,
-    marker: &RadarMarker,
-    target_altitude_m: f64,
-) {
-    let radar_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
-    let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
-    let params = LosParams { observer_height_m: marker.height_m, max_range_m: marker.max_range_m };
-    let points = compute_coverage_area(data, &radar_origin, &params, target_altitude_m);
-    if points.len() < 2 {
-        return;
-    }
-
-    let boundary_vertex = |p: &LosPoint| -> TerrainVertex {
-        let az_rad = p.azimuth_deg.to_radians();
-        let local_east = p.range_m * az_rad.sin();
-        let local_north = p.range_m * az_rad.cos();
-        let (lat, lon) = local_transform.inverse(local_east, local_north);
-        let ground = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
-        let pos = mesh_transform.transform(lat, lon, ground + COVERAGE_AREA_HEIGHT_BIAS_M);
-        TerrainVertex { position: pos, color: COVERAGE_OUTLINE_COLOR }
-    };
-
-    let n = points.len();
-    for i in 0..n {
-        out.push(boundary_vertex(&points[i]));
-        out.push(boundary_vertex(&points[(i + 1) % n]));
+        let (a, b) = (boundary[i], boundary[(i + 1) % n]);
+        area.push(center);
+        area.push(TerrainVertex { position: a, color: COVERAGE_AREA_COLOR });
+        area.push(TerrainVertex { position: b, color: COVERAGE_AREA_COLOR });
+        outline.push(TerrainVertex { position: a, color: COVERAGE_OUTLINE_COLOR });
+        outline.push(TerrainVertex { position: b, color: COVERAGE_OUTLINE_COLOR });
     }
 }
 
@@ -342,37 +324,22 @@ pub fn build_dome_surface_geometry(
     out
 }
 
-/// `build_coverage_area_geometry`と同じ境界の、不透明な輪郭線(LineList)の頂点列を作る。
+/// 選択中マーカーの、指定した海抜高度での探知可能領域(2D地図モード)の頂点列を作る。
+/// 戻り値は(塗り(TriangleList、半透明), 外周の輪郭線(LineList、不透明))。輪郭線は
 /// `build_marker_geometry`の結果と連結して`TerrainRenderer::update_markers`に渡す想定
-/// (マーカー本体と同じパイプラインを使うため)。
-pub fn build_coverage_outline_geometry(
+/// (マーカー本体と同じパイプラインを使うため)。3Dの`build_dome_surface_geometry`と同様、
+/// 選択中のマーカーについてのみ描く。
+pub fn build_coverage_2d_geometry(
     data: &TerrainData,
     mesh_origin: &Origin,
     markers: &[RadarMarker],
     selected: Option<u64>,
     target_altitude_m: f64,
-) -> Vec<TerrainVertex> {
+) -> (Vec<TerrainVertex>, Vec<TerrainVertex>) {
     let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
-    let mut out = Vec::new();
+    let (mut area, mut outline) = (Vec::new(), Vec::new());
     if let Some(marker) = selected.and_then(|id| markers.iter().find(|m| m.id == id)) {
-        push_coverage_outline(&mut out, data, &mesh_transform, marker, target_altitude_m);
+        push_coverage_2d(&mut area, &mut outline, data, &mesh_transform, marker, target_altitude_m);
     }
-    out
-}
-
-/// 選択中マーカーの、指定した海抜高度での探知可能領域(2D地図モード、TriangleList)の
-/// 頂点列を作る。3Dの`build_dome_surface_geometry`と同様、選択中のマーカーについてのみ描く。
-pub fn build_coverage_area_geometry(
-    data: &TerrainData,
-    mesh_origin: &Origin,
-    markers: &[RadarMarker],
-    selected: Option<u64>,
-    target_altitude_m: f64,
-) -> Vec<TerrainVertex> {
-    let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
-    let mut out = Vec::new();
-    if let Some(marker) = selected.and_then(|id| markers.iter().find(|m| m.id == id)) {
-        push_coverage_area(&mut out, data, &mesh_transform, marker, target_altitude_m);
-    }
-    out
+    (area, outline)
 }

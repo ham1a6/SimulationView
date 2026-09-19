@@ -16,8 +16,15 @@ const EARTH_RADIUS_M: f64 = 6_371_000.0;
 /// (レーダー・無線工学の標準的な近似。実際の大気状態によって変動するが、v1では固定値とする)。
 const K_FACTOR: f64 = 4.0 / 3.0;
 
-/// 計算する方位角の刻み数(1度刻み=360方向)。
-const NUM_AZIMUTHS: usize = 360;
+/// 計算する方位角の刻み数。1周=6400mil(NATO式)で、1mil刻み(=360/6400度≒0.05625度)。
+/// 50km先で約49m幅、地形の最細解像度(30m)と同程度の細かさ。
+const NUM_AZIMUTHS: usize = 6400;
+
+/// 方位角インデックス(0〜`NUM_AZIMUTHS`-1、1mil刻み)を度(北=0・東=90・時計回り)へ変換する。
+fn azimuth_deg_of(az_i: usize) -> f64 {
+    az_i as f64 * 360.0 / NUM_AZIMUTHS as f64
+}
+
 /// 1方位角あたりのサンプル点数。
 const SAMPLES_PER_RAY: usize = 200;
 
@@ -61,7 +68,7 @@ pub fn compute_los(data: &TerrainData, origin: &Origin, params: &LosParams) -> V
 
     (0..NUM_AZIMUTHS)
         .map(|az_i| {
-            let azimuth_deg = az_i as f64 * 360.0 / NUM_AZIMUTHS as f64;
+            let azimuth_deg = azimuth_deg_of(az_i);
             let az_rad = azimuth_deg.to_radians();
             let dir_east = az_rad.sin();
             let dir_north = az_rad.cos();
@@ -210,7 +217,7 @@ pub fn compute_coverage_area(
 
     (0..NUM_AZIMUTHS)
         .map(|az_i| {
-            let azimuth_deg = az_i as f64 * 360.0 / NUM_AZIMUTHS as f64;
+            let azimuth_deg = azimuth_deg_of(az_i);
             let az_rad = azimuth_deg.to_radians();
             let dir_east = az_rad.sin();
             let dir_north = az_rad.cos();
@@ -280,7 +287,7 @@ pub fn compute_los_dome(
     let mut ring_slant_ranges = vec![vec![0.0_f64; NUM_AZIMUTHS]; elevation_degs.len()];
 
     for az_i in 0..NUM_AZIMUTHS {
-        let azimuth_deg = az_i as f64 * 360.0 / NUM_AZIMUTHS as f64;
+        let azimuth_deg = azimuth_deg_of(az_i);
         let az_rad = azimuth_deg.to_radians();
         let dir_east = az_rad.sin();
         let dir_north = az_rad.cos();
@@ -330,7 +337,7 @@ pub fn compute_los_dome(
                 .into_iter()
                 .enumerate()
                 .map(|(az_i, range_m)| LosPoint {
-                    azimuth_deg: az_i as f64 * 360.0 / NUM_AZIMUTHS as f64,
+                    azimuth_deg: azimuth_deg_of(az_i),
                     range_m,
                 })
                 .collect();

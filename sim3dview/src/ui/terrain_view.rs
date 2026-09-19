@@ -473,15 +473,16 @@ fn rebuild_markers(state: &Rc<RefCell<ViewState>>, radar_markers: RadarMarkersSt
         ViewMode::TwoD => {
             let altitude_m = radar_markers.coverage_altitude_m.get_untracked();
             // 塗り(半透明、アルファ0.22)だけでは地図上で見えにくいため、マーカーと同じ
-            // 不透明LineListのバッファへ輪郭線も追加する(`push_coverage_outline`参照)。
-            marker_vertices.extend(markers::build_coverage_outline_geometry(
+            // 不透明LineListのバッファへ輪郭線も追加する(`push_coverage_2d`参照)。
+            let (area, outline) = markers::build_coverage_2d_geometry(
                 &terrain,
                 &mesh_origin,
                 &marker_list,
                 selected,
                 altitude_m,
-            ));
-            markers::build_coverage_area_geometry(&terrain, &mesh_origin, &marker_list, selected, altitude_m)
+            );
+            marker_vertices.extend(outline);
+            area
         }
     };
     renderer.update_markers(&marker_vertices);

@@ -32,6 +32,11 @@ pub struct EnuTransform {
     origin_z: f64,
     a: f64,
     e2: f64,
+    /// 原点緯度における子午線曲率半径(`inverse`用。呼び出しごとに求め直すと見通し計算で
+    /// 数百万回呼ぶため重いので、`new`で1回だけ求めておく)。
+    meridian_radius: f64,
+    /// 原点緯度における「卯酉線曲率半径*cos(緯度)」(=原点緯度の緯線の半径、`inverse`用)。
+    parallel_radius: f64,
 }
 
 impl EnuTransform {
@@ -42,6 +47,8 @@ impl EnuTransform {
         let lat0 = origin.lat_deg.to_radians();
         let lon0 = origin.lon_deg.to_radians();
         let (x0, y0, z0) = geodetic_to_ecef(lat0, lon0, 0.0, a, e2);
+        let sin_lat0 = lat0.sin();
+        let denom = (1.0 - e2 * sin_lat0 * sin_lat0).sqrt();
         Self {
             origin_lat_rad: lat0,
             origin_lon_rad: lon0,
@@ -50,6 +57,8 @@ impl EnuTransform {
             origin_z: z0,
             a,
             e2,
+            meridian_radius: a * (1.0 - e2) / denom.powi(3),
+            parallel_radius: a / denom * lat0.cos(),
         }
     }
 
@@ -107,13 +116,8 @@ impl EnuTransform {
     /// ローカル接平面近似(原点緯度における子午線・卯酉線曲率半径を使う)。断面図
     /// (`terrain/profile.rs`)で、原点から方位角方向へ地表をサンプリングするために使う。
     pub fn inverse(&self, east: f64, north: f64) -> (f64, f64) {
-        let sin_lat0 = self.origin_lat_rad.sin();
-        let denom = (1.0 - self.e2 * sin_lat0 * sin_lat0).sqrt();
-        let m = self.a * (1.0 - self.e2) / denom.powi(3); // 子午線曲率半径
-        let n = self.a / denom; // 卯酉線曲率半径
-
-        let lat = self.origin_lat_rad + north / m;
-        let lon = self.origin_lon_rad + east / (n * self.origin_lat_rad.cos());
+        let lat = self.origin_lat_rad + north / self.meridian_radius;
+        let lon = self.origin_lon_rad + east / self.parallel_radius;
         (lat.to_degrees(), lon.to_degrees())
     }
 }
