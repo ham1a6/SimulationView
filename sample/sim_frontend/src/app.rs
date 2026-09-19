@@ -7,6 +7,7 @@ use wasm_bindgen::JsCast;
 use sim3dview::terrain::display::WaterVisibilityState;
 use sim3dview::terrain::markers::RadarMarkersState;
 use sim3dview::terrain::origin::OriginState;
+use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::terrain::store::TerrainStore;
 use sim3dview::ui::coverage_altitude_dialog::{CoverageAltitudeDialog, CoverageAltitudeDialogState};
 use sim3dview::ui::origin_dialog::{OriginDialog, OriginDialogState};
@@ -43,6 +44,9 @@ pub fn App() -> impl IntoView {
     // メニューバーの「表示」→「海を表示」チェックボックスから切り替える。
     let water_visibility = WaterVisibilityState::new();
     provide_context(water_visibility);
+    // 表示メニューの「中心点を原点に戻す」ボタンからTerrainViewへの通知チャンネル
+    // (sim3dviewライブラリの型)。
+    provide_context(RecenterRequestState::new());
     // 現在の原点(sim3dviewライブラリの型)。TerrainViewはこれを読んでメッシュを再計算する。
     // サーバーからのOriginState(protocol)が届くたびに、下のEffectでこちらへミラーする
     // (sim3dviewライブラリは通信プロトコルを一切知らないため、この橋渡しはアプリ側の役目)。

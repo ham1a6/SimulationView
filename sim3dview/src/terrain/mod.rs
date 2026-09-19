@@ -7,5 +7,6 @@ pub mod mesh;
 pub mod origin;
 pub mod pick;
 pub mod profile;
+pub mod recenter;
 pub mod renderer;
 pub mod store;

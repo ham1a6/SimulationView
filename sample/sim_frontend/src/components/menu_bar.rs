@@ -4,7 +4,10 @@
 //! (パネル本体・開閉状態の型ともライブラリ側にあり、このメニューは開閉のトリガーのみ)。
 //! 「表示」→「海を表示」は海レイヤー(NaNセル・背景スカート)の表示/非表示を切り替える
 //! チェックボックス(状態自体はsim3dviewライブラリの`terrain::display::WaterVisibilityState`、
-//! 実際の描画反映は`ui::terrain_view::TerrainView`側)。
+//! 実際の描画反映は`ui::terrain_view::TerrainView`側)。「表示」→「中心点を原点に戻す」は、
+//! 3DモードのShift+ドラッグ・2Dモードの通常ドラッグで動かせるカメラの注視点(中心点)を
+//! シミュレーション原点の位置へ戻すボタン(`terrain::recenter::RecenterRequestState`
+//! 経由の通知、`TerrainView`側で実際にリセットする。シミュレーション原点自体は変更しない)。
 //! ファイル/ヘルプは現時点では項目未定のプレースホルダ(クリックしても「準備中」の
 //! ダミー項目が出るだけ)。メニューが開いている間は透明な全画面バックドロップを敷き、
 //! そこをクリックすると閉じる(外側クリックで閉じる一般的なメニューの挙動)。
@@ -12,6 +15,7 @@
 use leptos::prelude::*;
 
 use sim3dview::terrain::display::WaterVisibilityState;
+use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::ui::coverage_altitude_dialog::CoverageAltitudeDialogState;
 use sim3dview::ui::origin_dialog::OriginDialogState;
 
@@ -32,6 +36,8 @@ pub fn MenuBar() -> impl IntoView {
         .expect("CoverageAltitudeDialogState context not found");
     let water_visibility =
         use_context::<WaterVisibilityState>().expect("WaterVisibilityState context not found");
+    let recenter_request =
+        use_context::<RecenterRequestState>().expect("RecenterRequestState context not found");
 
     let menu_entry = move |id: MenuId, label: &'static str| {
         let dropdown = move || {
@@ -71,6 +77,15 @@ pub fn MenuBar() -> impl IntoView {
                             />
                             "海を表示"
                         </label>
+                        <button
+                            class="menu-dropdown-item"
+                            on:click=move |_| {
+                                open_menu.set(None);
+                                recenter_request.request();
+                            }
+                        >
+                            "中心点を原点に戻す"
+                        </button>
                     </div>
                 }
                 .into_any(),

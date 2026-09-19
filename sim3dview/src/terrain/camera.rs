@@ -212,6 +212,26 @@ impl OrbitCamera {
         self.distance = (self.distance * factor).clamp(MIN_DISTANCE, MAX_DISTANCE);
     }
 
+    /// 3Dモードで、Shift+ドラッグにより注視点(中心点)を水平面上で平行移動する
+    /// (通常のドラッグは`orbit`による回転)。画面の右方向・奥行き方向をカメラの
+    /// yaw基準で求め、`eye()`のoffset計算と同じ基底(水平面上、yaw基準)を使うことで、
+    /// yawが0とは限らない自由視点カメラでも「掴んで動かす」操作感になるようにしてある
+    /// (2Dモードの`pan()`は常に北=画面上で固定なので、この変換は不要)。
+    /// `x`/`y`だけを動かし、標高(`target.z`)は呼び出し側(`components/terrain_view.rs`)が
+    /// 移動先の実際の地表標高へ更新すること(camera.rs自体はheightmapを知らないため)。
+    /// シミュレーション原点(`terrain::origin::OriginState`)・地形メッシュには一切触れない。
+    pub fn pan_orbit_target(&mut self, dx_px: f32, dy_px: f32, canvas_height_px: f32) {
+        let world_per_px =
+            2.0 * self.distance * (self.fov_y_radians * 0.5).tan() / canvas_height_px.max(1.0);
+        let delta_right = dx_px * world_per_px;
+        let delta_forward = -dy_px * world_per_px;
+        let right = Vec3::new(-self.yaw.sin(), self.yaw.cos(), 0.0);
+        let forward_h = Vec3::new(-self.yaw.cos(), -self.yaw.sin(), 0.0);
+        let delta = right * delta_right + forward_h * delta_forward;
+        self.target.x -= delta.x;
+        self.target.y -= delta.y;
+    }
+
     fn eye(&self) -> Vec3 {
         // 球面座標(distance, yaw, pitch) → ENU直交座標。
         let horizontal = self.distance * self.pitch.cos();

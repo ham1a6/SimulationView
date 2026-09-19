@@ -1,7 +1,10 @@
 //! 地形メッシュを描画する再利用可能なcanvasコンポーネント。地形データ本体は`TerrainStore`
 //! context(1回だけフェッチ)、原点は`terrain::origin::OriginState` context、レーダー観測点は
 //! `terrain::markers::RadarMarkersState` contextから読む(呼び出し側が`provide_context`する。
-//! `sim3dview/README.md`参照)。自由視点カメラはドラッグで回転、ホイールでズーム。
+//! `sim3dview/README.md`参照)。自由視点カメラはドラッグで回転、ホイールでズーム、
+//! 3DモードではShift+ドラッグで注視点(中心点)を平行移動できる(シミュレーション原点
+//! [`terrain::origin::OriginState`]は変更しない)。`terrain::recenter::RecenterRequestState`
+//! contextの通知(表示メニューの「中心点を原点に戻す」ボタン)で中心点を原点へ戻す。
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -17,6 +20,7 @@ use crate::terrain::markers::{self, RadarMarkersState};
 use crate::terrain::mesh::{self, Origin};
 use crate::terrain::origin::OriginState;
 use crate::terrain::pick;
+use crate::terrain::recenter::RecenterRequestState;
 use crate::terrain::renderer::TerrainRenderer;
 use crate::terrain::store::TerrainStore;
 
@@ -164,6 +168,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     // 未提供でもデフォルト(表示)で動作するよう、他のcontextと違いunwrap_or_defaultにしてある
     // (既存の利用側コードに影響を与えない、後から追加したオプション機能のため)。
     let water_visibility = use_context::<WaterVisibilityState>().unwrap_or_default();
+    // 未提供でもデフォルト(何もしない)で動作するよう、water_visibilityと同じくunwrap_or_defaultにしてある。
+    let recenter_request = use_context::<RecenterRequestState>().unwrap_or_default();
 
     terrain_store.ensure_loaded();
 
@@ -370,6 +376,30 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         });
     }
 
+    // --- Effect 6: 表示メニュー「中心点を原点に戻す」ボタンの通知を受けて注視点をリセットする ---
+    // 中心点(camera.target)はShift+ドラッグ(3D)・通常ドラッグ(2D)で動かせるが、これは
+    // カメラのローカル状態のみを動かす操作でシミュレーション原点(OriginState)には
+    // 触れていない。ここでのリセットも同様にOriginStateへは一切触れず、camera.targetを
+    // ENU座標(0,0,原点の実際の地表標高)へ戻すだけ。
+    {
+        let state = state.clone();
+        Effect::new(move |_| {
+            let count = recenter_request.0.get();
+            if count == 0 {
+                return; // 初期値0はボタン未クリックの状態なので無視する。
+            }
+            let mut s = state.borrow_mut();
+            if s.renderer.is_none() {
+                return;
+            }
+            s.camera.target.x = 0.0;
+            s.camera.target.y = 0.0;
+            s.camera.target.z = s.target_up;
+            drop(s);
+            render_now(&state);
+        });
+    }
+
     // --- 自由視点カメラの操作(ドラッグ回転・ホイールズーム) ---
     const ORBIT_SENSITIVITY: f32 = 0.0075;
 
@@ -403,7 +433,29 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 s.last_y = y;
                 match s.camera.mode {
                     ViewMode::ThreeD => {
-                        s.camera.orbit(dx * ORBIT_SENSITIVITY, dy * ORBIT_SENSITIVITY);
+                        if ev.shift_key() {
+                            // Shift+ドラッグ: 回転ではなく注視点(中心点)を平行移動する
+                            // (「原点は変えないでね」との要望通り、OriginStateには触れない)。
+                            let canvas_h =
+                                s.renderer.as_ref().map(|r| r.canvas_height_px()).unwrap_or(1).max(1);
+                            s.camera.pan_orbit_target(dx, dy, canvas_h as f32);
+                            // 移動先の実際の地表標高へtarget.zを更新する(古い標高のまま
+                            // だと、原点変更時と同様にズームインした際カメラが地面に
+                            // 埋まって真っ黒になりうる)。
+                            if let (Some(terrain), Some(mesh_origin)) =
+                                (s.terrain.clone(), s.mesh_origin)
+                            {
+                                let transform =
+                                    mesh::EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
+                                let (lat, lon) = transform
+                                    .inverse(s.camera.target.x as f64, s.camera.target.y as f64);
+                                if let Some(elev) = mesh::sample_heightmap(&terrain, lat, lon) {
+                                    s.camera.target.z = elev;
+                                }
+                            }
+                        } else {
+                            s.camera.orbit(dx * ORBIT_SENSITIVITY, dy * ORBIT_SENSITIVITY);
+                        }
                     }
                     ViewMode::TwoD => {
                         // 正射影の画面縦幅(distance)と実際のcanvas高さ(ピクセル)の比から、
