@@ -22,7 +22,7 @@ use super::camera::{Camera, Projection};
 use super::loader::{TerrainData, TileKey};
 use super::mesh::{tile_vertex_count, EnuTransform};
 
-/// チャンクの頂点数の合計の上限。全タイル分のレベル0(約165万頂点)に、この分を足したものが
+/// チャンクの頂点数の合計の上限。全タイル分のレベル0(約155万頂点)に、この分を足したものが
 /// 常駐する頂点の総数になる(従来の単一メッシュは約420万頂点)。最細(30m)のチャンクは
 /// 1個で約36万頂点なので、最細のチャンクは同時に8個程度まで。
 pub const DETAIL_VERTEX_BUDGET: usize = 3_000_000;

@@ -403,8 +403,17 @@ async fn fetch_binary(url: &str, range: Option<(usize, usize)>) -> Result<Vec<u8
 /// 起動時の取得: metadata.json・tile_index.json・base.bin(全タイルの最粗レベル)。
 pub async fn load_terrain(base_url: &str) -> Result<TerrainData, String> {
     let metadata = fetch_metadata(base_url).await?;
-    if metadata.tile_levels.is_empty() || metadata.chunks_per_tile == 0 {
-        return Err("metadata.json: tile_levels / chunks_per_tile is invalid".to_string());
+    // レベル0(タイル全体)に加えて、チャンクで持つ細かいレベルが1つ以上必要(LODの計画が前提にする)。
+    // レベル1以上はチャンク分割数で割り切れること。
+    let chunks = metadata.chunks_per_tile;
+    if metadata.tile_levels.len() < 2
+        || chunks == 0
+        || metadata.tile_levels[1..].iter().any(|&n| n % chunks != 0)
+    {
+        return Err(
+            "metadata.json: tile_levels needs 2+ levels, and levels 1+ must be divisible by chunks_per_tile"
+                .to_string(),
+        );
     }
 
     let index: TileIndex = gloo_net::http::Request::get(&format!("{base_url}/tile_index.json"))
