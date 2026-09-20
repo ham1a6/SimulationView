@@ -1,5 +1,7 @@
 struct CameraUniform {
     view_proj: mat4x4<f32>,
+    // x: 陰影(ヒルシェード)を付けるなら1、付けないなら0。y,z,wは未使用。
+    shading: vec4<f32>,
 };
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
@@ -7,6 +9,9 @@ var<uniform> camera: CameraUniform;
 struct VertexInput {
     @location(0) position: vec3<f32>,
     @location(1) color: vec3<f32>,
+    // 単位法線のx(East)・y(North)成分(snorm16x2)。z(Up)は復元する。長さが1を超える値は
+    // 「陰影を付けない」印(`TerrainVertex::UNLIT_NORMAL`。マーカー・覆域ドームなど)。
+    @location(2) normal_xy: vec2<f32>,
 };
 
 struct VertexOutput {
@@ -14,11 +19,32 @@ struct VertexOutput {
     @location(0) color: vec3<f32>,
 };
 
+// 陰影(ヒルシェード)の光源。ENU座標(東,北,上)で、北西から仰角45度の固定(地図の陰影の
+// 一般的な向き)。カメラの向きに依らず、地形の見え方が変わらない。単位ベクトル。
+const LIGHT_DIR = vec3<f32>(-0.5, 0.5, 0.70710678);
+// 光が当たらない面(光源の反対側の斜面)の明るさの下限(0〜1)。
+const AMBIENT = 0.35;
+
+// 頂点の色に掛ける明るさ。平地(法線が真上)は1(色が変わらない)、光源側に向いた斜面は1より
+// 明るく、反対側の斜面は暗くなる。
+fn hillshade(normal_xy: vec2<f32>) -> f32 {
+    let xy2 = dot(normal_xy, normal_xy);
+    if (xy2 > 1.0) {
+        return 1.0;
+    }
+    let normal = vec3<f32>(normal_xy, sqrt(1.0 - xy2));
+    let lambert = max(dot(normal, LIGHT_DIR), 0.0);
+    let flat_level = AMBIENT + (1.0 - AMBIENT) * LIGHT_DIR.z;
+    return (AMBIENT + (1.0 - AMBIENT) * lambert) / flat_level;
+}
+
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4<f32>(in.position, 1.0);
-    out.color = in.color;
+    // 陰影は頂点ごとに求めて色に掛け、面の内側は補間する(明るさは法線について線形なので、
+    // 法線を補間してからフラグメントごとに求めるのとほぼ同じ結果になる)。
+    out.color = in.color * mix(1.0, hillshade(in.normal_xy), camera.shading.x);
     return out;
 }
 

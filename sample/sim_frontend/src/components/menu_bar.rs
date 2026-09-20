@@ -4,7 +4,8 @@
 //! 「設定」→「原点設定...」/「覆域高度設定...」を選ぶと、sim3dviewライブラリが提供する
 //! フローティングパネル(`ui::origin_dialog`/`ui::coverage_altitude_dialog`)を開く
 //! (パネル本体・開閉状態の型ともライブラリ側にあり、このメニューは開閉のトリガーのみ)。
-//! 「表示」→「中心点を原点に戻す」は、
+//! 「表示」→「陰影表示」は、地形の陰影(ヒルシェード)のON/OFF(`terrain::hillshade::HillshadeState`。
+//! ONのときは項目の頭に✓が付く)。「表示」→「中心点を原点に戻す」は、
 //! 3DモードのShift+ドラッグ・2Dモードの通常ドラッグで動かせるカメラの注視点(中心点)を
 //! シミュレーション原点の位置へ戻すボタン(`terrain::recenter::RecenterRequestState`
 //! 経由の通知、`TerrainView`側で実際にリセットする。シミュレーション原点自体は変更しない)。
@@ -14,6 +15,7 @@
 
 use leptos::prelude::*;
 
+use sim3dview::terrain::hillshade::HillshadeState;
 use sim3dview::terrain::origin_pick::OriginPickState;
 use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::ui::coverage_altitude_dialog::CoverageAltitudeDialogState;
@@ -38,6 +40,7 @@ pub fn MenuBar() -> impl IntoView {
         .expect("CoverageAltitudeDialogState context not found");
     let recenter_request =
         use_context::<RecenterRequestState>().expect("RecenterRequestState context not found");
+    let hillshade = use_context::<HillshadeState>().expect("HillshadeState context not found");
 
     let menu_entry = move |id: MenuId, label: &'static str| {
         let dropdown = move || {
@@ -76,6 +79,15 @@ pub fn MenuBar() -> impl IntoView {
                 .into_any(),
                 MenuId::View => view! {
                     <div class="menu-dropdown">
+                        <button
+                            class="menu-dropdown-item"
+                            on:click=move |_| {
+                                open_menu.set(None);
+                                hillshade.enabled.update(|on| *on = !*on);
+                            }
+                        >
+                            {move || if hillshade.enabled.get() { "✓ 陰影表示" } else { "　 陰影表示" }}
+                        </button>
                         <button
                             class="menu-dropdown-item"
                             on:click=move |_| {

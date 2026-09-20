@@ -4,6 +4,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
+use sim3dview::terrain::hillshade::HillshadeState;
 use sim3dview::terrain::markers::RadarMarkersState;
 use sim3dview::terrain::origin::OriginState;
 use sim3dview::terrain::origin_pick::OriginPickState;
@@ -43,6 +44,8 @@ pub fn App() -> impl IntoView {
     // 表示メニューの「中心点を原点に戻す」ボタンからTerrainViewへの通知チャンネル
     // (sim3dviewライブラリの型)。
     provide_context(RecenterRequestState::new());
+    // 表示メニューの「陰影表示」のON/OFF(sim3dviewライブラリの型。既定はON)。
+    provide_context(HillshadeState::default());
     // 現在の原点(sim3dviewライブラリの型)。TerrainViewはこれを読んでメッシュを再計算する。
     // サーバーからのOriginState(protocol)が届くたびに、下のEffectでこちらへミラーする
     // (sim3dviewライブラリは通信プロトコルを一切知らないため、この橋渡しはアプリ側の役目)。

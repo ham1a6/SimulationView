@@ -1,4 +1,5 @@
 pub mod camera;
+pub mod hillshade;
 pub mod loader;
 pub mod lod;
 pub mod los;

@@ -8,6 +8,22 @@ use super::loader::{Ellipsoid, TerrainData, TileEntry, NO_DATA};
 pub struct TerrainVertex {
     pub position: [f32; 3], // x(East), y(North), z(Up) — ENU変換結果
     pub color: [f32; 3],
+    /// 陰影(ヒルシェード)用の単位法線のx(East)・y(North)成分(snorm16。-32767〜32767が-1〜1)。
+    /// z(Up)成分は`sqrt(1-x^2-y^2)`でシェーダーが復元する(地表の法線は常に上向きなので符号は
+    /// 決まっている。xyだけにして頂点を4バイト増やすだけで済ませ、snorm8より精度が高い)。
+    /// 陰影を付けない頂点(マーカー・覆域・海に隣接して法線が求まらない点)は`UNLIT_NORMAL`。
+    pub normal_xy: [i16; 2],
+}
+
+impl TerrainVertex {
+    /// 「陰影を付けない」を表す法線。xy成分の長さが1を超える(=単位法線ではありえない)値にしてあり、
+    /// シェーダーがこれを見て陰影を掛けない。x=y=0(真上向き=平地)とは区別される。
+    pub const UNLIT_NORMAL: [i16; 2] = [i16::MIN, i16::MIN];
+
+    /// 陰影を付けない頂点(マーカー・覆域ドームなど、色をそのまま出したいもの)。
+    pub fn unlit(position: [f32; 3], color: [f32; 3]) -> Self {
+        Self { position, color, normal_xy: Self::UNLIT_NORMAL }
+    }
 }
 
 pub struct TerrainMesh {
@@ -268,6 +284,54 @@ struct GridPlacement {
     skirt_depth: f32,
 }
 
+/// グリッドの各ノードの法線のxy成分(`TerrainVertex::normal_xy`)。ノードの東西・南北の隣の
+/// ノードの位置の差(中心差分。縁のノード・海に隣接するノードは、陸の側だけを使う片側差分)の
+/// 外積から求める。位置はENU座標(地球の丸み込み)なので、法線もENUの向きで得られる。
+/// 海のノード自身、隣が両側とも海(差分が取れない)のノードは陰影なし(`UNLIT_NORMAL`)。
+/// チャンクの縁のノードは隣のチャンクの標高を見ないので片側差分になり、隣のチャンクの縁と
+/// わずかに食い違うが、目立たない程度(下記の実機確認参照)。
+fn node_normals(grid: &[i16], n: usize, positions: &[[f64; 3]]) -> Vec<[i16; 2]> {
+    let land = |i: usize, j: usize| grid[j * n + i] != NO_DATA;
+    // 隣(-1/+1)のうち陸のものを選ぶ。なければ自分自身。
+    let neighbor = |k: usize, lo_land: bool, hi_land: bool| -> (usize, usize) {
+        (if lo_land { k - 1 } else { k }, if hi_land { k + 1 } else { k })
+    };
+
+    let mut normals = Vec::with_capacity(n * n);
+    for j in 0..n {
+        for i in 0..n {
+            if !land(i, j) {
+                normals.push(TerrainVertex::UNLIT_NORMAL);
+                continue;
+            }
+            let (i_lo, i_hi) = neighbor(i, i > 0 && land(i - 1, j), i + 1 < n && land(i + 1, j));
+            let (j_lo, j_hi) = neighbor(j, j > 0 && land(i, j - 1), j + 1 < n && land(i, j + 1));
+            if i_lo == i_hi || j_lo == j_hi {
+                normals.push(TerrainVertex::UNLIT_NORMAL);
+                continue;
+            }
+            let (e0, e1) = (positions[j * n + i_lo], positions[j * n + i_hi]);
+            let (n0, n1) = (positions[j_lo * n + i], positions[j_hi * n + i]);
+            let east = [e1[0] - e0[0], e1[1] - e0[1], e1[2] - e0[2]];
+            let north = [n1[0] - n0[0], n1[1] - n0[1], n1[2] - n0[2]];
+            // 東向き x 北向き = 上向き。
+            let cross = [
+                east[1] * north[2] - east[2] * north[1],
+                east[2] * north[0] - east[0] * north[2],
+                east[0] * north[1] - east[1] * north[0],
+            ];
+            let len = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+            if len < 1e-9 || cross[2] <= 0.0 {
+                normals.push(TerrainVertex::UNLIT_NORMAL);
+                continue;
+            }
+            let pack = |v: f64| ((v / len).clamp(-1.0, 1.0) * 32767.0).round() as i16;
+            normals.push([pack(cross[0]), pack(cross[1])]);
+        }
+    }
+    normals
+}
+
 /// グリッドの頂点列を、指定した原点のENU座標で作る。並びは、ノード(行=南→北、列=西→東)の後に、
 /// スカート4辺(南・東・北・西)の順。頂点数と並びは原点に依存しない(原点変更時は
 /// `TerrainRenderer::update_mesh_vertices`で位置だけを書き換える)。行(緯度)・列(経度)ごとの
@@ -298,6 +362,9 @@ fn grid_vertices(
     let (slon0, clon0) = transform.origin_lon_rad.sin_cos();
 
     let mut vertices = Vec::with_capacity(tile_vertex_count(cells));
+    // 法線を求めるためのノードのENU位置(f64。原点から遠いタイルではf32だと隣のノードとの差が
+    // 誤差に埋もれて陰影がざらつくので、丸める前の値を使う)。
+    let mut positions: Vec<[f64; 3]> = Vec::with_capacity(n * n);
     for j in 0..n {
         let (s, c, prime) = rows[j];
         for i in 0..n {
@@ -319,8 +386,12 @@ fn grid_vertices(
             let east = -slon0 * x + clon0 * y;
             let north = -slat0 * clon0 * x - slat0 * slon0 * y + clat0 * z;
             let up = clat0 * clon0 * x + clat0 * slon0 * y + slat0 * z;
-            vertices.push(TerrainVertex { position: [east as f32, north as f32, up as f32], color });
+            positions.push([east, north, up]);
+            vertices.push(TerrainVertex::unlit([east as f32, north as f32, up as f32], color));
         }
+    }
+    for (vertex, normal_xy) in vertices.iter_mut().zip(node_normals(grid, n, &positions)) {
+        vertex.normal_xy = normal_xy;
     }
 
     for edge in 0..4 {

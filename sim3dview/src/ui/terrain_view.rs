@@ -24,6 +24,7 @@ use crate::terrain::mesh::{self, Origin};
 use crate::terrain::origin::OriginState;
 use crate::terrain::origin_pick::OriginPickState;
 use crate::terrain::pick;
+use crate::terrain::hillshade::HillshadeState;
 use crate::terrain::recenter::RecenterRequestState;
 use crate::terrain::renderer::TerrainRenderer;
 use crate::terrain::store::TerrainStore;
@@ -46,6 +47,8 @@ struct ViewState {
     down_x: f64,
     down_y: f64,
     radar_markers: RadarMarkersState,
+    /// 陰影(ヒルシェード)のON/OFF。レンダラー作成時の初期値に使う(以後の変更はEffect 7が反映する)。
+    hillshade: HillshadeState,
     /// 各タイルの、いまGPUに載っている状態(全体1枚か、チャンクごとのレベルか。`terrain::lod`参照)。
     resident: HashMap<TileKey, Resident>,
     /// 取得中のグリッド。
@@ -153,6 +156,7 @@ fn try_init(
                     s.camera.target.z = target_up;
                     s.resident = resident;
                 }
+                renderer.set_hillshade(state.borrow().hillshade.enabled.get_untracked());
                 let camera = state.borrow().camera.to_camera(renderer.aspect_ratio());
                 if let Err(e) = renderer.render(&camera) {
                     log::error!("[terrain] initial render failed: {e}");
@@ -499,6 +503,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     // 未提供でもデフォルト(何もしない)で動作するよう、他のcontextと違いunwrap_or_defaultにしてある
     // (既存の利用側コードに影響を与えない、後から追加したオプション機能のため)。
     let recenter_request = use_context::<RecenterRequestState>().unwrap_or_default();
+    // 未提供なら既定(陰影ON)のまま切り替えなしで動作する(上と同じく後付けのオプション機能)。
+    let hillshade = use_context::<HillshadeState>().unwrap_or_default();
     // 未提供なら「クリックで原点指定」機能なしで動作する(上と同じく後付けのオプション機能)。
     let origin_pick = use_context::<OriginPickState>();
 
@@ -518,6 +524,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         down_x: 0.0,
         down_y: 0.0,
         radar_markers,
+        hillshade,
         resident: HashMap::new(),
         loading: HashSet::new(),
         failed: HashSet::new(),
@@ -759,6 +766,22 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             s.camera.target.x = 0.0;
             s.camera.target.y = 0.0;
             s.camera.target.z = s.target_up;
+            drop(s);
+            render_now(&state);
+        });
+    }
+
+    // --- Effect 7: 表示メニュー「陰影表示」のON/OFFをレンダラーへ反映する ---
+    // 陰影は法線と光源からシェーダーで掛けるので、メッシュの作り直しは不要(uniformを変えて描き直すだけ)。
+    {
+        let state = state.clone();
+        Effect::new(move |_| {
+            let enabled = hillshade.enabled.get();
+            let mut s = state.borrow_mut();
+            let Some(renderer) = s.renderer.as_mut() else {
+                return; // レンダラー作成前はtry_initが初期値を設定する。
+            };
+            renderer.set_hillshade(enabled);
             drop(s);
             render_now(&state);
         });

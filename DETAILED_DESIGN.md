@@ -881,6 +881,7 @@ classDiagram
     class TerrainVertex {
         +[f32; 3] position
         +[f32; 3] color
+        +[i16; 2] normal_xy
     }
     class TerrainMesh {
         +Vec~TerrainVertex~ vertices
@@ -1005,21 +1006,22 @@ NaNだと破綻するため標高0mで配置するが、`terrain/mesh.rs::build_
 
 ### 6.8 頂点シェーダ・フラグメントシェーダ(WGSL概要)
 
-`terrain.wgsl`。カメラのview_proj行列をuniformバッファ(`@group(0) @binding(0)`)として受け取り、
-頂点位置を変換するのみのシンプルな構成(ライティング計算なし、頂点色をそのまま出力)。
+`terrain.wgsl`。カメラのview_proj行列と陰影のON/OFFフラグをuniformバッファ(`@group(0) @binding(0)`)
+として受け取り、頂点位置を変換し、頂点色に陰影(ヒルシェード、下記)を掛けて出力する。フラグメントは
+補間された色をそのまま出力する。以下は陰影の部分を省いた概要:
 
 ```wgsl
-struct CameraUniform { view_proj: mat4x4<f32> };
+struct CameraUniform { view_proj: mat4x4<f32>, shading: vec4<f32> /* x: 陰影ON=1 */ };
 @group(0) @binding(0) var<uniform> camera: CameraUniform;
 
-struct VertexInput { @location(0) position: vec3<f32>, @location(1) color: vec3<f32> };
+struct VertexInput { @location(0) position: vec3<f32>, @location(1) color: vec3<f32>, @location(2) normal_xy: vec2<f32> };
 struct VertexOutput { @builtin(position) clip_position: vec4<f32>, @location(0) color: vec3<f32> };
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4<f32>(in.position, 1.0);
-    out.color = in.color;
+    out.color = in.color * mix(1.0, hillshade(in.normal_xy), camera.shading.x);
     return out;
 }
 
@@ -1031,6 +1033,26 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
 覆域ドーム用に、同じ`vs_main`を再利用しつつ固定の半透明アルファを返す`fs_dome`エントリ
 ポイントも定義している(6.9節)。
+
+**陰影(ヒルシェード)**: 色が標高のグラデーションだけだと、30mの細かい起伏(尾根・谷・斜面の向き)が
+見分けにくいため、地形の法線と固定の光源から明るさを求めて頂点色に掛ける(表示メニューの
+「陰影表示」でON/OFF。既定はON)。
+- **法線**: 頂点に`normal_xy`(単位法線のEast・North成分、snorm16x2で4バイト。Up成分はシェーダーが
+  `sqrt(1-x^2-y^2)`で復元)を持たせる。`mesh.rs::node_normals`が、ノードの東西・南北の隣のノードの位置の差
+  (中心差分。縁・海に隣接するノードは片側差分)の外積から求める。位置はENU座標(地球の丸み込み)なので
+  法線もENUの向き。位置は丸める前のf64を使う(原点から遠いタイルでf32だと隣との差が誤差に埋もれて
+  ざらつくため)。海のノードなど法線が求まらない点、およびマーカー・覆域ドームなど陰影を付けない頂点は
+  `TerrainVertex::UNLIT_NORMAL`(xy成分の長さが1を超える、単位法線ではありえない値)にし、シェーダーが見て
+  陰影を掛けない(x=y=0は真上向き=平地を表すので別の値にしてある)
+- **光源**: ENU座標で固定(北西から仰角45度)。カメラの向きに依らず、地図の陰影の一般的な向きになる。
+  2D表示(真上から・北が上)でも同じ光源で、陸地測量図のような見た目になる
+- **明るさ**: `(AMBIENT + (1-AMBIENT)*max(n・L,0)) / (AMBIENT + (1-AMBIENT)*L.z)`(AMBIENT=0.35)。
+  分母で正規化してあり、平地(法線が真上)は1=色が変わらない(ON/OFFで平地の色は同じ)。
+  光源側の斜面は最大約1.25倍、反対側の斜面は最小約0.43倍
+- **切り替え**: ON/OFFはuniform(`camera.shading.x`)の値で、メッシュの作り直しは不要。状態は
+  `terrain::hillshade::HillshadeState`(context、`TerrainView`が購読して`TerrainRenderer::set_hillshade`)
+- 頂点が24→28バイトになった(常駐頂点約755万で約30MB増)。陰影は頂点ごとに求めて補間する
+  (明るさは法線について線形なので、法線を補間してフラグメントごとに求めるのとほぼ同じ)
 
 **MSAA(マルチサンプルアンチエイリアシング、4x)**: メッシュ解像度を2048×2048に引き上げた後、
 遠景で多数の細かい三角形(陸地・海のNaN色を含む)が1画素に収まりきらずエイリアシング
@@ -1410,7 +1432,9 @@ cross_section_view::CrossSectionView`としてライブラリ側に置いてい�
 ### 7.7 メニューバー・フローティングパネル(原点設定/覆域高度設定)
 
 画面最上部のメニューバー(`components/menu_bar.rs`)は「ファイル」「設定」「表示」
-「ヘルプ」の4項目。「設定」配下に2つのフローティングパネルを開く項目がある:
+「ヘルプ」の4項目。「表示」配下には、地形の陰影のON/OFFを切り替える「陰影表示」(ONのとき項目の頭に✓、
+6.8節)と、カメラの中心点を原点へ戻す「中心点を原点に戻す」がある。「設定」配下に2つのフローティングパネルを
+開く項目がある:
 
 - 「原点設定...」: 原点入力フォーム(緯度・経度・`設定`ボタン、DETAILED_DESIGN.md
   3.5節のバリデーション込み)を`components/origin_dialog.rs`として画面中央に表示する。

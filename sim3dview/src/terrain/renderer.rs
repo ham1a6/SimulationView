@@ -15,6 +15,8 @@ use super::mesh::{TerrainMesh, TerrainVertex};
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct CameraUniform {
     view_proj: [[f32; 4]; 4],
+    /// x: 陰影(ヒルシェード)を付けるなら1、付けないなら0(`terrain.wgsl`の`camera.shading`)。
+    shading: [f32; 4],
 }
 
 /// マルチサンプルアンチエイリアシング(MSAA)のサンプル数。地形メッシュの解像度を
@@ -82,6 +84,8 @@ pub struct TerrainRenderer {
     dome_pipeline: wgpu::RenderPipeline,
     dome_vertex_buffer: Option<wgpu::Buffer>,
     num_dome_vertices: u32,
+    // 陰影(ヒルシェード)を付けるか(`set_hillshade`)。描画のたびにuniformへ書く。
+    hillshade: bool,
 }
 
 impl TerrainRenderer {
@@ -138,6 +142,7 @@ impl TerrainRenderer {
 
         let camera_uniform = CameraUniform {
             view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
+            shading: [0.0; 4],
         };
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera_buffer"),
@@ -184,6 +189,11 @@ impl TerrainRenderer {
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: 2 * std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Snorm16x2,
                 },
             ],
         };
@@ -436,6 +446,7 @@ impl TerrainRenderer {
             dome_pipeline,
             dome_vertex_buffer: None,
             num_dome_vertices: 0,
+            hillshade: false,
         })
     }
 
@@ -550,9 +561,15 @@ impl TerrainRenderer {
         self.config.height
     }
 
+    /// 陰影(ヒルシェード)を付けるかを切り替える。次の`render`から反映される(メッシュの作り直しは不要)。
+    pub fn set_hillshade(&mut self, enabled: bool) {
+        self.hillshade = enabled;
+    }
+
     pub fn render(&self, camera: &Camera) -> Result<(), String> {
         let camera_uniform = CameraUniform {
             view_proj: camera.view_proj_matrix().to_cols_array_2d(),
+            shading: [if self.hillshade { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
         };
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));

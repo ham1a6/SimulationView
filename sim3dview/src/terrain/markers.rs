@@ -138,8 +138,8 @@ fn push_marker_box(
     for i in 0..4 {
         let (x0, y0) = corners[i];
         let (x1, y1) = corners[(i + 1) % 4];
-        out.push(TerrainVertex { position: [x0 as f32, y0 as f32, up], color });
-        out.push(TerrainVertex { position: [x1 as f32, y1 as f32, up], color });
+        out.push(TerrainVertex::unlit([x0 as f32, y0 as f32, up], color));
+        out.push(TerrainVertex::unlit([x1 as f32, y1 as f32, up], color));
     }
 }
 
@@ -184,7 +184,7 @@ fn push_dome_surface(
                     let (lat, lon) = local_transform.inverse(local_east, local_north);
                     let absolute_height = observer_height + p.range_m * el_rad.sin() + DOME_HEIGHT_BIAS_M;
                     let pos = mesh_transform.transform(lat, lon, absolute_height);
-                    TerrainVertex { position: pos, color: DOME_SURFACE_COLOR }
+                    TerrainVertex::unlit(pos, DOME_SURFACE_COLOR)
                 })
                 .collect()
         })
@@ -220,7 +220,7 @@ fn push_dome_surface(
         marker.lon_deg,
         observer_height + avg_height_above_observer + DOME_HEIGHT_BIAS_M,
     );
-    let apex = TerrainVertex { position: apex_pos, color: DOME_SURFACE_COLOR };
+    let apex = TerrainVertex::unlit(apex_pos, DOME_SURFACE_COLOR);
     // 傘の三角形は方位角を間引く(`DOME_APEX_AZIMUTH_STRIDE`参照)。
     let steps: Vec<usize> = (0..num_azimuths).step_by(DOME_APEX_AZIMUTH_STRIDE).collect();
     for k in 0..steps.len() {
@@ -278,18 +278,15 @@ fn push_coverage_2d(
         })
         .collect();
 
-    let center = TerrainVertex {
-        position: position_at(marker.lat_deg, marker.lon_deg),
-        color: COVERAGE_AREA_COLOR,
-    };
+    let center = TerrainVertex::unlit(position_at(marker.lat_deg, marker.lon_deg), COVERAGE_AREA_COLOR);
     let n = boundary.len();
     for i in 0..n {
         let (a, b) = (boundary[i], boundary[(i + 1) % n]);
         area.push(center);
-        area.push(TerrainVertex { position: a, color: COVERAGE_AREA_COLOR });
-        area.push(TerrainVertex { position: b, color: COVERAGE_AREA_COLOR });
-        outline.push(TerrainVertex { position: a, color: COVERAGE_OUTLINE_COLOR });
-        outline.push(TerrainVertex { position: b, color: COVERAGE_OUTLINE_COLOR });
+        area.push(TerrainVertex::unlit(a, COVERAGE_AREA_COLOR));
+        area.push(TerrainVertex::unlit(b, COVERAGE_AREA_COLOR));
+        outline.push(TerrainVertex::unlit(a, COVERAGE_OUTLINE_COLOR));
+        outline.push(TerrainVertex::unlit(b, COVERAGE_OUTLINE_COLOR));
     }
 }
 
