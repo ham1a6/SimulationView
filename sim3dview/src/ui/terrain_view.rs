@@ -57,21 +57,31 @@ struct ViewState {
     failed: HashSet<FetchKey>,
     /// LOD更新のタイマー待ち中か(連続する操作をまとめるため)。
     lod_pending: bool,
+    /// 取得の完了・メッシュ反映の続きによる、短い待ちのLOD更新の予約中か(`schedule_lod_soon`)。
+    lod_soon_pending: bool,
 }
 
 /// 取得するグリッドの識別子: (タイル, レベル, チャンク)。チャンクがNoneなら、タイル1枚分・
 /// 1レベルのファイル全体(小さいレベル)を指す(`loader::WHOLE_FILE_MAX_LEVEL`)。
 type FetchKey = (TileKey, usize, Option<usize>);
 
-/// 操作が止まってからLODを更新するまでの待ち時間(ミリ秒)。
+/// カメラ操作が止まってからLODを更新するまでの待ち時間(ミリ秒)。操作が続く間はメッシュ生成・
+/// 取得を繰り返さないためのデバウンスで、取得の完了やメッシュ反映の続きには使わない
+/// (それらは`LOD_CONTINUE_MS`。ここを待つと、取得の合間が空いて全体が遅くなる)。
 const LOD_DEBOUNCE_MS: u32 = 150;
-/// 1回のLOD更新でメッシュを作ってGPUへ上げる頂点数の上限(最細レベルのチャンク1個で約36万
-/// 頂点。メッシュ生成は頂点数に比例して時間がかかるため、一度に大量に処理して画面が固まらない
-/// よう、この数を超えたら残りは次の更新に回す)。以前の100万頂点から下げたのは、陰影の法線の計算で
-/// 頂点あたりの生成が重くなり、全タイルをチャンクにして更新量も増えたため(1回の停止を短くする)。
+/// 取得が終わった・メッシュ反映を続けたいときに、次のLOD更新まで待つ時間(ミリ秒)。同じ瞬間に
+/// 終わった複数の取得を1回の更新にまとめる程度の短さで、入力イベントや描画に処理を譲る間でもある。
+const LOD_CONTINUE_MS: u32 = 8;
+/// 1回のLOD更新でメッシュを作ってGPUへ上げる時間の目安(ミリ秒)。これを超えたら残りは次の更新に
+/// 回す(メッシュ生成は頂点数に比例して時間がかかるため、画面が固まらないようにする)。時間で区切るので、
+/// 速い端末ほど1回で多く進み、遅い端末では自動的に細かく刻まれる。
+const UPLOAD_TIME_BUDGET_MS: f64 = 12.0;
+/// 1回のLOD更新でメッシュを作ってGPUへ上げる頂点数の安全上限(最細レベルのチャンク1個で約36万
+/// 頂点)。時間の目安は次の1個の重さを予測できないので、その保険として頂点数でも区切る。
 const MAX_UPLOAD_VERTICES_PER_ROUND: usize = 600_000;
 /// 同時に取得するタイル数の上限。全タイルのレベル1(約69KBのファイルが390個)を起動後に
-/// 取得していくので、6件だと1分ほどかかった(1回のLOD更新で始められる取得数がこの上限で決まる)。
+/// 取得していくので、6件だと1分ほどかかった。取得が終わるたびに`schedule_lod_soon`で補充するので、
+/// ブラウザの同一ホストへの接続数(HTTP/1.1で通常6)を埋めるのに足りる数にしてある。
 const MAX_CONCURRENT_TILE_FETCHES: usize = 16;
 /// 取得済みタイルグリッド(細かいレベル)をメモリに残す上限。超えたら、いま使っていないものから
 /// 古い順に捨てる。
@@ -233,6 +243,24 @@ fn schedule_lod(state: &Rc<RefCell<ViewState>>) {
     });
 }
 
+/// 取得の完了・メッシュ反映の続きなど、カメラ操作とは関係なく「すぐ続きをやりたい」ときの予約。
+/// `schedule_lod`のデバウンス(150ms)を待たず、`LOD_CONTINUE_MS`のあいだに来た予約だけをまとめる。
+fn schedule_lod_soon(state: &Rc<RefCell<ViewState>>) {
+    {
+        let mut s = state.borrow_mut();
+        if s.lod_soon_pending || s.terrain.is_none() {
+            return;
+        }
+        s.lod_soon_pending = true;
+    }
+    let state = state.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        gloo_timers::future::TimeoutFuture::new(LOD_CONTINUE_MS).await;
+        state.borrow_mut().lod_soon_pending = false;
+        update_lod(&state);
+    });
+}
+
 /// カメラに合わせて各タイルの描き方(全体1枚か、チャンクごとのレベルか)を更新する: 必要な
 /// グリッドが取得済みならメッシュを作ってGPUへ差し替え、未取得なら取得を始める(届いたら再度
 /// この関数が走る)。取得済みの範囲で少しずつ細かくしていく(たとえば、レベル1→2→最細)。
@@ -263,9 +291,19 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
     let transform = mesh::EnuTransform::new(&origin, &terrain.metadata.ellipsoid);
     let chunk_count = terrain.chunk_count();
 
+    let round_start = js_sys::Date::now();
     let mut uploaded_vertices = 0usize;
     let mut changed = false;
+    // 取得の同時数の上限で、取得を始められなかったものがあるか(取得が終われば補充される)。
     let mut deferred = false;
+    // メッシュ反映の時間・頂点数の目安を超えて、反映を次の更新に回したものがあるか。
+    let mut deferred_upload = false;
+    // 1個は必ず進める(0個だと永遠に終わらない)。以後は、時間の目安か頂点数の上限を超えたら回す。
+    let over_budget = |uploaded: usize, cost: usize| {
+        uploaded > 0
+            && (js_sys::Date::now() - round_start >= UPLOAD_TIME_BUDGET_MS
+                || uploaded + cost > MAX_UPLOAD_VERTICES_PER_ROUND)
+    };
     let mut to_fetch: Vec<FetchKey> = Vec::new();
     // 取得が必要なグリッドを登録する(同じものは重複させず、同時取得数の上限を守る)。
     let mut request = |state: &Rc<RefCell<ViewState>>, key: TileKey, level: usize, chunk: usize| {
@@ -330,9 +368,8 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
                         }
                         let cost: usize =
                             available.iter().map(|&l| lod::chunk_vertex_cost(&terrain, l)).sum();
-                        if uploaded_vertices > 0 && uploaded_vertices + cost > MAX_UPLOAD_VERTICES_PER_ROUND
-                        {
-                            deferred = true;
+                        if over_budget(uploaded_vertices, cost) {
+                            deferred_upload = true;
                             continue;
                         }
                         let mut s = state.borrow_mut();
@@ -377,8 +414,8 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
                         continue;
                     }
                     let cost = lod::chunk_vertex_cost(&terrain, new_level);
-                    if uploaded_vertices > 0 && uploaded_vertices + cost > MAX_UPLOAD_VERTICES_PER_ROUND {
-                        deferred = true;
+                    if over_budget(uploaded_vertices, cost) {
+                        deferred_upload = true;
                         continue;
                     }
                     if let Some(m) = mesh::build_chunk_mesh(&terrain, tile, c, new_level, &transform) {
@@ -434,7 +471,8 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
                     s.failed.insert(fetch_key);
                 }
             }
-            schedule_lod(&state);
+            // 取得が終わったら、デバウンスを待たずに続き(反映と、次の取得の補充)へ進む。
+            schedule_lod_soon(&state);
         });
     }
 
@@ -466,7 +504,11 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
         }
         render_frame(state);
     }
-    if deferred {
+    if deferred_upload {
+        // メッシュ反映の続き。入力や描画に処理を譲ってから、すぐ次の分に進む。
+        schedule_lod_soon(state);
+    } else if deferred {
+        // 取得の同時数が上限だった分。取得が終わるたびに`schedule_lod_soon`されるので、これは念のため。
         schedule_lod(state);
     }
 }
@@ -547,6 +589,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         loading: HashSet::new(),
         failed: HashSet::new(),
         lod_pending: false,
+        lod_soon_pending: false,
     }));
 
     // --- Effect 1: canvasのマウント + ResizeObserver(初回サイズ確定・以後のリサイズ追従) ---

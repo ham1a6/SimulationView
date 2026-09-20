@@ -4,6 +4,8 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
@@ -11,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 #include <unordered_map>
 
@@ -62,10 +65,61 @@ bool parse_byte_range(std::string_view header, std::uintmax_t total, std::uintma
     return start <= end;
 }
 
+// ファイルの大きさと更新時刻から、キャッシュの検証用ETagを作る(ファイルが変われば値も変わる)。
+// 更新時刻が取れなければ空文字列を返し、ETagなしで配信する。
+std::string make_etag(const std::string& path, std::uintmax_t size) {
+    std::error_code ec;
+    const auto mtime = std::filesystem::last_write_time(path, ec);
+    if (ec) {
+        return {};
+    }
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "\"%llx-%llx\"", static_cast<unsigned long long>(size),
+                  static_cast<unsigned long long>(mtime.time_since_epoch().count()));
+    return buf;
+}
+
+// If-None-Matchの値(カンマ区切りの複数・`W/`付き・`*`)に、現在のETagが含まれるか。
+bool etag_matches(std::string_view if_none_match, const std::string& etag) {
+    if (if_none_match.empty() || etag.empty()) {
+        return false;
+    }
+    if (if_none_match == "*") {
+        return true;
+    }
+    size_t pos = 0;
+    while (pos < if_none_match.size()) {
+        size_t end = if_none_match.find(',', pos);
+        if (end == std::string_view::npos) {
+            end = if_none_match.size();
+        }
+        std::string_view token = if_none_match.substr(pos, end - pos);
+        while (!token.empty() && token.front() == ' ') {
+            token.remove_prefix(1);
+        }
+        while (!token.empty() && token.back() == ' ') {
+            token.remove_suffix(1);
+        }
+        if (token.substr(0, 2) == "W/") {
+            token.remove_prefix(2);
+        }
+        if (token == etag) {
+            return true;
+        }
+        pos = end + 1;
+    }
+    return false;
+}
+
 // 地形データ(metadata.json/tile_index.json/base.bin/tiles/L*/*.bin)の簡易静的ファイル配信。
 // 想定CWDは sim_server/ (README.md記載の起動手順に合わせた相対パス)。
 // HTTP Range(単一範囲)に対応する: 細かいレベルのタイルファイルは大きい(最細で1タイル約26MB)
 // ので、フロントは必要なチャンク1個分だけをRangeで取得する。
+//
+// キャッシュ: `ETag`(大きさ+更新時刻)と`Cache-Control: no-cache`を付ける。ブラウザは毎回
+// `If-None-Match`で問い合わせ、変わっていなければ本体なしの304が返る。2回目以降の表示で数十MBの
+// 地形を取り直さずに済み、`map_data/`を作り直したときは(ETagが変わるので)必ず新しいものになる
+// (有効期限で古いまま使い続ける事故がない)。
 template <bool SSL>
 void serve_terrain_file(uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req,
                          const std::string& path, const char* content_type) {
@@ -77,6 +131,16 @@ void serve_terrain_file(uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req,
         return;
     }
     const auto total = static_cast<std::uintmax_t>(file.tellg());
+
+    const std::string etag = make_etag(path, total);
+    if (etag_matches(req->getHeader("if-none-match"), etag)) {
+        res->writeStatus("304 Not Modified");
+        res->writeHeader("ETag", etag);
+        res->writeHeader("Cache-Control", "no-cache");
+        res->writeHeader("Access-Control-Allow-Origin", "*");
+        res->end();
+        return;
+    }
 
     std::uintmax_t start = 0;
     std::uintmax_t end = total > 0 ? total - 1 : 0;
@@ -97,6 +161,10 @@ void serve_terrain_file(uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req,
     }
     res->writeHeader("Accept-Ranges", "bytes");
     res->writeHeader("Content-Type", content_type);
+    if (!etag.empty()) {
+        res->writeHeader("ETag", etag);
+        res->writeHeader("Cache-Control", "no-cache"); // 保存はするが、使う前に毎回ETagで確認させる
+    }
     res->writeHeader("Access-Control-Allow-Origin", "*");
     res->end(body);
 }
