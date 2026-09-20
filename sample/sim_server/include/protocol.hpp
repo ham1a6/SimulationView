@@ -19,6 +19,7 @@ enum class MsgType : uint8_t {
     StatusPanelConfig = 0x04, // Server -> Client (状態変化時、接続直後にも送信)
     CommandError = 0x05,      // Server -> Client (要求元クライアントのみ)
     AppStatus = 0x06,         // Server -> Client (状態変化時、接続直後にも送信)
+    TrackList = 0x07,         // Server -> Client (シミュレーション進行中は約20Hz、接続直後にも送信)
 };
 
 // --- Server -> Client ------------------------------------------------
@@ -92,6 +93,51 @@ struct AppStatus {
     std::string text; // 例: "シミュレーション実行中" / "一時停止中"
 
     MSGPACK_DEFINE(text);
+};
+
+// 航跡(トラック)1個分: 航空機・艦船・車両等の現在位置とシンボル情報。DETAILED_DESIGN.md 4.3節。
+// kind/affiliation/alt_refは下のenumの値をそのまま送る(Rust側protocol.rsと値を一致させること)。
+enum class TrackKind : uint8_t {
+    Unknown = 0,
+    Aircraft = 1,   // 固定翼機
+    Helicopter = 2,
+    Ship = 3,
+    Vehicle = 4,    // 地上車両
+    Missile = 5,
+};
+enum class TrackAffiliation : uint8_t {
+    Unknown = 0,
+    Friendly = 1,   // 友軍
+    Hostile = 2,    // 敵
+    Neutral = 3,    // 中立
+};
+enum class AltitudeRef : uint8_t {
+    Msl = 0,          // alt_m は海抜(地形データの標高と同じ基準)
+    AboveGround = 1,  // alt_m は地表からの高さ(サーバーが地形の高さを持たない車両などに使う)
+};
+
+struct Track {
+    uint32_t id = 0;         // 同じ実体には常に同じID(フロントの航跡・ラベルの対応づけに使う)
+    uint8_t kind = 0;        // TrackKind
+    uint8_t affiliation = 0; // TrackAffiliation
+    std::string label;       // 表示名(コールサイン等)
+    double lat_deg = 0.0;
+    double lon_deg = 0.0;
+    double alt_m = 0.0;
+    uint8_t alt_ref = 0;     // AltitudeRef
+    double heading_deg = 0.0; // 進行方向(北から時計回り)
+    double speed_mps = 0.0;   // 対地速度
+
+    MSGPACK_DEFINE(id, kind, affiliation, label, lat_deg, lon_deg, alt_m, alt_ref, heading_deg,
+                   speed_mps);
+};
+
+// 航跡の一覧(全トラックの最新状態をまとめて送る)。トラックが消えたら次の一覧から抜ける。
+struct TrackList {
+    double t = 0.0; // シミュレーション時刻
+    std::vector<Track> tracks;
+
+    MSGPACK_DEFINE(t, tracks);
 };
 
 // --- Client -> Server --------------------------------------------------

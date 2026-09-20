@@ -1,14 +1,15 @@
-//! 左パネル上: シミュレーションステータスパネル(接続状態・原点・フレームの読み取り専用表示)。
+//! 左パネル上: シミュレーションステータスパネル(接続状態・原点・フレーム・航跡数の表示と、開始/一時停止ボタン)。
 //! DETAILED_DESIGN.md 7.1節参照。VABパネル(左パネル下)は`vab.rs`。
 //! 原点を変更するフォームは、メニューバー(設定→原点設定...)から開く
 //! フローティングパネル(`origin_dialog.rs`)へ移動済み。
 
 use leptos::prelude::*;
 
-use crate::ws::{ConnectionStatus, WsSignals};
+use crate::protocol::ClientCommand;
+use crate::ws::{ConnectionStatus, WsConnection, WsSignals};
 
 #[component]
-pub fn SimulationStatusPanel() -> impl IntoView {
+pub fn SimulationStatusPanel(conn: WsConnection) -> impl IntoView {
     let signals = use_context::<WsSignals>().expect("WsSignals context not found");
 
     // シミュレータアプリケーション(C++)が送ってきた状態文字列を装飾なしでそのまま表示する。
@@ -22,10 +23,23 @@ pub fn SimulationStatusPanel() -> impl IntoView {
         app_status.map(|s| s.text).unwrap_or_else(|| "接続中".to_string())
     };
 
+    // シミュレーションを進める/止める。進めている間は航跡(TrackList)が更新され続ける。
+    // (停止中しか原点は変更できない: サーバー側のガード)
+    let conn_resume = conn.clone();
+    let conn_pause = conn;
+
     view! {
         <div class="panel-section operation-panel">
             <h2>"シミュレーションステータスパネル"</h2>
             <p>{status_text}</p>
+            <div class="sim-controls">
+                <button class="sim-button" on:click=move |_| conn_resume.send_command(&ClientCommand::resume())>
+                    "開始"
+                </button>
+                <button class="sim-button" on:click=move |_| conn_pause.send_command(&ClientCommand::pause())>
+                    "一時停止"
+                </button>
+            </div>
 
             <dl class="kv-list">
                 <dt>"原点"</dt>
@@ -40,6 +54,14 @@ pub fn SimulationStatusPanel() -> impl IntoView {
                 <dd>
                     {move || match signals.last_sim_state.get() {
                         Some(s) => format!("#{} (t={:.1}s)", s.frame_id, s.t),
+                        None => "--".to_string(),
+                    }}
+                </dd>
+
+                <dt>"航跡数"</dt>
+                <dd>
+                    {move || match signals.track_list.get() {
+                        Some(l) => l.tracks.len().to_string(),
                         None => "--".to_string(),
                     }}
                 </dd>

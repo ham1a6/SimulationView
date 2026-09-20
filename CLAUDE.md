@@ -71,6 +71,9 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
 - **作図**(図形・線)は`terrain::drawing::DrawingState`(context)で出し入れする。位置の種類で固定先を選ぶ:
   `World`(緯度経度+高度、地形と同じ深度)/`View`(カメラからの相対m)/`Screen`(画面px)。カメラ固定は地形と別の2つ目のパスで描く。
   線の太さはシェーダーで画面pxへ展開(DETAILED_DESIGN.md 6.11節、`sim3dview/README.md`に使い方)
+- **航跡**(航空機・艦船・車両等の現在位置)は`terrain::tracks::TracksState`(context)へアプリが`set`する(サンプルは`track_bridge.rs`が
+  `TrackList`を変換)。シンボルは向きつきビルボード(画面サイズ固定、進行方向が画面上の実際の向きを指す)、ラベルはHTML要素の重ね合わせ
+  (DETAILED_DESIGN.md 6.12節)
 - VABは開発用ダミー値 rows=4, cols=6・空ラベルはDOM生成しない。状況パネル項目はC++から`StatusPanelConfig`で動的配信
 - WebSocket自動再接続: 指数バックオフ+ジッター、タブ非表示中は一時停止(Page Visibility API)
 - `sim3dview`は通信プロトコル・サーバーのURLを一切知らない(URL組み立て・原点のミラーはアプリ側の責務)
@@ -105,6 +108,7 @@ cd sample/sim_frontend && trunk serve                          # 開発サーバ
 | 0x04 | StatusPanelConfig | Server→Client |
 | 0x05 | CommandError | Server→Client(要求元のみ) |
 | 0x06 | AppStatus | Server→Client |
+| 0x07 | TrackList | Server→Client(航跡。進行中は約20Hz) |
 | — | ClientCommand | Client→Server |
 
 フレーミング: `[1byte: msg_type][MessagePack body]`。詳細はDETAILED_DESIGN.md 4節。

@@ -343,6 +343,37 @@
     cursor: grabbing;
 }
 
+/* 航跡(terrain::tracks)のラベルを重ねる層。TerrainViewが毎フレーム、各ラベルをシンボルの画面位置へ動かす。 */
+.terrain-track-labels {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+}
+
+.track-label {
+    position: absolute;
+    left: 0;
+    top: 0;
+    display: none;
+    white-space: nowrap;
+    font-size: 11px;
+    line-height: 1.25;
+    color: var(--fg, #eee);
+    /* 地形の上でも読めるよう、暗い縁取りを付ける。 */
+    text-shadow: 0 0 3px #000, 0 0 3px #000, 0 0 2px #000;
+    will-change: transform;
+}
+
+.track-label-name {
+    font-weight: 600;
+}
+
+.track-label-detail {
+    font-size: 10px;
+    opacity: 0.85;
+}
+
 /* 「クリックで原点指定」モード中(terrain::origin_pick::OriginPickState)。 */
 .terrain-canvas.origin-pick-active,
 .terrain-canvas.origin-pick-active:active {

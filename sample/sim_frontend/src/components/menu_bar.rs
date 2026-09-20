@@ -9,6 +9,8 @@
 //! 3DモードのShift+ドラッグ・2Dモードの通常ドラッグで動かせるカメラの注視点(中心点)を
 //! シミュレーション原点の位置へ戻すボタン(`terrain::recenter::RecenterRequestState`
 //! 経由の通知、`TerrainView`側で実際にリセットする。シミュレーション原点自体は変更しない)。
+//! 「表示」→「航跡ラベル/航跡(軌跡)/高度線」は、航跡(`terrain::tracks::TracksState`)の表示設定のON/OFF、
+//! 「作図デモ」は作図(`terrain::drawing`)のデモ図形の表示/消去。
 //! ファイル/ヘルプは現時点では項目未定のプレースホルダ(クリックしても「準備中」の
 //! ダミー項目が出るだけ)。メニューが開いている間は透明な全画面バックドロップを敷き、
 //! そこをクリックすると閉じる(外側クリックで閉じる一般的なメニューの挙動)。
@@ -20,6 +22,7 @@ use sim3dview::terrain::hillshade::HillshadeState;
 use sim3dview::terrain::origin::OriginState;
 use sim3dview::terrain::origin_pick::OriginPickState;
 use sim3dview::terrain::recenter::RecenterRequestState;
+use sim3dview::terrain::tracks::TracksState;
 use sim3dview::ui::coverage_altitude_dialog::CoverageAltitudeDialogState;
 use sim3dview::ui::origin_dialog::OriginDialogState;
 
@@ -47,6 +50,7 @@ pub fn MenuBar() -> impl IntoView {
     let hillshade = use_context::<HillshadeState>().expect("HillshadeState context not found");
     let drawings = use_context::<DrawingState>().expect("DrawingState context not found");
     let origin = use_context::<OriginState>().expect("OriginState context not found");
+    let tracks = use_context::<TracksState>().expect("TracksState context not found");
     // 「作図デモ」の表示中か(ライブラリの作図一覧を出し入れするだけ。ライブラリ側にこの状態はない)。
     let drawing_demo_on = RwSignal::new(false);
 
@@ -104,6 +108,33 @@ pub fn MenuBar() -> impl IntoView {
                             }
                         >
                             "中心点を原点に戻す"
+                        </button>
+                        <button
+                            class="menu-dropdown-item"
+                            on:click=move |_| {
+                                open_menu.set(None);
+                                tracks.show_labels.update(|on| *on = !*on);
+                            }
+                        >
+                            {move || if tracks.show_labels.get() { "✓ 航跡ラベル" } else { "　 航跡ラベル" }}
+                        </button>
+                        <button
+                            class="menu-dropdown-item"
+                            on:click=move |_| {
+                                open_menu.set(None);
+                                tracks.show_trails.update(|on| *on = !*on);
+                            }
+                        >
+                            {move || if tracks.show_trails.get() { "✓ 航跡(軌跡)" } else { "　 航跡(軌跡)" }}
+                        </button>
+                        <button
+                            class="menu-dropdown-item"
+                            on:click=move |_| {
+                                open_menu.set(None);
+                                tracks.show_altitude_lines.update(|on| *on = !*on);
+                            }
+                        >
+                            {move || if tracks.show_altitude_lines.get() { "✓ 高度線" } else { "　 高度線" }}
                         </button>
                         <button
                             class="menu-dropdown-item"

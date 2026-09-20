@@ -276,6 +276,8 @@ void WsServer::Impl::run_app(AppT app) {
                                                    impl->simulation.status_panel_config()));
         impl->send_to(ws, protocol::encode_frame(MsgType::AppStatus,
                                                    impl->simulation.snapshot_app_status()));
+        impl->send_to(ws, protocol::encode_frame(MsgType::TrackList,
+                                                   impl->simulation.snapshot_tracks()));
     };
 
     behavior.message = [impl](ServerWebSocket<SSL>* ws, std::string_view message, uWS::OpCode) {
@@ -342,6 +344,10 @@ void WsServer::Impl::run_app(AppT app) {
         using clock = std::chrono::steady_clock;
         const auto frame_interval = std::chrono::milliseconds(16); // 約60Hz
         auto next_tick = clock::now();
+        // TrackListはSimState(60Hz)より低い頻度で配信する(トラックは数が多くなりうるので、
+        // 表示に十分な約20Hz)。
+        constexpr uint32_t kTrackListEveryNFrames = 3;
+        uint32_t frame_counter = 0;
 
         while (impl->keep_running) {
             const double dt = std::chrono::duration<double>(frame_interval).count();
@@ -351,6 +357,16 @@ void WsServer::Impl::run_app(AppT app) {
             std::string sim_frame =
                 protocol::encode_frame(MsgType::SimState, impl->simulation.snapshot_sim_state());
             loop->defer([impl, sim_frame = std::move(sim_frame)]() { impl->broadcast(sim_frame); });
+
+            // シミュレーション時刻が進んでいる間、一定間隔で航跡(TrackList)を全クライアントへ配信する。
+            // 一時停止中は位置が変わらないので送らない(新規接続には接続直後に1回送る)。
+            if (tick.time_advanced && (++frame_counter % kTrackListEveryNFrames) == 0) {
+                std::string track_frame = protocol::encode_frame(
+                    MsgType::TrackList, impl->simulation.snapshot_tracks());
+                loop->defer([impl, track_frame = std::move(track_frame)]() {
+                    impl->broadcast(track_frame);
+                });
+            }
 
             // 原点が変化していれば新しいOriginStateを全クライアントへ再配信(4.1節)。
             if (tick.origin_changed) {

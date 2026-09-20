@@ -184,6 +184,7 @@ Sim3dView/
 │       │   ├── markers.rs             # RadarMarker/RadarMarkersState・マーカー(ピン)・覆域ジオメトリ生成
 │       │   ├── drawing.rs             # 作図(図形・線)のデータモデル・DrawingState(6.11節)
 │       │   ├── drawing_geometry.rs    # 作図の描画用ジオメトリ生成(純粋関数)
+│       │   ├── tracks.rs              # 航跡(トラック)のデータモデル・TracksState・シンボル/航跡ジオメトリ(6.12節)
 │       │   ├── los.rs                 # 見通し/覆域計算
 │       │   ├── pick.rs                # 画面クリック→緯度経度のレイキャスト
 │       │   ├── terrain.wgsl           # 頂点/フラグメントシェーダ

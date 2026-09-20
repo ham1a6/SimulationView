@@ -17,8 +17,9 @@ struct VertexInput {
     @location(1) color: vec4<f32>,
     // 面: 法線(陰影を付けるとき)。線: 反対側の端点。
     @location(2) aux: vec3<f32>,
-    // x: 線の太さ(px。0以下なら面)、y: 線の側(-1/+1)、z: 1ならビルボード(画面サイズ固定のマーカー)、
-    // w: 陰影を付けるなら1(面のみ)。
+    // x: 線の太さ(px。0以下なら面。向きつきビルボードでは進行方向(ラジアン、北から時計回り))、
+    // y: 線の側(-1/+1)、z: 1ならビルボード(画面サイズ固定のマーカー)・2なら向きつきビルボード
+    // (シンボル。進行方向が画面のどちらを向くかに合わせて回す)、w: 陰影を付けるなら1(面のみ)。
     @location(3) params: vec4<f32>,
 };
 
@@ -40,10 +41,33 @@ const LINE_DEPTH_BIAS = 2.0e-5;
 // 粗いLODの地形メッシュとの高さのずれ(遠いほど大きい)で地面に埋まって消えないよう、距離に比例して
 // 大きめに寄せる(距離の0.2%: 400km先で約800m、5km先で10m)。これより手前の山には隠れる。
 const BILLBOARD_DEPTH_BIAS = 2.0e-3;
+// 向きつきビルボードで、進行方向の画面上の向きを求めるためにアンカーから進む距離(メートル)。
+const ORIENT_STEP_M = 200.0;
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
+    if (in.params.z > 1.5) {
+        // 向きつきビルボード: aux.xyは「進行方向が上・その右が+x」の画面のpx。進行方向の画面上の向きは、
+        // アンカーと、アンカーから進行方向(ENUの水平、北から時計回りparams.x)へ少し進んだ点の射影の差で求める。
+        out.color = in.color;
+        let c = u.view_proj * vec4<f32>(in.position, 1.0);
+        let step = vec3<f32>(sin(in.params.x), cos(in.params.x), 0.0) * ORIENT_STEP_M;
+        let c1 = u.view_proj * vec4<f32>(in.position + step, 1.0);
+        let half = u.viewport.xy * 0.5;
+        var forward = (c1.xy / c1.w - c.xy / c.w) * half;
+        let len = length(forward);
+        if (len > 1.0e-4) {
+            forward = forward / len;
+        } else {
+            forward = vec2<f32>(0.0, 1.0); // 真上・真下から見るなど、向きが画面に現れないとき。
+        }
+        let right = vec2<f32>(forward.y, -forward.x);
+        let offset_px = right * in.aux.x + forward * in.aux.y;
+        let ndc = c.xy / c.w + offset_px / half;
+        out.clip_position = vec4<f32>(ndc * c.w, min(c.z * (1.0 + BILLBOARD_DEPTH_BIAS), c.w), c.w);
+        return out;
+    }
     if (in.params.z > 0.5) {
         // ビルボード: position(アンカーの位置)を射影し、aux.xy(画面のpx、右・上が正)だけずらす。
         // 大きさが拡大・縮小・回転で変わらず、常に画面の正面を向く。

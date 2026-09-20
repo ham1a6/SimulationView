@@ -46,6 +46,9 @@ struct SimulationTickResult {
     bool origin_changed = false;
     // trueなら新しいAppStatusを全クライアントへ再配信する(pause/resumeで変化した時)。
     bool app_status_changed = false;
+    // trueならシミュレーション時刻が進んだ(=航跡の位置が変わった)。ws_server側はこれを見て、
+    // 一定間隔でTrackListを配信する。
+    bool time_advanced = false;
 };
 
 class Simulation {
@@ -65,6 +68,8 @@ public:
     protocol::SimState snapshot_sim_state() const;
     protocol::OriginState snapshot_origin() const;
     protocol::AppStatus snapshot_app_status() const;
+    // デモシナリオの航跡(航空機・ヘリ・艦船・車両)の、現在のシミュレーション時刻での状態。
+    protocol::TrackList snapshot_tracks() const;
 
     // VabConfig/StatusPanelConfigは起動後不変(v1はダミー固定値)なので、
     // 生成後は読み取り専用として扱い、mutex保護なしで直接返してよい。
@@ -100,6 +105,28 @@ private:
 
     protocol::VabConfig vab_config_;
     protocol::StatusPanelConfig status_panel_config_;
+
+    // デモシナリオ: 航跡1個分の周回軌道。中心(center)のまわりの楕円(東西radius_east_m・南北radius_north_m)を、
+    // 平均半径での周回速度がspeed_mpsになる角速度で回る(位置はシミュレーション時刻の関数なので、
+    // 一時停止・再開しても状態は不要)。起動後は不変。
+    struct ScenarioTrack {
+        uint32_t id;
+        protocol::TrackKind kind;
+        protocol::TrackAffiliation affiliation;
+        std::string label;
+        double center_lat_deg;
+        double center_lon_deg;
+        double radius_east_m;
+        double radius_north_m;
+        double speed_mps;
+        double phase_rad;        // t=0での軌道上の位置(0=中心の真北。時計回りに増える)
+        bool clockwise;
+        protocol::AltitudeRef alt_ref;
+        double altitude_m;       // alt_refがMslなら海抜、AboveGroundなら地表からの高さ
+        double altitude_swing_m; // 高度が±この値だけ上下する(0なら一定)
+    };
+    std::vector<ScenarioTrack> scenario_;
+    static std::vector<ScenarioTrack> make_demo_scenario(const protocol::OriginState& center);
 
     std::mutex queue_mutex_;
     std::deque<QueuedCommand> command_queue_;

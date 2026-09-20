@@ -31,4 +31,9 @@ features = [
     "DomRectReadOnly",
     "DomRect",
     "Element",
+    "Window",
+    "Document",
+    "Node",
+    "HtmlElement",
+    "CssStyleDeclaration",
 ]

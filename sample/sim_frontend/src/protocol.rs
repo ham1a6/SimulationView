@@ -18,6 +18,7 @@ pub enum MsgType {
     StatusPanelConfig = 0x04,
     CommandError = 0x05,
     AppStatus = 0x06,
+    TrackList = 0x07,
 }
 
 impl MsgType {
@@ -29,6 +30,7 @@ impl MsgType {
             0x04 => Some(MsgType::StatusPanelConfig),
             0x05 => Some(MsgType::CommandError),
             0x06 => Some(MsgType::AppStatus),
+            0x07 => Some(MsgType::TrackList),
             _ => None,
         }
     }
@@ -105,6 +107,37 @@ pub struct AppStatus {
     pub text: String,
 }
 
+/// 航跡(トラック)1個分: 航空機・艦船・車両等の現在位置とシンボル情報。DETAILED_DESIGN.md 4.3節。
+/// `kind`/`affiliation`/`alt_ref`の値の意味はC++側(`protocol.hpp`の`TrackKind`等)と一致させる
+/// (`track_bridge.rs`がsim3dviewライブラリの型へ変換する)。
+#[derive(Debug, Clone, Deserialize)]
+pub struct Track {
+    /// 同じ実体には常に同じID(航跡・ラベルの対応づけに使う)。
+    pub id: u32,
+    /// 0=不明 / 1=固定翼機 / 2=ヘリ / 3=艦船 / 4=地上車両 / 5=ミサイル
+    pub kind: u8,
+    /// 0=不明 / 1=友軍 / 2=敵 / 3=中立
+    pub affiliation: u8,
+    pub label: String,
+    pub lat_deg: f64,
+    pub lon_deg: f64,
+    pub alt_m: f64,
+    /// 0=`alt_m`は海抜 / 1=地表からの高さ
+    pub alt_ref: u8,
+    /// 進行方向(北から時計回り)
+    pub heading_deg: f64,
+    /// 対地速度(m/s)
+    pub speed_mps: f64,
+}
+
+/// 航跡の一覧(全トラックの最新状態。トラックが消えたら次の一覧から抜ける)。
+#[derive(Debug, Clone, Deserialize)]
+pub struct TrackList {
+    #[allow(dead_code)] // 現在は表示に使わないが、msgpackは配列位置エンコードのため保持が必要。
+    pub t: f64,
+    pub tracks: Vec<Track>,
+}
+
 // --- Client -> Server --------------------------------------------------
 
 /// クライアントからの操作コマンド。DETAILED_DESIGN.md 4.3節。
@@ -132,6 +165,16 @@ impl ClientCommand {
             lon_deg,
             ..Default::default()
         }
+    }
+
+    /// シミュレーションを進める(停止中は原点を変更できるが、実行中はできない)。
+    pub fn resume() -> Self {
+        Self { type_: "resume".to_string(), ..Default::default() }
+    }
+
+    /// シミュレーションを一時停止する。
+    pub fn pause() -> Self {
+        Self { type_: "pause".to_string(), ..Default::default() }
     }
 
     pub fn vab_press(button_id: impl Into<String>) -> Self {

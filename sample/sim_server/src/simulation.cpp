@@ -48,6 +48,14 @@ protocol::StatusPanelConfig make_dummy_status_panel_config() {
     return config;
 }
 
+// デモシナリオ(航跡表示の確認用)。sim3dviewのデフォルト原点(Simulation::origin_の初期値、富士山の近く)の
+// まわりに、種別・所属の違うトラックを周回させる。実際のシミュレータでは、ここを自分のシミュレーション結果
+// (機体の位置・速度など)からTrackを作る処理に置き換える。
+double normalize_deg(double deg) {
+    deg = std::fmod(deg, 360.0);
+    return deg < 0.0 ? deg + 360.0 : deg;
+}
+
 // metadata.jsonから`"<key>": <数値>`の数値を取り出す最小限のパーサ(JSONライブラリを
 // 足すほどではないため。geotiff_preprocessが書き出す単純な固定形式だけを想定する)。
 // startより後ろで最初に見つかったkeyを対象にする。
@@ -71,7 +79,8 @@ std::optional<double> find_number(const std::string& text, const std::string& ke
 
 Simulation::Simulation(const std::string& terrain_metadata_path)
     : vab_config_(make_dummy_vab_config()),
-      status_panel_config_(make_dummy_status_panel_config()) {
+      status_panel_config_(make_dummy_status_panel_config()),
+      scenario_(make_demo_scenario(origin_)) {
     std::ifstream file(terrain_metadata_path);
     std::ostringstream buffer;
     buffer << file.rdbuf();
@@ -110,6 +119,7 @@ SimulationTickResult Simulation::step(double dt) {
     std::lock_guard<std::mutex> lock(state_mutex_);
     if (running_) {
         t_ += dt;
+        result.time_advanced = true;
     }
     ++frame_id_;
 
@@ -181,6 +191,81 @@ void Simulation::apply_set_origin(const protocol::ClientCommand& cmd, ClientId c
     origin_.lat_deg = cmd.lat_deg;
     origin_.lon_deg = cmd.lon_deg;
     out_origin_changed = true;
+}
+
+// デモシナリオ。`center`(デフォルト原点。富士山の近く)の東西・南北の距離(メートル)で軌道の中心を決める。
+// 海(駿河湾)を行く艦船や、地形の高さをサーバーが持たない地上車両(AboveGround)も含める。
+std::vector<Simulation::ScenarioTrack> Simulation::make_demo_scenario(
+    const protocol::OriginState& center) {
+    using protocol::AltitudeRef;
+    using protocol::TrackAffiliation;
+    using protocol::TrackKind;
+    // 中心から(east_m, north_m)離れた点の緯度経度(近似。デモ用なので球面の誤差は無視する)。
+    constexpr double kMetersPerDegree = 111320.0;
+    const double cos_lat = std::cos(center.lat_deg * 3.14159265358979323846 / 180.0);
+    auto at = [&](double east_m, double north_m) {
+        return std::pair<double, double>{center.lat_deg + north_m / kMetersPerDegree,
+                                          center.lon_deg + east_m / (kMetersPerDegree * cos_lat)};
+    };
+    std::vector<ScenarioTrack> tracks;
+    auto add = [&](uint32_t id, TrackKind kind, TrackAffiliation affiliation, const char* label,
+                   double east_m, double north_m, double radius_east_m, double radius_north_m,
+                   double speed_mps, double phase_rad, bool clockwise, AltitudeRef alt_ref,
+                   double altitude_m, double altitude_swing_m) {
+        const auto [lat, lon] = at(east_m, north_m);
+        tracks.push_back(ScenarioTrack{id, kind, affiliation, label, lat, lon, radius_east_m,
+                                        radius_north_m, speed_mps, phase_rad, clockwise, alt_ref,
+                                        altitude_m, altitude_swing_m});
+    };
+    //  id  種別                     所属                          名前      中心(東,北)m         半径(東,北)m     速さ  位相  回り  高度基準          高度   上下
+    add(1, TrackKind::Aircraft,   TrackAffiliation::Friendly, "AC101",  0,      0,       25000,  25000,  200, 0.0,  true,  AltitudeRef::Msl,          4000, 0);
+    add(2, TrackKind::Aircraft,   TrackAffiliation::Hostile,  "BOGEY1", -20000, 10000,   45000,  15000,  250, 2.0,  false, AltitudeRef::Msl,          8000, 1500);
+    add(3, TrackKind::Helicopter, TrackAffiliation::Friendly, "HELI1",  6000,   6000,    6000,   6000,   50,  1.0,  true,  AltitudeRef::AboveGround,  300,  100);
+    add(4, TrackKind::Ship,       TrackAffiliation::Neutral,  "SHIP1",  -25000, -70000,  15000,  8000,   12,  0.5,  true,  AltitudeRef::Msl,          0,    0);
+    add(5, TrackKind::Vehicle,    TrackAffiliation::Friendly, "TRK1",   12000,  -6000,   3000,   3000,   15,  3.0,  false, AltitudeRef::AboveGround,  0,    0);
+    add(6, TrackKind::Aircraft,   TrackAffiliation::Unknown,  "UNK1",   -10000, 30000,   12000,  30000,  220, 4.0,  true,  AltitudeRef::Msl,          6000, 0);
+    add(7, TrackKind::Missile,    TrackAffiliation::Hostile,  "MSL1",   15000,  15000,   9000,   9000,   600, 1.5,  true,  AltitudeRef::Msl,          5000, 2000);
+    return tracks;
+}
+
+protocol::TrackList Simulation::snapshot_tracks() const {
+    double t;
+    {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        t = t_;
+    }
+    constexpr double kMetersPerDegree = 111320.0;
+    constexpr double kPi = 3.14159265358979323846;
+
+    protocol::TrackList list;
+    list.t = t;
+    list.tracks.reserve(scenario_.size());
+    for (const ScenarioTrack& s : scenario_) {
+        // 楕円軌道: 位相phi(0=中心の真北、増えると時計回り)。平均半径での周回速度がspeed_mpsになる角速度。
+        const double direction = s.clockwise ? 1.0 : -1.0;
+        const double omega = s.speed_mps / (0.5 * (s.radius_east_m + s.radius_north_m));
+        const double phi = s.phase_rad + direction * omega * t;
+        const double east_m = s.radius_east_m * std::sin(phi);
+        const double north_m = s.radius_north_m * std::cos(phi);
+        // 速度ベクトル(東・北成分)から、進行方向(北から時計回り)と対地速度を求める。
+        const double velocity_east = s.radius_east_m * std::cos(phi) * omega * direction;
+        const double velocity_north = -s.radius_north_m * std::sin(phi) * omega * direction;
+
+        protocol::Track track;
+        track.id = s.id;
+        track.kind = static_cast<uint8_t>(s.kind);
+        track.affiliation = static_cast<uint8_t>(s.affiliation);
+        track.label = s.label;
+        track.lat_deg = s.center_lat_deg + north_m / kMetersPerDegree;
+        track.lon_deg = s.center_lon_deg +
+                        east_m / (kMetersPerDegree * std::cos(s.center_lat_deg * kPi / 180.0));
+        track.alt_ref = static_cast<uint8_t>(s.alt_ref);
+        track.alt_m = s.altitude_m + s.altitude_swing_m * std::sin(0.5 * omega * t + s.phase_rad);
+        track.heading_deg = normalize_deg(std::atan2(velocity_east, velocity_north) * 180.0 / kPi);
+        track.speed_mps = std::hypot(velocity_east, velocity_north);
+        list.tracks.push_back(std::move(track));
+    }
+    return list;
 }
 
 protocol::SimState Simulation::snapshot_sim_state() const {

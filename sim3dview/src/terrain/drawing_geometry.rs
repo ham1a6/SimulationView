@@ -48,6 +48,24 @@ impl DrawVertex {
     pub(crate) fn billboard(anchor: [f32; 3], offset_px: [f32; 2], color: [f32; 4]) -> Self {
         Self { position: anchor, color, aux: [offset_px[0], offset_px[1], 0.0], params: [0.0, 0.0, 1.0, 0.0] }
     }
+
+    /// 向きつきビルボード(`billboard`と同じだが、`offset_px`を「進行方向が画面のどちらを向くか」に合わせて回す)。
+    /// `offset_px`は進行方向が上(+y)・その右が+xの座標で、`heading_rad`は北から時計回りの進行方向(ENU座標の水平)。
+    /// 画面上の向きは、シェーダーがアンカーとアンカーから進行方向へ少し進んだ点を射影して求める
+    /// (3Dでカメラを回しても、2Dの地図でも、シンボルの向きが実際の進行方向を指す)。
+    pub(crate) fn oriented_billboard(
+        anchor: [f32; 3],
+        offset_px: [f32; 2],
+        heading_rad: f32,
+        color: [f32; 4],
+    ) -> Self {
+        Self {
+            position: anchor,
+            color,
+            aux: [offset_px[0], offset_px[1], 0.0],
+            params: [heading_rad, 0.0, 2.0, 0.0],
+        }
+    }
 }
 
 /// 座標の種類ごとの頂点列。アルファがこの値以上の色は不透明として`opaque`に入れる。
@@ -436,7 +454,7 @@ fn polygon_geom(points: &[[f64; 2]], steps: Steps) -> Geom2d {
     geom
 }
 
-fn signed_area(poly: &[[f64; 2]]) -> f64 {
+pub(crate) fn signed_area(poly: &[[f64; 2]]) -> f64 {
     let n = poly.len();
     (0..n).map(|i| cross2(poly[i], poly[(i + 1) % n])).sum::<f64>() * 0.5
 }
@@ -459,7 +477,7 @@ fn in_triangle(p: [f64; 2], a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> bool {
 
 /// 反時計回りの単純多角形を三角形に分ける(耳切り法、O(n^2))。共線などで耳が見つからない
 /// 退化した入力は、先頭付近を強制的に切り落として必ず終わらせる。
-fn ear_clip(poly: &[[f64; 2]]) -> Vec<[f64; 2]> {
+pub(crate) fn ear_clip(poly: &[[f64; 2]]) -> Vec<[f64; 2]> {
     let mut idx: Vec<usize> = (0..poly.len()).collect();
     let mut out = Vec::with_capacity(poly.len().saturating_sub(2) * 3);
     while idx.len() > 3 {

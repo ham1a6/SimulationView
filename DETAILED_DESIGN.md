@@ -383,6 +383,7 @@ msgpackへのシリアライズは、Rust側(rmp-serde)・C++側(msgpack-cxxの`
 | 0x04 | StatusPanelConfig | Server→Client | 状態変化時、接続直後にも1回 |
 | 0x05 | CommandError | Server→Client | コマンド拒否時。**要求元クライアントのみ**に送信 |
 | 0x06 | AppStatus | Server→Client | 状態変化時(pause/resume)、接続直後にも1回、全クライアントへbroadcast |
+| 0x07 | TrackList | Server→Client | シミュレーション進行中は約20Hz(SimStateの3フレームに1回)、接続直後にも1回。停止中は送らない |
 | (なし) | ClientCommand | Client→Server | ユーザー操作時 |
 
 ### 4.3 メッセージ型定義
@@ -433,6 +434,23 @@ text: String                   // シミュレータアプリケーション自�
                                 // (例: "シミュレーション実行中" / "一時停止中")
 ```
 
+**TrackList**(サーバー→クライアント、進行中は約20Hz+接続直後。6.12節)
+```
+t: f64                         // シミュレーション時刻(秒)
+tracks: Vec<Track>             // 全トラックの最新状態(消えたトラックは次の一覧から抜ける)
+  Track:
+    id: u32                    // 同じ実体には常に同じID(フロントの航跡・ラベルの対応づけ)
+    kind: u8                   // 0=不明 1=固定翼機 2=ヘリ 3=艦船 4=地上車両 5=ミサイル
+    affiliation: u8            // 0=不明 1=友軍 2=敵 3=中立
+    label: String              // 表示名(コールサイン等)
+    lat_deg: f64
+    lon_deg: f64
+    alt_m: f64
+    alt_ref: u8                // 0=alt_mは海抜 1=地表からの高さ(サーバーが地形の高さを持たない車両など)
+    heading_deg: f64           // 進行方向(北から時計回り)
+    speed_mps: f64             // 対地速度
+```
+
 **ClientCommand**(クライアント→サーバー)
 ```
 type: String                   // "vab_press" / "pause" / "resume" / "set_param" / "set_origin"
@@ -446,6 +464,9 @@ lon_deg: f64                   // set_origin時のみ使用
 
 - シミュレーションループ(simスレッド)は約60Hz(16ms間隔)で駆動する
 - `VabConfig`/`OriginState`/`StatusPanelConfig`は変化があったときのみ送信(毎フレーム送らない)
+- `TrackList`は全トラックの最新状態をまとめて、シミュレーション進行中だけ約20Hzで送る(3フレームに1回)。位置は
+  シミュレーション時刻の関数で、停止中は変わらないので送らない(新規接続には接続直後に1回)。フロントの描画は全体の再描画になるので、
+  60Hzで送らずに表示に十分な頻度に抑えている
 
 ### 4.5 WebSocket再接続処理(フロント側)
 
@@ -1403,6 +1424,49 @@ WebGPUの線プリミティブは太さ1pxしかないため、線分1本を四�
 (`Screen`の角の位置が変わる)、および地表基準(`depends_on_terrain`)の図形があるときの地形LOD切替。実機(サンプルアプリの
 「表示」→「作図デモ」、`sample/sim_frontend/src/components/drawing_demo.rs`)で、3D/2D両モードの絶対座標・カメラ固定
 (視点空間・画面座標)の描画、カメラを回しても`View`/`Screen`が動かないことを確認済み。
+
+### 6.12 航跡(トラック)表示(`terrain::tracks` / `draw.wgsl`の向きつきビルボード)
+
+シミュレーションなどから受け取った航空機・艦船・車両等の現在位置を、シンボル・ラベル・航跡(軌跡)・高度線で表示する。
+ライブラリは通信プロトコルを知らず、アプリが`TracksState`(context)へ最新の一覧を`set`する
+(サンプルでは`sample/sim_frontend/src/track_bridge.rs`が`protocol::TrackList`を変換して反映する。プロトコルは4.3節)。
+
+**データモデル**(`terrain/tracks.rs`)
+
+- `Track { id, kind: SymbolKind, affiliation: Affiliation, label, lat_deg, lon_deg, altitude: Altitude, heading_deg, speed_mps }`。
+  `SymbolKind`=不明/固定翼機/ヘリ/艦船/地上車両/ミサイル(形が変わる)、`Affiliation`=不明(黄)/友軍(青)/敵(赤)/中立(緑)(色が変わる)。
+  高度は作図(6.11節)と同じ`Altitude`(`Msl`=海抜、`AboveGround`=地表から。サーバーが地形の高さを持たない車両などは後者)。
+- `TracksState { entries, show_labels, show_trails, show_altitude_lines }`。`set(Vec<Track>)`は受信のたびに全件を渡す
+  (前回に無いIDは新規、今回に無いIDは航跡ごと消える)。航跡は同じIDの間だけ、前回の位置が最後の点から250m以上離れていれば
+  足していく(上限400点)。`TerrainView`が`entries`と表示設定を購読して描き直す(未提供なら航跡表示なし)。
+
+**シンボル**(向きつきビルボード)
+
+- 種別ごとの形(固定翼機の輪郭、ヘリの胴体+ローター、船体、車両、ミサイル、ひし形)を、進行方向が+y・右が+xのポリゴンで持ち、
+  耳切り法(`drawing_geometry::ear_clip`)で三角形にする。縁取り(暗色、1.3倍)→本体(所属の色)の順に積む。
+- 位置(高度込み)をアンカーに、頂点は画面のpxでずらす**画面サイズ固定のビルボード**(マーカーのピン(6.9節)と同じ仕組み)。
+  さらに`draw.wgsl`の**向きつき**(`params.z=2`、`params.x`=進行方向のラジアン)は、アンカーとアンカーから進行方向(ENUの水平)へ200m進んだ点を
+  射影して、進行方向が**画面上で実際に指す向き**を求め、その向きへ形を回す。3Dでカメラを回しても、2Dの地図でも、
+  シンボルが実際の進行方向を向く(真上・真下から見て向きが画面に現れないときは画面の上向きにする)。
+- 深度は覆域マーカーと同じ扱い(アンカーの深度を距離の0.2%手前へ寄せて`draw_blend_pipeline`でテストする)。
+
+**航跡・高度線・ラベル**
+
+- 航跡: 過去の位置→現在位置の折れ線(太さ1.5px、所属の色、アルファ0.55。6.11節の太い線)。
+- 高度線: 現在位置から真下の地表へ下ろす細い線(1px)。地表から30m以下は出さない。3Dのみ(2Dは真上から見て点になるので出さない)。
+- ラベル: 名前+「高度 m 速度 km/h」(地表基準は`AGL `つき)。WebGPUには文字を描く機能がないので、`TerrainView`が`canvas`の上に重ねる
+  HTML要素(`.terrain-track-labels`内の`.track-label`)で、毎フレーム(`render_frame`→`update_labels`)アンカーを画面へ射影して`transform`で動かす。
+  カメラの後ろ・画面の外は非表示。トラック数が変わったときだけ要素を作り直し、文字は変わったときだけ更新する。
+
+**描画・再構築**: `TerrainRenderer::update_tracks`(専用バッファ、`draw_blend_pipeline`・絶対座標のuniform)。再構築(`ui/terrain_view.rs::rebuild_tracks`)は、
+トラックの受信・表示設定の変更・原点変更・2D/3D切替・地形LOD切替(地表基準・高度線があるとき)。トラックは高頻度で更新されるので、
+受信のたびに`render_frame`だけ呼び、LODの更新(`render_now`)は予約しない。
+
+**サンプル(デモ)**: `sample/sim_server`の`Simulation::make_demo_scenario`が、デフォルト原点(富士山の近く)のまわりに7つのトラック
+(友軍機・敵機(高度が上下)・ヘリ(地表基準)・中立の艦船(駿河湾)・車両(地表基準)・不明機・ミサイル)を楕円軌道で周回させ、
+`TrackList`として配信する。フロントは左パネルの「開始/一時停止」ボタン(`resume`/`pause`コマンド)でシミュレーションを進め、
+表示メニューの「航跡ラベル/航跡(軌跡)/高度線」で表示を切り替える。自分のシミュレータへつなぐときは、シナリオの部分を自分の
+シミュレーション結果から`Track`を作る処理に置き換える。
 
 ---
 

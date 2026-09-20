@@ -11,6 +11,7 @@ use sim3dview::terrain::origin::OriginState;
 use sim3dview::terrain::origin_pick::OriginPickState;
 use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::terrain::store::TerrainStore;
+use sim3dview::terrain::tracks::TracksState;
 use sim3dview::ui::coverage_altitude_dialog::{CoverageAltitudeDialog, CoverageAltitudeDialogState};
 use sim3dview::ui::origin_dialog::{OriginDialog, OriginDialogState};
 
@@ -20,6 +21,7 @@ use crate::components::operation_panel::SimulationStatusPanel;
 use crate::components::right_panel::{BottomStatusPanel, TopStatusPanel};
 use crate::components::vab::VabPanel;
 use crate::protocol::ClientCommand;
+use crate::track_bridge::bridge_tracks;
 use crate::ws::{default_terrain_base_url, default_ws_url, WsConnection, WsSignals};
 
 // 地図・右パネルの最小幅(DETAILED_DESIGN.md 7.2節: これを下回ったら外側コンテナを横スクロールさせる)。
@@ -49,6 +51,11 @@ pub fn App() -> impl IntoView {
     provide_context(HillshadeState::default());
     // 作図(図形・線)の一覧(sim3dviewライブラリの型)。表示メニューの「作図デモ」が図形を出し入れする。
     provide_context(DrawingState::new());
+    // 航跡(航空機・艦船・車両等)の一覧と表示設定(sim3dviewライブラリの型)。サーバーから届く`TrackList`を
+    // 下の`bridge_tracks`が反映し、表示メニューの「ラベル/航跡/高度線」が表示設定を切り替える。
+    let tracks_state = TracksState::new();
+    provide_context(tracks_state);
+    bridge_tracks(signals, tracks_state);
     // 現在の原点(sim3dviewライブラリの型)。TerrainViewはこれを読んでメッシュを再計算する。
     // サーバーからのOriginState(protocol)が届くたびに、下のEffectでこちらへミラーする
     // (sim3dviewライブラリは通信プロトコルを一切知らないため、この橋渡しはアプリ側の役目)。
@@ -131,7 +138,7 @@ pub fn App() -> impl IntoView {
             <div class="app-shell">
                 <div class="app-layout" style:grid-template-columns=grid_columns>
                     <div class="left-panel">
-                        <SimulationStatusPanel/>
+                        <SimulationStatusPanel conn=conn.clone()/>
                         <VabPanel conn=conn.clone()/>
                     </div>
 

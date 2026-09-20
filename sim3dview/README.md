@@ -12,7 +12,7 @@ ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し(Line of 
 ## 提供するもの
 
 - `terrain`モジュール: 地形データ取得・座標変換・カメラ・wgpu描画・見通し/覆域計算・
-  レーダー観測点の状態管理・作図(図形・線。絶対座標固定/カメラ固定)
+  レーダー観測点の状態管理・作図(図形・線。絶対座標固定/カメラ固定)・航跡表示(航空機等の現在位置とシンボル)
 - `ui`モジュール: 上記を使ったLeptosコンポーネント一式(3D/2D地形描画canvas、見通し範囲タブ、
   タブ付きパネル、汎用フローティングパネル、原点設定・覆域高度設定ダイアログ)
 - `style/sim3dview.css`: 上記コンポーネントのスタイル
@@ -249,6 +249,60 @@ drawings.remove(id);
 
 `sample/sim_frontend`の「表示」→「作図デモ」(`components/drawing_demo.rs`)に、全種類の図形を絶対座標・視点空間・画面座標で
 置く実例があります。
+
+## 航跡(航空機・艦船・車両等の現在位置とシンボル)
+
+シミュレーションなどから受け取った位置を、向きつきのシンボル・ラベル・航跡(軌跡)・高度線で表示します。
+`terrain::tracks::TracksState`を`provide_context`し、**受信のたびに全トラックの最新状態を`set`する**だけです
+(通信プロトコルはこのライブラリの外。前回に無いIDは新規、今回に無いIDは航跡ごと消えます)。`TerrainView`が一覧の変化に追従して
+描き直します(未提供なら航跡表示なしで動作します)。
+
+- **`Track`**: `id`(同じ実体は常に同じID)・`kind`(`SymbolKind`: 固定翼機・ヘリ・艦船・地上車両・ミサイル・不明)・
+  `affiliation`(`Affiliation`: 友軍=青・敵=赤・中立=緑・不明=黄)・`label`・緯度経度・`altitude`(`Altitude::Msl`=海抜 /
+  `AboveGround`=地表から。地形の高さを持たないサーバーの車両などは後者)・`heading_deg`(北から時計回り)・`speed_mps`。
+- **シンボル**は画面サイズ固定で、進行方向が画面上の実際の向きを指すよう回ります(3Dでカメラを回しても、2Dの地図でも)。
+- **ラベル**は名前+「高度 速度」。**航跡**は過去の位置の折れ線、**高度線**は地表へ下ろす細い線(3Dのみ)。
+  `TracksState`の`show_labels`/`show_trails`/`show_altitude_lines`(`RwSignal<bool>`、既定ON)で切り替えます。
+- ラベルは`TerrainView`が重ねるHTML要素です(`sim3dview.css`の`.track-label`)。
+
+```rust
+use sim3dview::terrain::drawing::Altitude;
+use sim3dview::terrain::tracks::{Affiliation, SymbolKind, Track, TracksState};
+
+let tracks = TracksState::new();
+provide_context(tracks);
+
+// 自分のシミュレーション結果(や受信したメッセージ)から、毎回「全トラックの最新状態」を作って渡す。
+tracks.set(vec![
+    Track {
+        id: 1,
+        kind: SymbolKind::Aircraft,
+        affiliation: Affiliation::Friendly,
+        label: "AC101".into(),
+        lat_deg: 35.5,
+        lon_deg: 138.9,
+        altitude: Altitude::Msl(4000.0),
+        heading_deg: 90.0,
+        speed_mps: 200.0,
+    },
+    Track {
+        id: 2,
+        kind: SymbolKind::Vehicle,
+        affiliation: Affiliation::Neutral,
+        label: "TRK1".into(),
+        lat_deg: 35.3,
+        lon_deg: 139.0,
+        altitude: Altitude::AboveGround(0.0), // 地形の高さは不要(ライブラリが地表に置く)
+        heading_deg: 180.0,
+        speed_mps: 15.0,
+    },
+]);
+```
+
+サンプルアプリ(`sample/`)に、サーバー(C++)からのデータ受信を含む一通りの実例があります。`sample/sim_server`の
+`Simulation::make_demo_scenario`が7つのトラックを周回させて`TrackList`(msg_type 0x07)として配信し、`sample/sim_frontend`の
+`track_bridge.rs`が受信した値を上の`Track`へ変換して`TracksState::set`へ渡します(受信〜表示までの橋渡しがこの数十行だけ)。
+左パネルの「開始」でシミュレーションを進めると動き、表示メニューの「航跡ラベル/航跡(軌跡)/高度線」で表示を切り替えられます。
 
 ## 汎用UI部品の再利用
 

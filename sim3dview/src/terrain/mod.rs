@@ -14,3 +14,4 @@ pub mod profile;
 pub mod recenter;
 pub mod renderer;
 pub mod store;
+pub mod tracks;

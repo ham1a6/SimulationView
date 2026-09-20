@@ -223,6 +223,8 @@ pub struct TerrainRenderer {
     // `DrawVertex`・`draw.wgsl`で描く(マーカーは深度テストあり、覆域は深度テストなし。`terrain::markers`)。
     markers: VertexBatch,
     coverage_2d: VertexBatch,
+    // 航跡(トラック。`terrain::tracks`): 向きつきのシンボル・航跡・高度線。マーカーと同じく`draw_blend_pipeline`で描く。
+    tracks: VertexBatch,
     // 見通し範囲の覆域ドーム(半球状の面、TriangleList)用。地形・マーカーの奥に透けて見える
     // よう、アルファブレンド有効・深度書き込み無効のパイプラインにしてある(fs_dome参照)。
     dome_pipeline: wgpu::RenderPipeline,
@@ -721,6 +723,7 @@ impl TerrainRenderer {
             downsample_bind_group,
             markers: VertexBatch::empty(),
             coverage_2d: VertexBatch::empty(),
+            tracks: VertexBatch::empty(),
             dome_pipeline,
             dome_vertex_buffer: None,
             num_dome_vertices: 0,
@@ -765,6 +768,12 @@ impl TerrainRenderer {
     /// 2D地図モードの覆域(塗り+輪郭線)の頂点データを更新する。深度テストなしで描く(`terrain/markers.rs`)。
     pub fn update_coverage_2d(&mut self, vertices: &[DrawVertex]) {
         self.coverage_2d.set(&self.device, "coverage_2d_vertex_buffer", vertices);
+    }
+
+    /// 航跡(トラック)の頂点データ(シンボル・航跡・高度線)を更新する。トラックの受信・原点変更・地形のLOD切り替え・
+    /// 2D/3D切り替えのたびに`terrain::tracks::build_track_geometry`で作り直して呼ぶ。
+    pub fn update_tracks(&mut self, vertices: &[DrawVertex]) {
+        self.tracks.set(&self.device, "tracks_vertex_buffer", vertices);
     }
 
     /// 選択中マーカーの覆域ドーム(半球状の面、TriangleList)の頂点データを更新する。
@@ -995,6 +1004,7 @@ impl TerrainRenderer {
             // 2Dの覆域(塗り+輪郭線)は深度テストなしで、地形の上に重ねる。続いて観測点のマーカー(ピン)。
             self.coverage_2d.draw(&mut render_pass, &self.draw_screen_pipeline, &self.draw_world);
             self.markers.draw(&mut render_pass, &self.draw_blend_pipeline, &self.draw_world);
+            self.tracks.draw(&mut render_pass, &self.draw_blend_pipeline, &self.draw_world);
         }
 
         if has_overlay {

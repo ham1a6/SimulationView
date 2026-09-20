@@ -1,6 +1,7 @@
 mod app;
 mod components;
 mod protocol;
+mod track_bridge;
 mod ws;
 
 use app::App;

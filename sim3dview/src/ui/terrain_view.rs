@@ -30,6 +30,7 @@ use crate::terrain::hillshade::HillshadeState;
 use crate::terrain::recenter::RecenterRequestState;
 use crate::terrain::renderer::TerrainRenderer;
 use crate::terrain::store::TerrainStore;
+use crate::terrain::tracks::{self, TrackLabel, TrackOptions, TracksState};
 
 struct ViewState {
     renderer: Option<TerrainRenderer>,
@@ -51,6 +52,11 @@ struct ViewState {
     radar_markers: RadarMarkersState,
     /// 作図(図形・線)の一覧(`terrain::drawing`)。
     drawings: DrawingState,
+    /// 航跡(トラック)の一覧・表示設定(`terrain::tracks`)。
+    tracks: TracksState,
+    /// 航跡のラベルを置くHTML要素(canvasに重ねる層)と、いま置いているラベル。
+    labels_ref: NodeRef<leptos::html::Div>,
+    labels: Vec<LabelView>,
     /// 陰影(ヒルシェード)のON/OFF。レンダラー作成時の初期値に使う(以後の変更はEffect 7が反映する)。
     hillshade: HillshadeState,
     /// 各タイルの、いまGPUに載っている状態(全体1枚か、チャンクごとのレベルか。`terrain::lod`参照)。
@@ -63,6 +69,14 @@ struct ViewState {
     lod_pending: bool,
     /// 取得の完了・メッシュ反映の続きによる、短い待ちのLOD更新の予約中か(`schedule_lod_soon`)。
     lod_soon_pending: bool,
+}
+
+/// 画面に重ねている航跡ラベル1つ分(HTML要素と、その元のデータ)。
+struct LabelView {
+    anchor: TrackLabel,
+    root: web_sys::HtmlElement,
+    name: web_sys::HtmlElement,
+    detail: web_sys::HtmlElement,
 }
 
 /// 取得するグリッドの識別子: (タイル, レベル, チャンク)。チャンクがNoneなら、タイル1枚分・
@@ -187,6 +201,7 @@ fn try_init(
                 drop(s);
                 rebuild_markers(&state, radar_markers);
                 rebuild_drawings(&state);
+                rebuild_tracks(&state);
                 render_now(&state);
             }
             Err(e) => {
@@ -222,6 +237,7 @@ fn render_frame(state: &Rc<RefCell<ViewState>>) {
             log::error!("[terrain] render failed: {e}");
         }
     }
+    update_labels(&s);
 }
 
 /// 1フレーム描き、カメラなどが変わった可能性があるのでLODの更新を予約する。
@@ -516,6 +532,10 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
         if follows_terrain {
             rebuild_drawings(state);
         }
+        // 航跡(地表基準のトラック・高度線)も地形の高さが変わったので作り直す。
+        if !state.borrow().tracks.entries.with_untracked(|list| list.is_empty()) {
+            rebuild_tracks(state);
+        }
         render_frame(state);
     }
     if deferred_upload {
@@ -590,6 +610,133 @@ fn rebuild_drawings(state: &Rc<RefCell<ViewState>>) {
     renderer.update_drawings(&batches);
 }
 
+/// 航跡(`terrain::tracks`)の一覧・表示設定から、シンボル・航跡・高度線の頂点列とラベルを作り直して反映する。
+/// トラックの受信・表示設定の変更・原点変更・地形のLOD切り替え・2D/3D切り替えのときに呼ぶ。
+/// 描画自体は呼び出し側で`render_frame`(または`render_now`)すること。
+fn rebuild_tracks(state: &Rc<RefCell<ViewState>>) {
+    let mut s = state.borrow_mut();
+    let (Some(terrain), Some(mesh_origin), mode) = (s.terrain.clone(), s.mesh_origin, s.camera.mode) else {
+        return;
+    };
+    let tracks_state = s.tracks;
+    let layer = label_layer(&s);
+    let geometry = {
+        let Some(renderer) = s.renderer.as_mut() else {
+            return;
+        };
+        let transform = mesh::EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
+        let (width, height) = renderer.canvas_size_px();
+        let ground = |lat: f64, lon: f64| mesh::sample_heightmap(&terrain, lat, lon).unwrap_or(0.0) as f64;
+        let ctx = drawing_geometry::BuildContext {
+            mesh_transform: &transform,
+            ellipsoid: &terrain.metadata.ellipsoid,
+            ground: &ground,
+            viewport_px: (width as f32, height as f32),
+        };
+        let options = TrackOptions {
+            trails: tracks_state.show_trails.get_untracked(),
+            // 真上から見る2D地図では、縦の線は点になるので出さない。
+            altitude_lines: tracks_state.show_altitude_lines.get_untracked() && mode == ViewMode::ThreeD,
+        };
+        let geometry = tracks_state
+            .entries
+            .with_untracked(|entries| tracks::build_track_geometry(&ctx, entries, options));
+        renderer.update_tracks(&geometry.vertices);
+        geometry
+    };
+    let labels = if tracks_state.show_labels.get_untracked() { geometry.labels } else { Vec::new() };
+    set_labels(&mut s, layer.as_ref(), labels);
+}
+
+/// ラベルを覆う層(`TerrainView`が`canvas`の上に置くHTML要素)。
+fn label_layer(s: &ViewState) -> Option<web_sys::HtmlElement> {
+    let element = s.labels_ref.get_untracked()?;
+    (*element).clone().dyn_into::<web_sys::HtmlElement>().ok()
+}
+
+/// 画面に重ねるラベルを`labels`にそろえる。数が同じなら要素を使い回して文字だけ更新し、変わったら作り直す。
+fn set_labels(s: &mut ViewState, layer: Option<&web_sys::HtmlElement>, labels: Vec<TrackLabel>) {
+    let Some(layer) = layer else {
+        return;
+    };
+    if s.labels.len() != labels.len() {
+        layer.set_text_content(None);
+        s.labels.clear();
+        let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+            return;
+        };
+        let make = |class: &str| -> Option<web_sys::HtmlElement> {
+            let element = document.create_element("div").ok()?.dyn_into::<web_sys::HtmlElement>().ok()?;
+            element.set_class_name(class);
+            Some(element)
+        };
+        for anchor in &labels {
+            let (Some(root), Some(name), Some(detail)) =
+                (make("track-label"), make("track-label-name"), make("track-label-detail"))
+            else {
+                continue;
+            };
+            let _ = root.append_child(&name);
+            let _ = root.append_child(&detail);
+            let _ = layer.append_child(&root);
+            // 位置は毎フレーム`update_labels`が決める。名前・詳細・色は下で入れる(初回は必ず異なる扱いにする)。
+            s.labels.push(LabelView {
+                anchor: TrackLabel { name: String::new(), detail: String::new(), color: [-1.0; 3], ..anchor.clone() },
+                root,
+                name,
+                detail,
+            });
+        }
+    }
+    for (view, new) in s.labels.iter_mut().zip(labels) {
+        if view.anchor.name != new.name {
+            view.name.set_text_content(Some(&new.name));
+        }
+        if view.anchor.detail != new.detail {
+            view.detail.set_text_content(Some(&new.detail));
+        }
+        if view.anchor.color != new.color {
+            let [r, g, b] = new.color;
+            let _ = view.root.style().set_property(
+                "color",
+                &format!("rgb({},{},{})", (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8),
+            );
+        }
+        view.anchor = new;
+    }
+}
+
+/// 航跡ラベルを、いまのカメラでの画面位置へ動かす(毎フレーム)。カメラの後ろ・画面の外は隠す。
+/// トラックの位置(`TrackLabel::position`)は、シンボルと同じく地形メッシュの原点基準のENU座標。
+fn update_labels(s: &ViewState) {
+    let (Some(renderer), false) = (s.renderer.as_ref(), s.labels.is_empty()) else {
+        return;
+    };
+    let view_proj = s.camera.to_camera(renderer.aspect_ratio()).view_proj_matrix();
+    let (width, height) = renderer.canvas_size_px();
+    let (width, height) = (width as f32, height as f32);
+    for label in &s.labels {
+        let [x, y, z] = label.anchor.position;
+        let clip = view_proj * glam::Vec4::new(x, y, z, 1.0);
+        let (ndc_x, ndc_y) = (clip.x / clip.w, clip.y / clip.w);
+        let visible = clip.w > 0.0 && ndc_x.abs() <= 1.1 && ndc_y.abs() <= 1.1;
+        let style = label.root.style();
+        if visible {
+            // シンボル(約30px)の右上にずらして置く。
+            let px = (ndc_x + 1.0) * 0.5 * width + LABEL_OFFSET_X_PX;
+            let py = (1.0 - ndc_y) * 0.5 * height + LABEL_OFFSET_Y_PX;
+            let _ = style.set_property("transform", &format!("translate({px:.1}px, {py:.1}px)"));
+            let _ = style.set_property("display", "block");
+        } else {
+            let _ = style.set_property("display", "none");
+        }
+    }
+}
+
+/// 航跡ラベルを、シンボルの位置からずらす量(画面のpx)。
+const LABEL_OFFSET_X_PX: f32 = 18.0;
+const LABEL_OFFSET_Y_PX: f32 = -16.0;
+
 #[component]
 pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let canvas_ref: NodeRef<leptos::html::Canvas> = NodeRef::new();
@@ -606,6 +753,9 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let origin_pick = use_context::<OriginPickState>();
     // 未提供なら作図なしで動作する(上と同じく後付けのオプション機能)。
     let drawings = use_context::<DrawingState>().unwrap_or_default();
+    // 未提供なら航跡表示なしで動作する(同上)。
+    let tracks = use_context::<TracksState>().unwrap_or_default();
+    let labels_ref: NodeRef<leptos::html::Div> = NodeRef::new();
 
     terrain_store.ensure_loaded();
 
@@ -624,6 +774,9 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         down_y: 0.0,
         radar_markers,
         drawings,
+        tracks,
+        labels_ref,
+        labels: Vec::new(),
         hillshade,
         resident: HashMap::new(),
         loading: HashSet::new(),
@@ -834,6 +987,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             // マーカー・覆域リング・作図も新しい原点基準のENU座標へ再変換する。
             rebuild_markers(&state, radar_markers);
             rebuild_drawings(&state);
+            rebuild_tracks(&state);
             render_now(&state);
         });
     }
@@ -861,6 +1015,20 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             let _ = drawings.items.get();
             rebuild_drawings(&state);
             render_now(&state);
+        });
+    }
+
+    // --- Effect 5b: 航跡(`terrain::tracks`)の一覧・表示設定の変化に追従して描き直す ---
+    // トラックは高頻度(数十Hz)で更新されうるので、LODの更新は予約せず(`render_frame`)、描くだけにする。
+    {
+        let state = state.clone();
+        Effect::new(move |_| {
+            let _ = tracks.entries.get();
+            let _ = tracks.show_labels.get();
+            let _ = tracks.show_trails.get();
+            let _ = tracks.show_altitude_lines.get();
+            rebuild_tracks(&state);
+            render_frame(&state);
         });
     }
 
@@ -1061,6 +1229,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         state_toggle.borrow_mut().camera.mode = new_mode;
         view_mode.set(new_mode);
         rebuild_markers(&state_toggle, radar_markers);
+        rebuild_tracks(&state_toggle);
         render_now(&state_toggle);
     };
 
@@ -1089,6 +1258,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                     }
                 })
             }}
+            <div class="terrain-track-labels" node_ref=labels_ref></div>
             <div class="terrain-view-controls">
                 <button on:click=on_toggle_view_mode title="2D/3D表示切り替え">
                     {move || if view_mode.get() == ViewMode::ThreeD { "2D表示に切替" } else { "3D表示に切替" }}

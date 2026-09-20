@@ -17,7 +17,7 @@ use web_sys::{BinaryType, CloseEvent, MessageEvent, WebSocket};
 
 use crate::protocol::{
     AppStatus, ClientCommand, CommandError, MsgType, OriginState, SimState, StatusPanelConfig,
-    VabConfig,
+    TrackList, VabConfig,
 };
 
 const INITIAL_BACKOFF_MS: u32 = 1_000;
@@ -58,6 +58,8 @@ pub struct WsSignals {
     pub last_command_error: RwSignal<Option<CommandError>>,
     /// シミュレータアプリケーション自体の状態文字列(DETAILED_DESIGN.md 7.7節)。
     pub app_status: RwSignal<Option<AppStatus>>,
+    /// 航跡(航空機・艦船・車両等)の最新の一覧。`track_bridge.rs`がsim3dviewライブラリの`TracksState`へ橋渡しする。
+    pub track_list: RwSignal<Option<TrackList>>,
 }
 
 impl WsSignals {
@@ -70,6 +72,7 @@ impl WsSignals {
             last_sim_state: RwSignal::new(None),
             last_command_error: RwSignal::new(None),
             app_status: RwSignal::new(None),
+            track_list: RwSignal::new(None),
         }
     }
 }
@@ -247,6 +250,10 @@ impl WsConnection {
             MsgType::AppStatus => match rmp_serde::from_slice::<AppStatus>(body) {
                 Ok(status) => self.signals.app_status.set(Some(status)),
                 Err(e) => log::error!("[ws] failed to decode AppStatus: {e}"),
+            },
+            MsgType::TrackList => match rmp_serde::from_slice::<TrackList>(body) {
+                Ok(list) => self.signals.track_list.set(Some(list)),
+                Err(e) => log::error!("[ws] failed to decode TrackList: {e}"),
             },
         }
     }
