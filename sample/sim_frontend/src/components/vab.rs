@@ -2,6 +2,7 @@
 //! - 先頭行(B1〜B4相当)の配置・ラベル・有効/無効はサーバーの`VabConfig`が決める
 //!   (ハードコードしない)。押すと通常のvab_pressコマンドを送るのに加え、
 //!   「選択中カテゴリ」としてローカルに記憶する(カテゴリ選択タブとして扱う)
+//! - 中段のページ数は、このコンポーネントを置く側が`mid_pages`で決める(1=単一ページ、任意のページ数)
 //! - 中段・下段(サーバーVabConfigでのB5〜B24相当)は、**選択中カテゴリに応じて内容が
 //!   動的に切り替わるフロント側だけのダミーコンテンツ**に置き換える(サーバーからの
 //!   実際のボタン定義は使わない)。VAB自体がまだ実ハードウェア非連動の開発用ダミーの
@@ -30,9 +31,8 @@ use crate::ws::WsSignals;
 /// 残りをこの行数として扱う(元のVabConfigのrowsから引くのではなく、ダミー表示専用の
 /// 固定値。サーバーのVabConfigとは独立している)。
 const MID_ROWS: usize = 4;
-/// 中段の実際の列数(ページ送りで見せる分、1ページの可視列数より多くしてページ送りを
-/// 試作できるようにする)。
-const MID_TOTAL_COLS: usize = 8;
+/// 中段のページ数の既定値(`VabPanel`の`mid_pages`を省略したとき)。
+const DEFAULT_MID_PAGES: usize = 2;
 /// 下段(固定・横スクロールなし)の列数。
 const BOTTOM_COLS: usize = 4;
 
@@ -51,6 +51,12 @@ pub fn VabPanel(
     /// WsConnectionはRc<RefCell<..>>を含みSend/Syncでないため、
     /// (Leptos 0.8のprovide_contextが要求する境界を満たせない)、propとして受け取る。
     conn: WsConnection,
+    /// 中段(ダミーボタン)のページ数。1なら単一ページ(ページ送りボタンを出さない)、2以上ならその
+    /// ページ数だけ「◀ 1/N ▶」で切り替える。1ページの列数は先頭行と同じ(サーバーのVabConfigの`cols`)で、
+    /// 中段の総列数は`mid_pages * cols`になる。`Signal`を渡せば実行中に変えられる(0は1として扱う)。
+    /// 省略時は2ページ。
+    #[prop(into, default = DEFAULT_MID_PAGES.into())]
+    mid_pages: Signal<usize>,
 ) -> impl IntoView {
     let signals = use_context::<WsSignals>().expect("WsSignals context not found");
     // 選択中カテゴリ(先頭行のうち何番目のボタンが押されたか、0始まり)。既定は先頭。
@@ -125,7 +131,9 @@ pub fn VabPanel(
                 // --- 中段: 選択中カテゴリのダミーボタン(ページ送りボタンで追加ボタンを見せる) ---
                 // 1ページの列数は先頭行と同じ`cols`。横スクロールではなく、◀/▶ボタンで
                 // ページを切り替える方式にした(要望により、横スクロールバー方式から変更)。
-                let total_pages = MID_TOTAL_COLS.div_ceil(cols).max(1);
+                let total_pages = mid_pages.get().max(1);
+                // 中段の総列数(ページ数×1ページの列数)。ダミーボタンはこの列数ぶん並べる。
+                let mid_total_cols = total_pages * cols;
                 let page = current_page.get().min(total_pages - 1);
                 let mid_grid_style =
                     format!("grid-template-columns: repeat({cols}, 1fr); grid-template-rows: repeat({MID_ROWS}, auto);");
@@ -137,7 +145,7 @@ pub fn VabPanel(
                             .flat_map(|row| {
                                 (0..cols).filter_map(move |col_in_page| {
                                     let abs_col = page * cols + col_in_page;
-                                    (abs_col < MID_TOTAL_COLS).then_some(row * MID_TOTAL_COLS + abs_col)
+                                    (abs_col < mid_total_cols).then_some(row * mid_total_cols + abs_col)
                                 })
                             })
                             .map(|i| {
@@ -171,7 +179,8 @@ pub fn VabPanel(
                 let on_next_page = move |_: leptos::ev::MouseEvent| {
                     current_page.update(|p| *p = (*p + 1).min(total_pages - 1));
                 };
-                let pager = view! {
+                // 単一ページならページ送りは不要なので出さない。
+                let pager = (total_pages > 1).then(|| view! {
                     <div class="vab-pager">
                         <button
                             class="vab-pager-btn"
@@ -189,7 +198,7 @@ pub fn VabPanel(
                             "▶"
                         </button>
                     </div>
-                };
+                });
                 let mid_block = view! {
                     <div class="vab-mid-block">
                         {mid_grid}

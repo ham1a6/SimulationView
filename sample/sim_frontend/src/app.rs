@@ -144,7 +144,8 @@ pub fn App() -> impl IntoView {
                 <div class="app-layout" style:grid-template-columns=grid_columns>
                     <div class="left-panel">
                         <SimulationStatusPanel conn=conn.clone()/>
-                        <VabPanel conn=conn.clone()/>
+                        // 中段のページ数(1=単一ページ、2以上=ページ送りあり)。ここで自由に決められる。
+                        <VabPanel conn=conn.clone() mid_pages=2usize/>
                     </div>
 
                     <div class="center-panel">
