@@ -24,6 +24,7 @@ C++シミュレータ + Rust/Leptos(WASM) Web UI + ALOS DEMベースの3D地形�
 | セットアップ・ビルド・起動手順・環境問題の対処(トラブルシューティング表) | [README.md](README.md) |
 | `sim3dview`ライブラリの使い方(組み込み方・context・CSSテーマ契約) | [sim3dview/README.md](sim3dview/README.md) |
 | 機能ごとの実装経緯(要望→調査→原因→修正→実機確認)・過去のハマりどころ | [DEVELOPMENT_HISTORY.md](DEVELOPMENT_HISTORY.md) |
+| 利用しているサードパーティのライセンス・著作権表示(依存を変えたら`python scripts/gen_third_party_notice.py`で再生成) | [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md) |
 | C++経験者向けに、Rust・WASM・wgpu・各機能のしくみを土台から読みたい | 技術解説ノート(Artifact「Sim3dViewのしくみ」<https://claude.ai/artifact/1hpM7J9MELrr9K8PXsH8VR>。機能を足したら更新する) |
 
 設計判断の「なぜ」を辿りたいときは、上記に加えてgit履歴を参照する。

@@ -292,4 +292,5 @@ C++シミュレータ本体・Web UI(サンプルアプリ)とも実装・動作
 - [BASIC_DESIGN.md](BASIC_DESIGN.md) — 基本設計書(要求仕様・確定した設計方針・全体構成)
 - [DETAILED_DESIGN.md](DETAILED_DESIGN.md) — 詳細設計書(データフォーマット・プロトコル・UML図)
 - [DEVELOPMENT_HISTORY.md](DEVELOPMENT_HISTORY.md) — 実装の経緯・ハマりどころの記録(機能ごとの「要望→原因→修正→確認」)
+- [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md) — 利用しているサードパーティ(Rustクレート・C++ライブラリ・ALOS地形データ)の一覧・著作権表示・ライセンス。依存を変えたら`python scripts/gen_third_party_notice.py`で再生成する
 - [CLAUDE.md](CLAUDE.md) — AIエージェント向けの作業方針・要点(短い索引)
