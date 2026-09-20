@@ -75,12 +75,25 @@ fn fs_dome(in: VertexOutput) -> @location(0) vec4<f32> {
 // 海抜0mの面を水色で描く。メッシュではなく画面いっぱいの三角形1枚で、各画素の視線と楕円体の
 // 交点があるかをシェーダーで直接判定する(交点なし=空は描かずclearの黒のまま)。
 // - 地球の丸み・楕円体を厳密に扱える(メッシュ近似の弦の誤差・継ぎ目・範囲の限りがない)
-// - 深度は書かず、地形メッシュより先に描く。地形は必ず水域の上に上書きされるので、地形の標高が
-//   0m以下(DSMの負の値・海面以下の陸地)でも水域が地形を隠すことはない
+// - 地形メッシュより先に描く。**交点の深度を書く**ので、楕円体(地球本体)の向こう側にある地形は
+//   隠れる(地球の丸みの向こう側・海面の下・海岸の張り出した縁の下から見える地形の裏側が、
+//   水面越しに透けて見えない)。ただし深度は交点より視線方向に`WATER_DEPTH_MARGIN_M`奥へずらして
+//   書く: 地形は交点から`WATER_DEPTH_MARGIN_M`以内の奥までは水域より手前として描かれ、
+//   標高が0m以下(DSMの負の値・海面以下の陸地)の地形が水域に隠れることはない
 const WATER_COLOR = vec3<f32>(0.25, 0.55, 0.85);
+// 水域の深度を、視線の交点から奥へずらす距離(メートル、視線に沿って)。地形が0m以下でも隠れない
+// ための余裕。標高-Hの地形が視線と角度thetaで交わるとき、交点との視線方向の距離はH/sin(theta)。
+// 標高-10mでもtheta>=約0.6度(ほぼ水平の見え方)まで隠れない。一方、地球の丸みの向こう側の地形は
+// 水平線からの距離が数km以上なので、これより大きく奥になり隠れる。
+const WATER_DEPTH_MARGIN_M = 1000.0;
+
+struct WaterOutput {
+    @location(0) color: vec4<f32>,
+    @builtin(frag_depth) depth: f32,
+};
 
 @fragment
-fn fs_water(in: DownsampleOutput) -> @location(0) vec4<f32> {
+fn fs_water(in: DownsampleOutput) -> WaterOutput {
     let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
     let offset = camera.right.xyz * ndc.x + camera.up.xyz * ndc.y;
     let perspective = camera.eye.w;
@@ -103,15 +116,23 @@ fn fs_water(in: DownsampleOutput) -> @location(0) vec4<f32> {
         discard;
     }
     // 桁落ちしにくい解の公式。視点は楕円体の外にあるので、2つの解は同符号で、
-    // 正なら視線の前方で交わる(負なら後ろ向き=空)。
+    // 正なら視線の前方で交わる(負なら後ろ向き=空)。手前の交点(小さい方の解)が水面。
     let s = sqrt(disc);
     let q = -(half_b + select(-s, s, half_b >= 0.0));
     let t1 = q / a;
     let t2 = c / q;
-    if (!(max(t1, t2) > 0.0)) {
+    let t_near = min(t1, t2);
+    if (!(max(t1, t2) > 0.0) || !(t_near > 0.0)) {
         discard;
     }
-    return vec4<f32>(WATER_COLOR, 1.0);
+
+    // 交点から視線に沿って奥へ`WATER_DEPTH_MARGIN_M`ずらした点の深度(反転Z: 0=遠い、1=近い)。
+    let hit = origin + dir * (t_near + WATER_DEPTH_MARGIN_M / length(dir));
+    let clip = camera.view_proj * vec4<f32>(hit, 1.0);
+    var out: WaterOutput;
+    out.color = vec4<f32>(WATER_COLOR, 1.0);
+    out.depth = clamp(clip.z / clip.w, 0.0, 1.0);
+    return out;
 }
 
 // スーパーサンプリングのダウンサンプル用(renderer.rsのdownsample_pipeline)。地形メッシュを

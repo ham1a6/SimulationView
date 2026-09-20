@@ -388,14 +388,26 @@ fn grid_vertices(
     let (slat0, clat0) = transform.origin_lat_rad.sin_cos();
     let (slon0, clon0) = transform.origin_lon_rad.sin_cos();
 
+    // ノード(行j, 列i)の、楕円体高hでのENU座標(東, 北, 上)。
+    let enu = |j: usize, i: usize, h: f64| -> [f64; 3] {
+        let (s, c, prime) = rows[j];
+        let (sl, cl) = cols[i];
+        let x = (prime + h) * c * cl - transform.origin_x;
+        let y = (prime + h) * c * sl - transform.origin_y;
+        let z = (prime * (1.0 - e2) + h) * s - transform.origin_z;
+        [
+            -slon0 * x + clon0 * y,
+            -slat0 * clon0 * x - slat0 * slon0 * y + clat0 * z,
+            clat0 * clon0 * x + clat0 * slon0 * y + slat0 * z,
+        ]
+    };
+
     let mut vertices = Vec::with_capacity(tile_vertex_count(cells));
     // 法線を求めるためのノードのENU位置(f64。原点から遠いタイルではf32だと隣のノードとの差が
     // 誤差に埋もれて陰影がざらつくので、丸める前の値を使う)。
     let mut positions: Vec<[f64; 3]> = Vec::with_capacity(n * n);
     for j in 0..n {
-        let (s, c, prime) = rows[j];
         for i in 0..n {
-            let (sl, cl) = cols[i];
             let value = grid[j * n + i];
             // データなし(海域)の頂点位置はNaNだと破綻するため標高0mで配置するが、この頂点を
             // 含む三角形は`grid_indices`で捨てるので描画されない。
@@ -407,12 +419,7 @@ fn grid_vertices(
                     elevation_to_color(value as f32, COLOR_MIN_ELEVATION_M, max_elevation),
                 )
             };
-            let x = (prime + h) * c * cl - transform.origin_x;
-            let y = (prime + h) * c * sl - transform.origin_y;
-            let z = (prime * (1.0 - e2) + h) * s - transform.origin_z;
-            let east = -slon0 * x + clon0 * y;
-            let north = -slat0 * clon0 * x - slat0 * slon0 * y + clat0 * z;
-            let up = clat0 * clon0 * x + clat0 * slon0 * y + slat0 * z;
+            let [east, north, up] = enu(j, i, h);
             positions.push([east, north, up]);
             vertices.push(TerrainVertex::unlit([east as f32, north as f32, up as f32], color));
         }
@@ -421,13 +428,22 @@ fn grid_vertices(
         vertex.normal_xy = normal_xy;
     }
 
+    // スカート(チャンク・タイルの縁の壁)の底。`place.skirt_depth`だけ下げるが、海抜0m(水域レイヤーの面)
+    // より上には止めず、少なくとも水域まで届かせる。標高の高い縁(データ範囲の端など)の下に隙間が
+    // 残ると、縁の外の低い視点から、その下を通して地形の裏側が見える(水域の面より上を通る視線は
+    // 水域の深度で隠れないため)。
     for edge in 0..4 {
         for k in 0..n {
-            let mut v = vertices[edge_node(edge, k, cells)];
-            v.position[2] -= place.skirt_depth;
+            let node = edge_node(edge, k, cells);
+            let (j, i) = (node / n, node % n);
+            let h = if grid[node] == NO_DATA { 0.0 } else { grid[node] as f64 };
+            let bottom = enu(j, i, (h - place.skirt_depth as f64).min(0.0));
+            let mut v = vertices[node];
+            v.position = [bottom[0] as f32, bottom[1] as f32, bottom[2] as f32];
             vertices.push(v);
         }
     }
+
     vertices
 }
 
@@ -465,6 +481,7 @@ fn grid_indices(grid: &[i16], cells: usize) -> Vec<u32> {
             }
         }
     }
+
     indices
 }
 

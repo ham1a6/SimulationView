@@ -362,8 +362,10 @@ impl TerrainRenderer {
         });
 
         // 水域レイヤー用パイプライン。画面いっぱいの三角形(頂点バッファなし)を、地形メッシュより先に
-        // 描く。深度は書かず、テストもしない(地形は必ずこの上に上書きされる)。視線が楕円体に当たらない
-        // 画素(空)は`discard`してclearの黒のままにする。
+        // 描く。深度テストはしない(常に描く)が、フラグメントシェーダーが楕円体との交点の深度
+        // (`WATER_DEPTH_MARGIN_M`だけ奥へずらしたもの)を書く。続く地形メッシュは通常の深度テストで
+        // これと比較され、楕円体の向こう側の地形は隠れ、手前(と余裕の範囲)の地形は水域の上に描かれる。
+        // 視線が楕円体に当たらない画素(空)は`discard`してclearの黒(深度0=最遠)のままにする。
         let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("water_pipeline"),
             layout: Some(&pipeline_layout),
@@ -394,7 +396,7 @@ impl TerrainRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(false),
+                depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -757,7 +759,8 @@ impl TerrainRenderer {
                 multiview_mask: None,
             });
 
-            // 水域レイヤーを最初に描く(深度は書かないので、続く地形メッシュは常にこの上に描かれる)。
+            // 水域レイヤーを最初に描く(楕円体との交点の深度を書く。続く地形メッシュは深度テストで、
+            // 地球本体の向こう側は隠れ、手前(と余裕の範囲)は水域の上に描かれる)。
             render_pass.set_pipeline(&self.water_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.draw(0..3, 0..1);
