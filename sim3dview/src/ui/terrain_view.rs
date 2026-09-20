@@ -1036,12 +1036,15 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             }
             // 常駐している全メッシュ(タイル全体・各チャンク、各自の解像度レベル)の頂点位置を、新しい原点のENU座標で
             // 作り直してアップロードする(頂点数・並びは原点に依存しない)。
-            let Some(renderer) = s.renderer.as_ref() else {
+            // `renderer`(可変)と`resident`(読み取り)を同時に借りるので、`RefMut`を素の`&mut`にして
+            // フィールドごとの借用に分ける。
+            let st = &mut *s;
+            let Some(renderer) = st.renderer.as_mut() else {
                 return;
             };
             // 水域レイヤー(楕円体の海抜0mの面)も新しい原点基準にする。
             renderer.set_ellipsoid_origin(&new_transform);
-            for (&key, resident) in s.resident.iter() {
+            for (&key, resident) in st.resident.iter() {
                 let Some(tile) = terrain.tile(key) else { continue };
                 match resident {
                     TileLayout::Whole => {
@@ -1063,11 +1066,11 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                     }
                 }
             }
-            let camera = s.camera.to_camera(renderer.aspect_ratio());
+            let camera = st.camera.to_camera(renderer.aspect_ratio());
             if let Err(e) = renderer.render(&camera) {
                 log::error!("[terrain] re-render after origin change failed: {e}");
             }
-            s.mesh_origin = Some(new_origin);
+            st.mesh_origin = Some(new_origin);
             drop(s);
             // マーカー・覆域リング・作図も新しい原点基準のENU座標へ再変換する。
             rebuild_markers(&state, radar_markers);
