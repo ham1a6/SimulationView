@@ -52,11 +52,11 @@ pub struct MapMenuTarget {
 /// 右クリックのたびに、その場所(`MapMenuTarget`)から項目を作って返す。空を返せばメニューは出ない。
 /// レーダー観測点の追加・原点の指定・作図の開始など、何を並べるかはアプリが決める。
 #[derive(Clone, Copy)]
-pub struct MapMenuState(pub Callback<MapMenuTarget, Vec<MenuItem>>);
+pub struct MapMenuState(pub UnsyncCallback<MapMenuTarget, Vec<MenuItem>>);
 
 impl MapMenuState {
-    pub fn new(build: impl Fn(MapMenuTarget) -> Vec<MenuItem> + Send + Sync + 'static) -> Self {
-        Self(Callback::new(build))
+    pub fn new(build: impl Fn(MapMenuTarget) -> Vec<MenuItem> + 'static) -> Self {
+        Self(UnsyncCallback::new(build))
     }
 }
 

@@ -840,9 +840,9 @@ classDiagram
 
 `WsConnection`は`Rc<RefCell<Inner>>`を内部に持ちSend/Syncではないため、Leptos 0.8の
 `provide_context`(Send+Sync境界を要求する)には乗せられない。そのため`WsSignals`はcontext経由、
-`WsConnection`はコンポーネントのpropとして明示的に渡す設計とした
-(`WsConnection`自体には`unsafe impl Send/Sync`を付与している。`wasm32-unknown-unknown`は
-シングルスレッドのため実質的に安全)。
+`WsConnection`は`WsHandle`(`StoredValue::new_local`で包んだ`Copy`のハンドル。`Send`+`Sync`を満たす)
+に包み、コンポーネントのpropとして明示的に渡す設計とした(以前は`WsConnection`に`unsafe impl Send/Sync`を
+付与していたが、ハンドル化して`unsafe`を無くした)。
 
 ### 6.3 再接続状態遷移図
 
@@ -1396,7 +1396,7 @@ flowchart LR
   (`world`/`view`/`screen`)、さらに`world`/`view`は不透明(`opaque`、深度を書く)と半透明(`blend`、深度を書かない)に分ける。
   `Screen`は追加順に重ねるので1列。
 - 2D図形は、置いた位置を中心とするローカル平面(x=右/東, y=上/北)で三角形と輪郭線(`Geom2d`)を作り、種類ごとの
-  変換(`Frame2d`)で出力座標にする。円・扇形はリング分割、矩形は格子、多角形は耳切り法+辺の長さ上限での4分割。
+  変換(`Frame2d`)で出力座標にする。円・扇形はリング分割、矩形は格子、多角形は三角形分割(`drawing_geometry::triangulate`。`earcutr`)+辺の長さ上限での4分割。
   `World`では、ローカル座標を基準点からの方位・距離(方位角等距離図法、球面の直接解、半径は基準点の平均曲率半径)とみなして
   緯度経度へ戻し、`Altitude`から高さを決めて`EnuTransform`でメッシュ原点のENUへ変換する。分割の細かさは
   海抜の水平面で辺20km・輪郭2km、地表貼り付けで辺500m・輪郭250m(面積から決まる三角形数の上限`MAX_FILL_TRIANGLES`あり)。
@@ -1479,7 +1479,7 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 **シンボル**(向きつきビルボード)
 
 - 種別ごとの形(固定翼機の輪郭、ヘリの胴体+ローター、船体、車両、ミサイル、ひし形)を、進行方向が+y・右が+xのポリゴンで持ち、
-  耳切り法(`drawing_geometry::ear_clip`)で三角形にする。縁取り(暗色、1.3倍)→本体(所属の色)の順に積む。
+  三角形分割(`drawing_geometry::triangulate`。`earcutr`)で三角形にする。縁取り(暗色、1.3倍)→本体(所属の色)の順に積む。
 - 位置(高度込み)をアンカーに、頂点は画面のpxでずらす**画面サイズ固定のビルボード**(マーカーのピン(6.9節)と同じ仕組み)。
   さらに`draw.wgsl`の**向きつき**(`params.z=2`、`params.x`=進行方向のラジアン)は、アンカーとアンカーから進行方向(ENUの水平)へ200m進んだ点を
   射影して、進行方向が**画面上で実際に指す向き**を求め、その向きへ形を回す。3Dでカメラを回しても、2Dの地図でも、
@@ -1741,7 +1741,7 @@ stateDiagram-v2
     項目は**先に閉じてから**`on_select`を呼ぶ(呼んだ先で別のメニューを出せる)。画面の右端・下端にはみ出すときは、描画後に測って収まる位置へずらす
     (それまでは`visibility: hidden`で、指定位置から一瞬ずれて見えるのを防ぐ)。サブメニューは項目にカーソルを乗せる/押すと右へ開き、右に収まらなければ左へ開く(`.flip`)。
     `copy_to_clipboard(text)`(`navigator.clipboard`。https/localhostのみ)も付けてある。
-  - **地図の右クリック**: `TerrainView`が`MapMenuState(Callback<MapMenuTarget, Vec<MenuItem>>)`と`ContextMenuState`の**両方**を`use_context`できれば、
+  - **地図の右クリック**: `TerrainView`が`MapMenuState(UnsyncCallback<MapMenuTarget, Vec<MenuItem>>)`と`ContextMenuState`の**両方**を`use_context`できれば、
     右クリックで`MapMenuTarget { position: 地表の(緯度, 経度)(範囲外・空ならNone), track: 右クリックした航跡のシンボル }`を求め、コールバックが返した項目でメニューを出す
     (どちらもNoneなら出さない。シンボルを右クリックしたらそのトラックを先に選択する)。どちらかが無ければ従来どおり、その地点にレーダー観測点を追加する。
     図形の作成中は、メニューではなく「置いた点を1つ戻す」(6.11節)を優先する。

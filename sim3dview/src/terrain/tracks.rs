@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use leptos::prelude::*;
 
 use super::drawing::{Altitude, Color};
-use super::drawing_geometry::{append_line_strip, ear_clip, signed_area, BuildContext, DrawVertex};
+use super::drawing_geometry::{append_line_strip, triangulate, BuildContext, DrawVertex};
 
 pub type TrackId = u64;
 
@@ -298,15 +298,6 @@ fn glyph(kind: SymbolKind) -> Vec<Vec<[f64; 2]>> {
     }
 }
 
-/// ポリゴンを三角形(3点ずつ)に分ける(向きはどちらでもよい)。
-fn triangulate(polygon: &[[f64; 2]]) -> Vec<[f64; 2]> {
-    let mut poly = polygon.to_vec();
-    if signed_area(&poly) < 0.0 {
-        poly.reverse();
-    }
-    ear_clip(&poly)
-}
-
 /// シンボル1個ぶんの三角形を`out`に追加する(向きつきビルボード)。
 fn push_symbol(
     out: &mut Vec<DrawVertex>,
@@ -472,6 +463,7 @@ pub fn build_track_geometry(ctx: &BuildContext, entries: &[TrackEntry], options:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain::drawing_geometry::signed_area;
     use crate::terrain::loader::Ellipsoid;
     use crate::terrain::mesh::{EnuTransform, Origin};
 

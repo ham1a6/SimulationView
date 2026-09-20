@@ -121,7 +121,8 @@ cd sample/sim_frontend && trunk serve                          # 開発サーバ
 
 - Leptosの`view!`属性値に演算子を含む式を直接書かない(`let`で受けてから渡す。隣の属性が誤認識される)
 - `{move || ...}`等のchildren位置のクロージャは`Send`境界を要求する。`Rc<RefCell<..>>`を直接捕捉できない
-  (`WsConnection`のように`unsafe impl Send`するか、条件付き描画自体を避ける)
+  (`StoredValue::new_local`で包んだ`Copy`のハンドルを捕捉する。サンプルの`WsHandle`。`unsafe impl Send`は使わない)。
+  公開コールバックは`Send`不要の`UnsyncCallback`(`Callback`ではない)
 - 同じ詳細度のCSSクラスは宣言順が後ろの方が勝つ(VABの`.vab-button-active`は`.vab-button-dummy`より後ろに置く)
 - 判断を1枚のスクリーンショットだけで下さない。同じ操作を複数回再現して確認する
 

@@ -24,7 +24,7 @@ const SUBMENU_WIDTH_ESTIMATE_PX: f64 = 240.0;
 #[derive(Clone)]
 pub enum MenuItem {
     /// 押せる項目。`enabled`がfalseなら灰色で押せない。
-    Action { label: String, enabled: bool, on_select: Callback<()> },
+    Action { label: String, enabled: bool, on_select: UnsyncCallback<()> },
     /// 子のメニューを右に開く項目。
     Submenu { label: String, items: Vec<MenuItem> },
     /// 押せない見出し・情報の行。
@@ -34,13 +34,13 @@ pub enum MenuItem {
 
 impl MenuItem {
     /// 押せる項目。選ばれたら`on_select`を呼ぶ(メニューは先に閉じる)。
-    pub fn action(label: impl Into<String>, on_select: impl Fn() + Send + Sync + 'static) -> Self {
-        Self::Action { label: label.into(), enabled: true, on_select: Callback::new(move |()| on_select()) }
+    pub fn action(label: impl Into<String>, on_select: impl Fn() + 'static) -> Self {
+        Self::Action { label: label.into(), enabled: true, on_select: UnsyncCallback::new(move |()| on_select()) }
     }
 
     /// 灰色で押せない項目(機能はあるが、いまは使えないことを見せたいとき)。
     pub fn disabled(label: impl Into<String>) -> Self {
-        Self::Action { label: label.into(), enabled: false, on_select: Callback::new(|()| {}) }
+        Self::Action { label: label.into(), enabled: false, on_select: UnsyncCallback::new(|()| {}) }
     }
 
     /// `enabled`がfalseなら押せなくする(操作の項目だけに効く)。

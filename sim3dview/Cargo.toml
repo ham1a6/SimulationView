@@ -17,6 +17,7 @@ log = "0.4"
 wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 glam = "0.33"
+earcutr = "0.5.0"
 
 [dependencies.web-sys]
 version = "0.3"

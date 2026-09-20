@@ -22,7 +22,7 @@ pub fn OriginDialog(
     /// 地形データ配信のベースURL(`terrain::loader`参照)。`geodetic_bounds`の取得に使う。
     #[prop(into)] base_url: String,
     /// 「設定」ボタンで緯度経度が確定した際に呼ばれる。実際の送信方法は呼び出し側に委ねる。
-    on_submit: Callback<(f64, f64)>,
+    on_submit: UnsyncCallback<(f64, f64)>,
 ) -> impl IntoView {
     let origin_state = use_context::<OriginState>().expect("OriginState context not found");
     let dialog = use_context::<OriginDialogState>().expect("OriginDialogState context not found");

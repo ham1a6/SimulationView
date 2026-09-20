@@ -106,11 +106,21 @@ pub struct WsConnection {
     inner: Rc<RefCell<Inner>>,
 }
 
-// LeptosのReactiveFunction等はSend境界を要求する(SSRとの共通APIのため)が、
-// wasm32-unknown-unknown(スレッドなし単一スレッド)ではSend/Syncは実質意味を持たず、
-// Rc<RefCell<..>>を複数スレッドから使うことは実際には起こり得ない。CSR専用アプリとして安全。
-unsafe impl Send for WsConnection {}
-unsafe impl Sync for WsConnection {}
+/// `WsConnection`をコンポーネントへ渡すためのハンドル。`Copy`で`Send`+`Sync`(Leptosの`view!`の子や
+/// `provide_context`が要求する境界)を満たし、`unsafe`なしで`Rc<RefCell<..>>`を持つ`WsConnection`を
+/// 共有できる(本体はこのスレッド専用の`StoredValue`に入り、ハンドルは指すだけ)。
+#[derive(Clone, Copy)]
+pub struct WsHandle(StoredValue<WsConnection, LocalStorage>);
+
+impl WsHandle {
+    pub fn new(conn: WsConnection) -> Self {
+        Self(StoredValue::new_local(conn))
+    }
+
+    pub fn send_command(&self, cmd: &ClientCommand) {
+        self.0.with_value(|conn| conn.send_command(cmd));
+    }
+}
 
 impl WsConnection {
     /// 接続を開始する。返り値を保持し続ける必要はない

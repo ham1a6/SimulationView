@@ -432,7 +432,7 @@ fn rect_geom(width: f64, height: f64, rotation_deg: f64, steps: Steps) -> Geom2d
     geom
 }
 
-/// 多角形: 耳切り法で三角形に分け、辺の長さが`steps.fill`を超える三角形は4分割で細分化する。
+/// 多角形: 三角形に分け(`triangulate`)、辺の長さが`steps.fill`を超える三角形は4分割で細分化する。
 fn polygon_geom(points: &[[f64; 2]], steps: Steps) -> Geom2d {
     let mut geom = Geom2d::default();
     let mut poly: Vec<[f64; 2]> = points.to_vec();
@@ -450,7 +450,7 @@ fn polygon_geom(points: &[[f64; 2]], steps: Steps) -> Geom2d {
         poly.reverse(); // 反時計回りにそろえる。
     }
     let step = effective_fill_step(area.abs(), steps.fill);
-    geom.fill = refine_triangles(ear_clip(&poly), step);
+    geom.fill = refine_triangles(triangulate(&poly), step);
     geom.outlines.push(Outline { points: densify(&poly, true, steps.arc), closed: true });
     geom
 }
@@ -469,34 +469,25 @@ fn orient(o: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
 }
 
-fn in_triangle(p: [f64; 2], a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> bool {
-    if p == a || p == b || p == c {
-        return false;
+/// 単純多角形(向きは問わない)を三角形に分ける。戻り値は3点ずつ並べた三角形で、どれも反時計回り。
+/// 分割は`earcutr`(Mapboxのearcutの移植)に任せる。凹多角形や共線の頂点を含む入力も扱える。
+/// 三角形を作れない入力(頂点が3つ未満など)は空を返す。
+pub(crate) fn triangulate(poly: &[[f64; 2]]) -> Vec<[f64; 2]> {
+    if poly.len() < 3 {
+        return Vec::new();
     }
-    orient(a, b, p) >= 0.0 && orient(b, c, p) >= 0.0 && orient(c, a, p) >= 0.0
-}
-
-/// 反時計回りの単純多角形を三角形に分ける(耳切り法。耳の候補ごとに全頂点との内外判定をするので
-/// 最悪O(n^3))。共線などで耳が見つからない
-/// 退化した入力は、先頭付近を強制的に切り落として必ず終わらせる。
-pub(crate) fn ear_clip(poly: &[[f64; 2]]) -> Vec<[f64; 2]> {
-    let mut idx: Vec<usize> = (0..poly.len()).collect();
-    let mut out = Vec::with_capacity(poly.len().saturating_sub(2) * 3);
-    while idx.len() > 3 {
-        let m = idx.len();
-        let ear = (0..m).find(|&i| {
-            let (a, b, c) = (poly[idx[(i + m - 1) % m]], poly[idx[i]], poly[idx[(i + 1) % m]]);
-            orient(a, b, c) > 0.0
-                && !idx.iter().any(|&j| in_triangle(poly[j], a, b, c))
-        });
-        let i = ear.unwrap_or(1);
-        out.extend([poly[idx[(i + m - 1) % m]], poly[idx[i]], poly[idx[(i + 1) % m]]]);
-        idx.remove(i);
-    }
-    if idx.len() == 3 {
-        out.extend([poly[idx[0]], poly[idx[1]], poly[idx[2]]]);
-    }
-    out
+    let flat: Vec<f64> = poly.iter().flatten().copied().collect();
+    let Ok(indices) = earcutr::earcut(&flat, &[], 2) else {
+        return Vec::new();
+    };
+    indices
+        .chunks_exact(3)
+        .flat_map(|t| {
+            let (a, b, c) = (poly[t[0]], poly[t[1]], poly[t[2]]);
+            // earcutの出力の向きは入力に依らないので、反時計回りにそろえる。
+            if orient(a, b, c) < 0.0 { [a, c, b] } else { [a, b, c] }
+        })
+        .collect()
 }
 
 /// 最長辺が`max_edge`を超える三角形を、辺の中点で4つに分けることを繰り返す。
@@ -1165,5 +1156,49 @@ mod tests {
             let expected = ctx.mesh_transform.transform(35.0, 138.0, 115.0);
             assert!((first[0] - expected[0]).abs() < 0.1 && (first[2] - expected[2]).abs() < 0.1);
         });
+    }
+    /// 三角形(3点ずつ)の面積の和と、すべて反時計回りであること。
+    fn triangle_areas(tris: &[[f64; 2]]) -> (f64, bool) {
+        let mut sum = 0.0;
+        let mut all_ccw = true;
+        for t in tris.chunks_exact(3) {
+            let a = orient(t[0], t[1], t[2]) * 0.5;
+            sum += a;
+            all_ccw &= a >= 0.0;
+        }
+        (sum, all_ccw)
+    }
+
+    #[test]
+    fn triangulate_handles_both_orientations_and_concave_shapes() {
+        // L字(凹)。反時計回りでも時計回りでも、面積の和は多角形の面積(3)に等しく、三角形は反時計回り。
+        let l_shape = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], [0.0, 2.0]];
+        let mut reversed = l_shape;
+        reversed.reverse();
+        for poly in [l_shape, reversed] {
+            let tris = triangulate(&poly);
+            assert_eq!(tris.len(), 3 * 4); // n-2 = 4三角形
+            let (area, all_ccw) = triangle_areas(&tris);
+            assert!((area - 3.0).abs() < 1e-9, "area={area}");
+            assert!(all_ccw);
+        }
+    }
+
+    #[test]
+    fn triangulate_keeps_collinear_vertices_without_losing_area() {
+        // 辺の途中に共線の頂点がある正方形。
+        let poly = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]];
+        let (area, all_ccw) = triangle_areas(&triangulate(&poly));
+        assert!((area - 4.0).abs() < 1e-9, "area={area}");
+        assert!(all_ccw);
+    }
+
+    #[test]
+    fn triangulate_returns_nothing_for_degenerate_input() {
+        assert!(triangulate(&[]).is_empty());
+        assert!(triangulate(&[[0.0, 0.0], [1.0, 1.0]]).is_empty());
+        // 面積0(一直線)の多角形に、面積のある三角形は作れない。
+        let (area, _) = triangle_areas(&triangulate(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]));
+        assert!(area.abs() < 1e-12);
     }
 }

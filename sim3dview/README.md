@@ -149,7 +149,7 @@ Effect::new(move |_| {
 
 `ui::origin_dialog::OriginDialog`(原点入力フォームのフローティングパネル)を使う場合、
 「設定」ボタンが押されたときの送信方法もあなたのアプリに委ねられています
-(`on_submit: Callback<(f64, f64)>`)。
+(`on_submit: UnsyncCallback<(f64, f64)>`。`Send`不要なので、`Rc`などを持つ接続をそのまま捕捉できる)。
 
 ```rust
 use sim3dview::ui::origin_dialog::{OriginDialog, OriginDialogState};
@@ -159,7 +159,7 @@ provide_context(OriginDialogState(RwSignal::new(false))); // 開閉状態
 view! {
     <OriginDialog
         base_url="http://localhost:9001/terrain"
-        on_submit=Callback::new(move |(lat, lon)| {
+        on_submit=UnsyncCallback::new(move |(lat, lon)| {
             // ここであなたのプロトコルで実際に送信する。
         })
     />
@@ -174,7 +174,7 @@ view! {
 ```rust
 use sim3dview::terrain::origin_pick::OriginPickState;
 
-let pick = OriginPickState::new(Callback::new(move |(lat, lon)| {
+let pick = OriginPickState::new(UnsyncCallback::new(move |(lat, lon)| {
     // ここであなたのプロトコルで原点変更を送信する。
 }));
 provide_context(pick);

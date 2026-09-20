@@ -26,7 +26,7 @@ use crate::components::right_panel::{BottomStatusPanel, TopStatusPanel};
 use crate::components::vab::VabPanel;
 use crate::protocol::ClientCommand;
 use crate::track_bridge::bridge_tracks;
-use crate::ws::{default_terrain_base_url, default_ws_url, WsConnection, WsSignals};
+use crate::ws::{default_terrain_base_url, default_ws_url, WsConnection, WsHandle, WsSignals};
 
 // 地図・右パネルの最小幅(DETAILED_DESIGN.md 7.2節: これを下回ったら外側コンテナを横スクロールさせる)。
 const MIN_CENTER_PX: f64 = 320.0;
@@ -73,16 +73,15 @@ pub fn App() -> impl IntoView {
     provide_context(origin_state);
 
     // 接続はページの生存期間ずっと維持する(内部クロージャがselfを保持するため束縛は不要)。
-    // WsConnectionはRc<RefCell<..>>を内部に持ちSend/Syncではないため、
-    // provide_context(Leptos 0.8はSend+Sync境界を要求する)には乗せず、propとして子へ渡す。
-    let conn: WsConnection = WsConnection::connect_new(default_ws_url(), signals);
+    // WsConnectionはRc<RefCell<..>>を内部に持ちSend/Syncではないため、Copyのハンドル(WsHandle)に
+    // 包んで、propとして子へ渡す。
+    let conn = WsHandle::new(WsConnection::connect_new(default_ws_url(), signals));
 
     // 「設定」→「原点をクリックで指定」で有効になる、地図クリックによる原点指定モード
     // (sim3dviewライブラリの型)。クリックされた緯度経度を、原点設定パネルと同じ
     // ClientCommand::set_originでサーバーへ送る(シミュレーション停止中のみ受理される)。
-    provide_context(OriginPickState::new(Callback::new({
-        let conn = conn.clone();
-        move |(lat, lon)| conn.send_command(&ClientCommand::set_origin(lat, lon))
+    provide_context(OriginPickState::new(UnsyncCallback::new(move |(lat, lon)| {
+        conn.send_command(&ClientCommand::set_origin(lat, lon))
     })));
 
     // 右クリックメニュー(sim3dviewライブラリの型)。本体(`<ContextMenu/>`)は下で1つだけ置き、
@@ -153,9 +152,9 @@ pub fn App() -> impl IntoView {
             <div class="app-shell">
                 <div class="app-layout" style:grid-template-columns=grid_columns>
                     <div class="left-panel">
-                        <SimulationStatusPanel conn=conn.clone()/>
+                        <SimulationStatusPanel conn=conn/>
                         // 中段のページ数(1=単一ページ、2以上=ページ送りあり)。ここで自由に決められる。
-                        <VabPanel conn=conn.clone() mid_pages=2usize/>
+                        <VabPanel conn=conn mid_pages=2usize/>
                     </div>
 
                     <div class="center-panel">
@@ -178,7 +177,7 @@ pub fn App() -> impl IntoView {
             </div>
             <OriginDialog
                 base_url=default_terrain_base_url()
-                on_submit=Callback::new(move |(lat, lon)| {
+                on_submit=UnsyncCallback::new(move |(lat, lon)| {
                     conn.send_command(&ClientCommand::set_origin(lat, lon));
                 })
             />

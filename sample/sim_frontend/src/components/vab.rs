@@ -24,7 +24,7 @@
 use leptos::prelude::*;
 
 use crate::protocol::ClientCommand;
-use crate::ws::WsConnection;
+use crate::ws::WsHandle;
 use crate::ws::WsSignals;
 
 /// 中段(ページ送りする領域)の行数。先頭行(カテゴリ選択)・下段(固定4個)を除いた
@@ -48,9 +48,9 @@ fn bottom_button(category_label: &str, index: usize) -> (String, String) {
 
 #[component]
 pub fn VabPanel(
-    /// WsConnectionはRc<RefCell<..>>を含みSend/Syncでないため、
-    /// (Leptos 0.8のprovide_contextが要求する境界を満たせない)、propとして受け取る。
-    conn: WsConnection,
+    /// WebSocket接続。`WsConnection`はRc<RefCell<..>>を含みSend/Syncでないため、
+    /// Copyのハンドル(`WsHandle`)にしてpropとして受け取る。
+    conn: WsHandle,
     /// 中段(ダミーボタン)のページ数。1なら単一ページ(ページ送りボタンを出さない)、2以上ならその
     /// ページ数だけ「◀ 1/N ▶」で切り替える。1ページの列数は先頭行と同じ(サーバーのVabConfigの`cols`)で、
     /// 中段の総列数は`mid_pages * cols`になる。`Signal`を渡せば実行中に変えられる(0は1として扱う)。
@@ -86,7 +86,6 @@ pub fn VabPanel(
 
                 let top_grid_style =
                     format!("grid-template-columns: repeat({cols}, 1fr); grid-template-rows: repeat(1, auto);");
-                let conn_top = conn.clone();
 
                 // --- 先頭行: カテゴリ選択タブ(サーバーVabConfig駆動、従来通りvab_pressも送る) ---
                 let top_row = view! {
@@ -100,7 +99,6 @@ pub fn VabPanel(
                                 let pos_style = format!("grid-row: 1; grid-column: {col};");
                                 let button_id = btn.id.clone();
                                 let enabled = btn.enabled;
-                                let conn = conn_top.clone();
                                 let on_click = move |_| {
                                     if enabled {
                                         conn.send_command(&ClientCommand::vab_press(button_id.clone()));
@@ -137,7 +135,6 @@ pub fn VabPanel(
                 let page = current_page.get().min(total_pages - 1);
                 let mid_grid_style =
                     format!("grid-template-columns: repeat({cols}, 1fr); grid-template-rows: repeat({MID_ROWS}, auto);");
-                let conn_mid = conn.clone();
                 let cat_for_mid = category_label.clone();
                 let mid_grid = view! {
                     <div class="vab-grid vab-mid-grid" style=mid_grid_style>
@@ -150,7 +147,6 @@ pub fn VabPanel(
                             })
                             .map(|i| {
                                 let (label, id) = mid_button(&cat_for_mid, i);
-                                let conn = conn_mid.clone();
                                 let on_click = move |_| {
                                     conn.send_command(&ClientCommand::vab_press(id.clone()));
                                     selected_mid.set(Some(i));
@@ -208,14 +204,12 @@ pub fn VabPanel(
 
                 // --- 下段: 選択中カテゴリのダミーボタン(固定4個、横スクロールなし) ---
                 let bottom_grid_style = format!("grid-template-columns: repeat({BOTTOM_COLS}, 1fr);");
-                let conn_bottom = conn.clone();
                 let cat_for_bottom = category_label;
                 let bottom_row = view! {
                     <div class="vab-grid vab-bottom-row" style=bottom_grid_style>
                         {(0..BOTTOM_COLS)
                             .map(|i| {
                                 let (label, id) = bottom_button(&cat_for_bottom, i);
-                                let conn = conn_bottom.clone();
                                 let on_click = move |_| {
                                     conn.send_command(&ClientCommand::vab_press(id.clone()));
                                     selected_bottom.set(Some(i));

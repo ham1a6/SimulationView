@@ -6,10 +6,10 @@
 use leptos::prelude::*;
 
 use crate::protocol::ClientCommand;
-use crate::ws::{ConnectionStatus, WsConnection, WsSignals};
+use crate::ws::{ConnectionStatus, WsHandle, WsSignals};
 
 #[component]
-pub fn SimulationStatusPanel(conn: WsConnection) -> impl IntoView {
+pub fn SimulationStatusPanel(conn: WsHandle) -> impl IntoView {
     let signals = use_context::<WsSignals>().expect("WsSignals context not found");
 
     // シミュレータアプリケーション(C++)が送ってきた状態文字列を装飾なしでそのまま表示する。
@@ -25,18 +25,16 @@ pub fn SimulationStatusPanel(conn: WsConnection) -> impl IntoView {
 
     // シミュレーションを進める/止める。進めている間は航跡(TrackList)が更新され続ける。
     // (停止中しか原点は変更できない: サーバー側のガード)
-    let conn_resume = conn.clone();
-    let conn_pause = conn;
 
     view! {
         <div class="panel-section operation-panel">
             <h2>"シミュレーションステータスパネル"</h2>
             <p>{status_text}</p>
             <div class="sim-controls">
-                <button class="sim-button" on:click=move |_| conn_resume.send_command(&ClientCommand::resume())>
+                <button class="sim-button" on:click=move |_| conn.send_command(&ClientCommand::resume())>
                     "開始"
                 </button>
-                <button class="sim-button" on:click=move |_| conn_pause.send_command(&ClientCommand::pause())>
+                <button class="sim-button" on:click=move |_| conn.send_command(&ClientCommand::pause())>
                     "一時停止"
                 </button>
             </div>
