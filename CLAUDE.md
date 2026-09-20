@@ -40,7 +40,7 @@ sample/
   sim_frontend/          # sim3dviewを使うサンプルアプリ。VAB・状況パネル・メニュー・通信プロトコル等
 tools/
   geotiff_preprocess/    # ライブラリの一部の前処理CLI(C++/GDAL)。GeoTIFF→1度タイルごとの多段解像度グリッド+metadata.json。独立CMakeプロジェクト
-map_data/             # 入力: ALOS DSM GeoTIFFタイル(現在390枚、既存・変更しない)
+map_data/             # 入力: ALOS DSM GeoTIFFタイル(現在390枚、既存・変更しない。git管理外で履歴にも無い)
 Cargo.toml             # ワークスペースルート(members: sim3dview, sample/sim_frontend)
 ```
 

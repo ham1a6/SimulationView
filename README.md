@@ -15,7 +15,7 @@ sample/            「これはサンプルです」という位置づけのデ�
                      メニュー・WebSocket/msgpackプロトコルなど、アプリ固有の部分を実装する。
   sim_server/        C++シミュレータ本体 + WebSocket/HTTPサーバー(sample/sim_frontendの
                      通信相手の参照実装)+ GeoTIFF前処理ツール。
-map_data/          入力: ALOS DSM GeoTIFFタイル(17枚。リポジトリに同梱済み)
+map_data/          入力: ALOS DSM GeoTIFFタイル(容量が大きいためgit管理外。各自で配置する)
 ```
 
 - `sim3dview`ライブラリだけを自分のアプリに組み込みたい場合は
