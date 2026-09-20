@@ -27,6 +27,47 @@ fn azimuth_deg_of(az_i: usize) -> f64 {
     az_i as f64 * 360.0 / NUM_AZIMUTHS as f64
 }
 
+/// 方位角インデックスの(方位角(度), 東向き成分, 北向き成分)。
+fn azimuth_direction(az_i: usize) -> (f64, f64, f64) {
+    let azimuth_deg = azimuth_deg_of(az_i);
+    let az_rad = azimuth_deg.to_radians();
+    (azimuth_deg, az_rad.sin(), az_rad.cos())
+}
+
+/// 観測点から対象地点(緯度経度)までの水平距離と、東向き・北向きの単位ベクトル
+/// (距離が1m未満なら向きは(0, 0)。呼び出し側は先に距離で場合分けする)。
+fn transform_to_target(transform: &EnuTransform, lat_deg: f64, lon_deg: f64) -> (f64, f64, f64) {
+    let pos = transform.transform(lat_deg, lon_deg, 0.0);
+    let (east, north) = (pos[0] as f64, pos[1] as f64);
+    let distance = east.hypot(north);
+    if distance < 1.0 {
+        (distance, 0.0, 0.0)
+    } else {
+        (distance, east / distance, north / distance)
+    }
+}
+
+/// 観測点から出るレイの計算に共通の前提(5つの計算関数が同じ前処理を持っていた)。
+struct RayContext {
+    /// 観測点を原点とするENU変換。
+    transform: EnuTransform,
+    /// 観測点(アンテナ)の海抜高度(メートル)= 観測点の地表の標高 + アンテナ高。
+    observer_altitude_msl: f64,
+    /// 等価地球半径(メートル)。
+    r_eff: f64,
+}
+
+impl RayContext {
+    fn new(data: &TerrainData, origin: &Origin, antenna_height_m: f64) -> Self {
+        let ground = sample_heightmap(data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0) as f64;
+        Self {
+            transform: EnuTransform::new(origin, &data.metadata.ellipsoid),
+            observer_altitude_msl: ground + antenna_height_m,
+            r_eff: EARTH_RADIUS_M * K_FACTOR,
+        }
+    }
+}
+
 /// 1方位角あたりのサンプル点数(`compute_los`・`compute_coverage_area`・`compute_los_dome`)。
 /// 最大観測範囲50kmで50m間隔、200kmで200m間隔(地形の最細解像度30mに近い細かさ)。
 /// 増やすほど計算時間はほぼ比例して増える(6400方位 x この点数だけ標高を引く)。
@@ -67,18 +108,12 @@ fn curvature_drop_m(distance_m: f64, r_eff_m: f64) -> f64 {
 /// 限界距離とする(手前の尾根の陰でも、その先で地形が十分高くなれば再び見える
 /// ケースを許容する。単純な「最初の遮蔽物で打ち切り」より実際のレーダー覆域に近い)。
 pub fn compute_los(data: &TerrainData, origin: &Origin, params: &LosParams) -> Vec<LosPoint> {
-    let transform = EnuTransform::new(origin, &data.metadata.ellipsoid);
-    let observer_ground_elevation =
-        sample_heightmap(data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0) as f64;
-    let observer_height = observer_ground_elevation + params.observer_height_m;
-    let r_eff = EARTH_RADIUS_M * K_FACTOR;
+    let RayContext { transform, observer_altitude_msl, r_eff } =
+        RayContext::new(data, origin, params.observer_height_m);
 
     (0..NUM_AZIMUTHS)
         .map(|az_i| {
-            let azimuth_deg = azimuth_deg_of(az_i);
-            let az_rad = azimuth_deg.to_radians();
-            let dir_east = az_rad.sin();
-            let dir_north = az_rad.cos();
+            let (azimuth_deg, dir_east, dir_north) = azimuth_direction(az_i);
 
             let data_max = max_valid_distance(data, &transform, dir_east, dir_north);
             let ray_max = data_max.min(params.max_range_m);
@@ -93,7 +128,7 @@ pub fn compute_los(data: &TerrainData, origin: &Origin, params: &LosParams) -> V
                 let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
                 let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
                 let apparent_height = elevation - curvature_drop_m(d, r_eff);
-                let angle = (apparent_height - observer_height) / d;
+                let angle = (apparent_height - observer_altitude_msl) / d;
                 if angle >= max_angle {
                     max_angle = angle;
                     visible_range = d;
@@ -118,33 +153,27 @@ pub fn is_visible(
     target_lon_deg: f64,
 ) -> bool {
     let radar_origin = Origin { lat_deg: radar_lat_deg, lon_deg: radar_lon_deg };
-    let transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
-    let observer_ground_elevation =
-        sample_heightmap(data, radar_lat_deg, radar_lon_deg).unwrap_or(0.0) as f64;
-    let observer_height = observer_ground_elevation + radar_height_m;
-    let r_eff = EARTH_RADIUS_M * K_FACTOR;
+    let RayContext { transform, observer_altitude_msl, r_eff } =
+        RayContext::new(data, &radar_origin, radar_height_m);
 
-    let target_pos = transform.transform(target_lat_deg, target_lon_deg, 0.0);
-    let target_distance = ((target_pos[0] as f64).powi(2) + (target_pos[1] as f64).powi(2)).sqrt();
+    let (target_distance, dir_east, dir_north) = transform_to_target(&transform, target_lat_deg, target_lon_deg);
     if target_distance < 1.0 {
         return true;
     }
     if target_distance > max_range_m {
         return false;
     }
-    let dir_east = target_pos[0] as f64 / target_distance;
-    let dir_north = target_pos[1] as f64 / target_distance;
 
     let target_elevation = sample_heightmap(data, target_lat_deg, target_lon_deg).unwrap_or(0.0) as f64;
     let target_angle =
-        (target_elevation - curvature_drop_m(target_distance, r_eff) - observer_height) / target_distance;
+        (target_elevation - curvature_drop_m(target_distance, r_eff) - observer_altitude_msl) / target_distance;
 
     let samples = ((target_distance / 500.0).ceil() as usize).clamp(10, MAX_TARGET_SAMPLES);
     for i in 1..samples {
         let d = target_distance * i as f64 / samples as f64;
         let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
         let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
-        let angle = (elevation - curvature_drop_m(d, r_eff) - observer_height) / d;
+        let angle = (elevation - curvature_drop_m(d, r_eff) - observer_altitude_msl) / d;
         if angle > target_angle {
             return false;
         }
@@ -168,22 +197,16 @@ pub fn min_visible_altitude(
     target_lon_deg: f64,
 ) -> Option<f64> {
     let radar_origin = Origin { lat_deg: radar_lat_deg, lon_deg: radar_lon_deg };
-    let transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
-    let observer_ground_elevation =
-        sample_heightmap(data, radar_lat_deg, radar_lon_deg).unwrap_or(0.0) as f64;
-    let observer_height = observer_ground_elevation + radar_height_m;
-    let r_eff = EARTH_RADIUS_M * K_FACTOR;
+    let RayContext { transform, observer_altitude_msl, r_eff } =
+        RayContext::new(data, &radar_origin, radar_height_m);
 
-    let target_pos = transform.transform(target_lat_deg, target_lon_deg, 0.0);
-    let target_distance = ((target_pos[0] as f64).powi(2) + (target_pos[1] as f64).powi(2)).sqrt();
+    let (target_distance, dir_east, dir_north) = transform_to_target(&transform, target_lat_deg, target_lon_deg);
     if target_distance > max_range_m {
         return None;
     }
     if target_distance < 1.0 {
-        return Some(observer_height);
+        return Some(observer_altitude_msl);
     }
-    let dir_east = target_pos[0] as f64 / target_distance;
-    let dir_north = target_pos[1] as f64 / target_distance;
 
     // 観測点から対象地点までの間の地形が作る最大の見かけ仰角(=対象が見えるために
     // 必要な最低仰角)を求める。target自身の標高には依存しない点がis_visibleと異なる。
@@ -193,14 +216,14 @@ pub fn min_visible_altitude(
         let d = target_distance * i as f64 / samples as f64;
         let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
         let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
-        let angle = (elevation - curvature_drop_m(d, r_eff) - observer_height) / d;
+        let angle = (elevation - curvature_drop_m(d, r_eff) - observer_altitude_msl) / d;
         if angle > required_angle {
             required_angle = angle;
         }
     }
-    // angle(h) = (h - curvature_drop(d) - observer_height) / d が対象高度hについて線形なので、
+    // angle(h) = (h - curvature_drop(d) - observer_altitude_msl) / d が対象高度hについて線形なので、
     // angle(h) == required_angle となるhを直接解く(それ以上の高度なら見える下限)。
-    Some(required_angle * target_distance + curvature_drop_m(target_distance, r_eff) + observer_height)
+    Some(required_angle * target_distance + curvature_drop_m(target_distance, r_eff) + observer_altitude_msl)
 }
 
 /// 指定した1つの海抜高度(絶対標高、メートル)を飛ぶ対象について、全方位角の
@@ -216,18 +239,12 @@ pub fn compute_coverage_area(
     params: &LosParams,
     target_altitude_m: f64,
 ) -> Vec<LosPoint> {
-    let transform = EnuTransform::new(origin, &data.metadata.ellipsoid);
-    let observer_ground_elevation =
-        sample_heightmap(data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0) as f64;
-    let observer_height = observer_ground_elevation + params.observer_height_m;
-    let r_eff = EARTH_RADIUS_M * K_FACTOR;
+    let RayContext { transform, observer_altitude_msl, r_eff } =
+        RayContext::new(data, origin, params.observer_height_m);
 
     (0..NUM_AZIMUTHS)
         .map(|az_i| {
-            let azimuth_deg = azimuth_deg_of(az_i);
-            let az_rad = azimuth_deg.to_radians();
-            let dir_east = az_rad.sin();
-            let dir_north = az_rad.cos();
+            let (azimuth_deg, dir_east, dir_north) = azimuth_direction(az_i);
 
             let data_max = max_valid_distance(data, &transform, dir_east, dir_north);
             let ray_max = data_max.min(params.max_range_m);
@@ -242,12 +259,12 @@ pub fn compute_coverage_area(
                 let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
                 let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
                 let apparent_height = elevation - curvature_drop_m(d, r_eff);
-                let angle = (apparent_height - observer_height) / d;
+                let angle = (apparent_height - observer_altitude_msl) / d;
                 if angle > max_angle {
                     max_angle = angle;
                 }
                 let target_angle =
-                    (target_altitude_m - curvature_drop_m(d, r_eff) - observer_height) / d;
+                    (target_altitude_m - curvature_drop_m(d, r_eff) - observer_altitude_msl) / d;
                 if target_angle >= max_angle {
                     visible_range = d;
                 } else {
@@ -283,11 +300,8 @@ pub fn compute_los_dome(
     params: &LosParams,
     elevation_degs: &[f64],
 ) -> Vec<DomeRing> {
-    let transform = EnuTransform::new(origin, &data.metadata.ellipsoid);
-    let observer_ground_elevation =
-        sample_heightmap(data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0) as f64;
-    let observer_height = observer_ground_elevation + params.observer_height_m;
-    let r_eff = EARTH_RADIUS_M * K_FACTOR;
+    let RayContext { transform, observer_altitude_msl, r_eff } =
+        RayContext::new(data, origin, params.observer_height_m);
 
     let ring_tans: Vec<f64> = elevation_degs.iter().map(|d| d.to_radians().tan()).collect();
     let ring_cos: Vec<f64> = elevation_degs.iter().map(|d| d.to_radians().cos()).collect();
@@ -299,10 +313,7 @@ pub fn compute_los_dome(
     let mut ring_slant_ranges = vec![vec![0.0_f64; NUM_AZIMUTHS]; num_rings];
 
     for az_i in 0..NUM_AZIMUTHS {
-        let azimuth_deg = azimuth_deg_of(az_i);
-        let az_rad = azimuth_deg.to_radians();
-        let dir_east = az_rad.sin();
-        let dir_north = az_rad.cos();
+        let (_, dir_east, dir_north) = azimuth_direction(az_i);
         let data_max = max_valid_distance(data, &transform, dir_east, dir_north);
 
         // 仰角が大きいほど、同じスラントレンジ上限に対応する水平距離の上限は小さくなる
@@ -340,7 +351,7 @@ pub fn compute_los_dome(
             let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
             let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
             let apparent_height = elevation - curvature_drop_m(d, r_eff);
-            let angle = (apparent_height - observer_height) / d;
+            let angle = (apparent_height - observer_altitude_msl) / d;
             if angle > max_angle {
                 max_angle = angle;
                 while first_alive < num_rings && max_angle > ring_tans[first_alive] {

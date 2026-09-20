@@ -36,6 +36,15 @@ pub struct Camera {
 }
 
 impl Camera {
+    /// 視線の基底(前・右・上)。`look_at`と同じ右手系で、`water_ray_basis`と`screen_to_ray`が
+    /// 同じ式でレイを求めるための共通部分。
+    fn basis(&self) -> (Vec3, Vec3, Vec3) {
+        let forward = (self.target - self.eye).normalize();
+        let right = forward.cross(self.up).normalize();
+        let up = right.cross(forward);
+        (forward, right, up)
+    }
+
     pub fn view_proj_matrix(&self) -> Mat4 {
         let view = look_at_mat4(self.eye, self.target, self.up);
         self.projection_matrix() * view
@@ -86,9 +95,7 @@ impl Camera {
     /// 正射影は原点=視点+右*ndc_x+上*ndc_y・向き=前。逆VP行列で求めないのは、`screen_to_ray`の
     /// コメントにある通りf32の丸め誤差で向きが大きくずれるため。
     pub fn water_ray_basis(&self) -> [[f32; 4]; 4] {
-        let forward = (self.target - self.eye).normalize();
-        let right = forward.cross(self.up).normalize();
-        let up = right.cross(forward);
+        let (forward, right, up) = self.basis();
         let (half_w, half_h, perspective) = match self.projection {
             Projection::Perspective { fov_y_radians } => {
                 let half_h = (fov_y_radians * 0.5).tan();
@@ -117,9 +124,7 @@ impl Camera {
         // 中間点(反転Zでnearの約2倍)を逆変換してその差を向きにしていたが、この2点の差は
         // 約1mしかなく、カメラが数百km〜2,000km離れるとf32の丸め誤差(0.1m超)で向きが
         // 大きくずれ、ズームアウト時にクリック位置と別の地点を拾う不具合になっていた。
-        let forward = (self.target - self.eye).normalize();
-        let right = forward.cross(self.up).normalize();
-        let up = right.cross(forward);
+        let (forward, right, up) = self.basis();
         match self.projection {
             Projection::Perspective { fov_y_radians } => {
                 let half_h = (fov_y_radians * 0.5).tan();

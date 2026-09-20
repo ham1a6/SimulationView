@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use glam::{Mat4, Vec3};
 
 use super::camera::{Camera, Projection};
-use super::loader::{TerrainData, TileKey};
+use super::loader::{TerrainData, TileEntry, TileKey};
 use super::mesh::tile_vertex_count;
 use super::geodesy::EnuTransform;
 /// チャンクの頂点数の合計の上限(全タイルの下限=レベル1の分を含む)。全タイルのレベル1は
@@ -42,21 +42,12 @@ const METERS_PER_DEGREE: f32 = 111_000.0;
 /// 視錐台の左右・上下の判定の余裕(クリップ座標の外側へこの倍率まで許す)。
 const FRUSTUM_MARGIN: f32 = 1.2;
 
-/// いまGPUにあるタイルの状態(`ui::terrain_view`が保持する)。
+/// タイル1枚の描き方。いまGPUにある状態(`ui::terrain_view`が保持する)と、`plan_levels`の計画の両方に使う。
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Resident {
-    /// タイル全体をレベル0の1枚のメッシュで出している。
+pub enum TileLayout {
+    /// タイル全体をレベル0の1枚のメッシュで出す。
     Whole,
-    /// チャンクごとのメッシュで出している。中身はチャンク(行(南→北)*分割数+列(西→東))ごとの
-    /// 現在のレベル(1以上)。
-    Chunks(Vec<u8>),
-}
-
-/// 計画: タイルをどう描くか。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TilePlan {
-    Whole,
-    /// チャンクごとの目標レベル(1以上)。
+    /// チャンクごとのメッシュで出す。中身はチャンク(行(南→北)*分割数+列(西→東))ごとのレベル(1以上)。
     Chunks(Vec<u8>),
 }
 
@@ -83,6 +74,29 @@ struct ViewInfo<'a> {
     focus_lon: f64,
     tan_half: f32,
     ortho_pixel_m: f32,
+}
+
+impl<'a> ViewInfo<'a> {
+    fn new(camera: &'a Camera, transform: &'a EnuTransform, canvas_height_px: f32) -> Self {
+        let canvas_h = canvas_height_px.max(1.0);
+        let (focus, tan_half, ortho_pixel_m) = match camera.projection {
+            Projection::Perspective { fov_y_radians } => (camera.eye, (fov_y_radians * 0.5).tan(), 0.0),
+            Projection::Orthographic { view_height_m } => (camera.target, 0.0, view_height_m / canvas_h),
+        };
+        let (focus_lat, focus_lon, _) =
+            transform.enu_to_geodetic(focus.x as f64, focus.y as f64, focus.z as f64);
+        Self {
+            camera,
+            view_proj: camera.view_proj_matrix(),
+            transform,
+            canvas_h,
+            focus,
+            focus_lat,
+            focus_lon,
+            tan_half,
+            ortho_pixel_m,
+        }
+    }
 }
 
 impl ViewInfo<'_> {
@@ -157,138 +171,161 @@ pub fn plan_levels(
     transform: &EnuTransform,
     camera: &Camera,
     canvas_height_px: f32,
-    resident: &HashMap<TileKey, Resident>,
-) -> Vec<(TileKey, TilePlan)> {
+    resident: &HashMap<TileKey, TileLayout>,
+) -> Vec<(TileKey, TileLayout)> {
     plan_levels_with_budget(data, transform, camera, canvas_height_px, resident, DETAIL_VERTEX_BUDGET)
 }
 
 /// `plan_levels`の頂点数の予算を指定できる版(単体テストで予算の配分を確かめるため)。
+/// 3段階: (1) タイルごとに、距離・視野から各チャンクの目標レベルを決める(`evaluate_tile`)、
+/// (2) 見えていて近い順に並べる、(3) 予算の許す限り目標レベルまで上げる(`allocate_levels`)。
 fn plan_levels_with_budget(
     data: &TerrainData,
     transform: &EnuTransform,
     camera: &Camera,
     canvas_height_px: f32,
-    resident: &HashMap<TileKey, Resident>,
+    resident: &HashMap<TileKey, TileLayout>,
     budget: usize,
-) -> Vec<(TileKey, TilePlan)> {
-    let canvas_h = canvas_height_px.max(1.0);
-    let (focus, tan_half, ortho_pixel_m) = match camera.projection {
-        Projection::Perspective { fov_y_radians } => {
-            (camera.eye, (fov_y_radians * 0.5).tan(), 0.0)
-        }
-        Projection::Orthographic { view_height_m } => {
-            (camera.target, 0.0, view_height_m / canvas_h)
-        }
-    };
-    let (focus_lat, focus_lon, _) =
-        transform.enu_to_geodetic(focus.x as f64, focus.y as f64, focus.z as f64);
-    let view = ViewInfo {
-        camera,
-        view_proj: camera.view_proj_matrix(),
-        transform,
-        canvas_h,
-        focus,
-        focus_lat,
-        focus_lon,
-        tan_half,
-        ortho_pixel_m,
-    };
+) -> Vec<(TileKey, TileLayout)> {
+    let view = ViewInfo::new(camera, transform, canvas_height_px);
+    let mut infos: Vec<TileInfo> =
+        data.tiles().iter().map(|tile| evaluate_tile(data, &view, tile, resident)).collect();
 
+    // 見えているタイルを近い順に、その後に視野の外のタイルを近い順に並べる。
+    infos.sort_by(|a, b| b.visible.cmp(&a.visible).then(a.distance.total_cmp(&b.distance)));
+
+    let mut levels = allocate_levels(data, &infos, budget);
+    infos
+        .into_iter()
+        .map(|info| {
+            let layout = match levels.remove(&info.key) {
+                Some(chunk_levels) => TileLayout::Chunks(chunk_levels),
+                None => TileLayout::Whole,
+            };
+            (info.key, layout)
+        })
+        .collect()
+}
+
+/// チャンク1個の、基準位置からの距離・視野内か・目標レベル(予算を考える前)。
+struct ChunkTarget {
+    distance: f32,
+    visible: bool,
+    level: usize,
+}
+
+/// 1タイルの評価結果(並べ替えと予算配分の材料)。
+struct TileInfo {
+    key: TileKey,
+    /// 基準位置から、タイルの一番近い点までの距離。
+    distance: f32,
+    visible: bool,
+    chunks: Vec<ChunkTarget>,
+}
+
+/// チャンクの目標レベル(1以上`max_level`以下)。`have`はいま出しているレベル(0=タイル全体)、
+/// `ideal`は距離から決まる理想のレベル。視野の外は現状維持(下限は1)。理想より1つだけ細かいなら
+/// 保ち(距離の境目でレベルが行き来しないヒステリシス)、それ以上細かければ1つ細かい所まで下げる。
+fn target_level(have: usize, ideal: usize, visible: bool, max_level: usize) -> usize {
+    let target = if !visible {
+        have.max(1)
+    } else if have > ideal {
+        (ideal + 1).min(have)
+    } else {
+        ideal
+    };
+    target.clamp(1, max_level)
+}
+
+/// タイル1枚について、各チャンクの距離・視野・目標レベルを求める。
+fn evaluate_tile(
+    data: &TerrainData,
+    view: &ViewInfo,
+    tile: &TileEntry,
+    resident: &HashMap<TileKey, TileLayout>,
+) -> TileInfo {
     let k = data.chunks_per_tile();
     let chunk_count = data.chunk_count();
     let max_level = data.num_levels() - 1;
+    let (lat0, lon0) = (tile.key.0 as f64, tile.key.1 as f64);
+    let mid_h = 0.5 * (tile.elevation_min + tile.elevation_max) as f64;
+    let (distance, visible) = view.rect(lat0, lon0, lat0 + 1.0, lon0 + 1.0, mid_h);
+    let current: Option<&Vec<u8>> = match resident.get(&tile.key) {
+        Some(TileLayout::Chunks(v)) => Some(v),
+        _ => None,
+    };
+    let have = |c: usize| current.map_or(0, |v| v[c] as usize);
 
-    struct TileInfo {
-        key: TileKey,
-        distance: f32,
-        visible: bool,
-        /// チャンクごとの(距離, 視野内か, 目標レベル)。
-        chunks: Vec<(f32, bool, usize)>,
-    }
-    let mut infos: Vec<TileInfo> = Vec::with_capacity(data.tiles().len());
-    for tile in data.tiles() {
-        let (lat0, lon0) = (tile.key.0 as f64, tile.key.1 as f64);
-        let mid_h = 0.5 * (tile.elevation_min + tile.elevation_max) as f64;
-        let (distance, visible) = view.rect(lat0, lon0, lat0 + 1.0, lon0 + 1.0, mid_h);
-        let cur_levels: Option<&Vec<u8>> = match resident.get(&tile.key) {
-            Some(Resident::Chunks(v)) => Some(v),
-            _ => None,
-        };
-
-        let mut chunks = Vec::with_capacity(chunk_count);
-        // タイルの一番近い点でも下限のレベル1で足りるなら、どのチャンクも目標はレベル1になる
-        // (チャンクは遠いほど1ピクセルが大きく、理想のレベルは粗くなるため)。視野に入るかも
-        // タイルと同じ扱いにして、チャンクごとの距離・視錐台の計算を省く(全タイルがチャンクなので、
-        // 遠くの多数のタイルで毎回計算すると重い)。
-        let tile_ideal = ideal_level(data, view.pixel_m(distance), 1);
-        if !visible || tile_ideal == 1 {
-            for c in 0..chunk_count {
-                let have = cur_levels.map_or(0, |v| v[c] as usize);
-                let target = if !visible {
-                    have.max(1) // 視野の外は現状維持(下限は1)。
-                } else if have > 1 {
-                    2.min(have) // 理想より1つだけ細かいなら保つ(下のヒステリシスと同じ)。
-                } else {
-                    1
-                };
-                chunks.push((distance, visible, target.clamp(1, max_level)));
-            }
-        } else {
-            let step = 1.0 / k as f64;
-            for c in 0..chunk_count {
+    // タイルの一番近い点でも下限のレベル1で足りるなら、どのチャンクも目標はレベル1になる
+    // (チャンクは遠いほど1ピクセルが大きく、理想のレベルは粗くなるため)。視野に入るかも
+    // タイルと同じ扱いにして、チャンクごとの距離・視錐台の計算を省く(全タイルがチャンクなので、
+    // 遠くの多数のタイルで毎回計算すると重い)。
+    let tile_ideal = ideal_level(data, view.pixel_m(distance), 1);
+    let chunks = if !visible || tile_ideal == 1 {
+        (0..chunk_count)
+            .map(|c| ChunkTarget { distance, visible, level: target_level(have(c), 1, visible, max_level) })
+            .collect()
+    } else {
+        let step = 1.0 / k as f64;
+        (0..chunk_count)
+            .map(|c| {
                 let (cx, cy) = (c % k, c / k);
                 let (clat0, clon0) = (lat0 + cy as f64 * step, lon0 + cx as f64 * step);
                 let (cdist, cvisible) = view.rect(clat0, clon0, clat0 + step, clon0 + step, mid_h);
-                let have = cur_levels.map_or(0, |v| v[c] as usize);
                 let ideal = ideal_level(data, view.pixel_m(cdist), 1);
-                let target = if !cvisible {
-                    have.max(1)
-                } else if have > ideal {
-                    // 理想より1つだけ細かいなら保つ(ヒステリシス)。それ以上細かければ1つ細かい所まで下げる。
-                    (ideal + 1).min(have)
-                } else {
-                    ideal
-                };
-                chunks.push((cdist, cvisible, target.clamp(1, max_level)));
-            }
-        }
-        infos.push(TileInfo { key: tile.key, distance, visible, chunks });
-    }
+                ChunkTarget {
+                    distance: cdist,
+                    visible: cvisible,
+                    level: target_level(have(c), ideal, cvisible, max_level),
+                }
+            })
+            .collect()
+    };
+    TileInfo { key: tile.key, distance, visible, chunks }
+}
 
-    // 見えているタイルを近い順に、その後に視野の外のタイルを近い順に並べる。
-    infos.sort_by(|a, b| {
-        b.visible
-            .cmp(&a.visible)
-            .then(a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal))
-    });
-
-    // 予算の配分。まず、全タイルに、全チャンクをレベル1で載せる下限の分を、近い(見えている)タイル
-    // から順に確保する(足りなければそのタイルは全体表示のまま)。
+/// 予算の配分。`infos`は優先度の高い順。戻り値は、下限を確保できたタイルのチャンクごとのレベル
+/// (確保できなかったタイルは含まれない=全体表示のまま)。
+fn allocate_levels(data: &TerrainData, infos: &[TileInfo], budget: usize) -> HashMap<TileKey, Vec<u8>> {
+    let chunk_count = data.chunk_count();
     let mut remaining = budget;
+    // まず、全タイルに、全チャンクをレベル1で載せる下限の分を、近い(見えている)タイルから順に確保する
+    // (足りなければそのタイルは全体表示のまま)。
     let base_cost = chunk_count * chunk_vertex_cost(data, 1);
     let mut levels: HashMap<TileKey, Vec<u8>> = HashMap::new();
-    for info in &infos {
+    for info in infos {
         if remaining >= base_cost {
             remaining -= base_cost;
             levels.insert(info.key, vec![1; chunk_count]);
         }
     }
+
     // 次に、チャンクを近い順(見えているものが先)に、目標レベルまで予算の許す限り上げる。
-    let mut upgrades: Vec<(bool, f32, TileKey, usize, usize)> = Vec::new();
-    for info in &infos {
-        if levels.contains_key(&info.key) {
-            for (c, &(cdist, cvisible, target)) in info.chunks.iter().enumerate() {
-                upgrades.push((cvisible, cdist, info.key, c, target));
-            }
-        }
+    struct Upgrade {
+        visible: bool,
+        distance: f32,
+        key: TileKey,
+        chunk: usize,
+        target: usize,
     }
-    upgrades.sort_by(|a, b| {
-        b.0.cmp(&a.0).then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-    });
-    for (_, _, key, c, target) in upgrades {
-        let entry = levels.get_mut(&key).expect("tile with chunks");
+    let mut upgrades: Vec<Upgrade> = infos
+        .iter()
+        .filter(|info| levels.contains_key(&info.key))
+        .flat_map(|info| {
+            info.chunks.iter().enumerate().map(|(chunk, t)| Upgrade {
+                visible: t.visible,
+                distance: t.distance,
+                key: info.key,
+                chunk,
+                target: t.level,
+            })
+        })
+        .collect();
+    upgrades.sort_by(|a, b| b.visible.cmp(&a.visible).then(a.distance.total_cmp(&b.distance)));
+    for up in upgrades {
+        let Some(entry) = levels.get_mut(&up.key) else { continue };
         let mut level = 1usize;
-        while level < target {
+        while level < up.target {
             let delta = chunk_vertex_cost(data, level + 1) - chunk_vertex_cost(data, level);
             if delta > remaining {
                 break;
@@ -296,19 +333,9 @@ fn plan_levels_with_budget(
             remaining -= delta;
             level += 1;
         }
-        entry[c] = level as u8;
+        entry[up.chunk] = level as u8;
     }
-
-    infos
-        .into_iter()
-        .map(|info| {
-            let plan = match levels.remove(&info.key) {
-                Some(l) => TilePlan::Chunks(l),
-                None => TilePlan::Whole,
-            };
-            (info.key, plan)
-        })
-        .collect()
+    levels
 }
 
 #[cfg(test)]
@@ -339,14 +366,14 @@ mod tests {
         orbit.to_camera(1.5)
     }
 
-    fn plan(cam: &Camera, resident: &HashMap<TileKey, Resident>) -> Vec<(TileKey, TilePlan)> {
+    fn plan(cam: &Camera, resident: &HashMap<TileKey, TileLayout>) -> Vec<(TileKey, TileLayout)> {
         plan_levels(&data(), &transform(), cam, 700.0, resident)
     }
 
-    fn levels_of(plan: &[(TileKey, TilePlan)], key: TileKey) -> Vec<u8> {
+    fn levels_of(plan: &[(TileKey, TileLayout)], key: TileKey) -> Vec<u8> {
         match &plan.iter().find(|(k, _)| *k == key).expect("tile in plan").1 {
-            TilePlan::Chunks(l) => l.clone(),
-            TilePlan::Whole => panic!("{key:?} is planned as Whole"),
+            TileLayout::Chunks(l) => l.clone(),
+            TileLayout::Whole => panic!("{key:?} is planned as Whole"),
         }
     }
 
@@ -405,7 +432,7 @@ mod tests {
             plan_levels_with_budget(&d, &transform(), &cam, 700.0, &HashMap::new(), 3 * per_tile);
         let chunked: Vec<_> = result
             .iter()
-            .filter(|(_, p)| matches!(p, TilePlan::Chunks(_)))
+            .filter(|(_, p)| matches!(p, TileLayout::Chunks(_)))
             .map(|(k, _)| *k)
             .collect();
         assert_eq!(chunked.len(), 3);
@@ -414,7 +441,7 @@ mod tests {
         assert!(levels_of(&result, (31, 131)).iter().all(|&l| l == 1));
         // 予算が0なら全タイルが全体表示。
         let none = plan_levels_with_budget(&d, &transform(), &cam, 700.0, &HashMap::new(), 0);
-        assert!(none.iter().all(|(_, p)| *p == TilePlan::Whole));
+        assert!(none.iter().all(|(_, p)| *p == TileLayout::Whole));
     }
 
     #[test]
@@ -427,8 +454,8 @@ mod tests {
         let used: usize = result
             .iter()
             .map(|(_, p)| match p {
-                TilePlan::Chunks(l) => l.iter().map(|&l| chunk_vertex_cost(&d, l as usize)).sum(),
-                TilePlan::Whole => 0,
+                TileLayout::Chunks(l) => l.iter().map(|&l| chunk_vertex_cost(&d, l as usize)).sum(),
+                TileLayout::Whole => 0,
             })
             .sum();
         assert!(used <= budget, "used={used} budget={budget}");
@@ -440,17 +467,17 @@ mod tests {
     fn hysteresis_keeps_one_level_finer_than_ideal_but_not_more() {
         let cam = camera(Vec3::ZERO, 2_000_000.0); // どのタイルも理想はレベル1(見えている)
         let key = (31, 131);
-        let with = |levels: Resident| {
+        let with = |levels: TileLayout| {
             let mut resident = HashMap::new();
             resident.insert(key, levels);
             levels_of(&plan(&cam, &resident), key)
         };
         // 理想(1)より1つ細かい(2)だけなら保つ。
-        assert!(with(Resident::Chunks(vec![2; 36])).iter().all(|&l| l == 2));
+        assert!(with(TileLayout::Chunks(vec![2; 36])).iter().all(|&l| l == 2));
         // それより細かい(4)なら、1つ細かい所(2)まで下げる。
-        assert!(with(Resident::Chunks(vec![4; 36])).iter().all(|&l| l == 2));
+        assert!(with(TileLayout::Chunks(vec![4; 36])).iter().all(|&l| l == 2));
         // 全体表示からは、まず下限(1)から。
-        assert!(with(Resident::Whole).iter().all(|&l| l == 1));
+        assert!(with(TileLayout::Whole).iter().all(|&l| l == 1));
     }
 
     #[test]
@@ -459,7 +486,7 @@ mod tests {
         let cam = camera(Vec3::new(3_000_000.0, 0.0, 0.0), 100_000.0);
         let key = (31, 131);
         let mut resident = HashMap::new();
-        resident.insert(key, Resident::Chunks(vec![3; 36]));
+        resident.insert(key, TileLayout::Chunks(vec![3; 36]));
         let result = plan(&cam, &resident);
         assert!(levels_of(&result, key).iter().all(|&l| l == 3));
         // 視野の外のタイルは、見えているタイルより後ろに並ぶ(ここでは全部が外なので順序は距離順)。

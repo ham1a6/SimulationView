@@ -26,7 +26,7 @@ use crate::terrain::draw_tool::DrawToolState;
 use crate::terrain::drawing::DrawingState;
 use crate::terrain::drawing_geometry;
 use crate::terrain::loader::{self, MeshKey, TerrainData, TileKey, WHOLE_TILE};
-use crate::terrain::lod::{self, Resident, TilePlan};
+use crate::terrain::lod::{self, TileLayout};
 use crate::terrain::markers::{self, RadarMarkersState};
 use crate::terrain::geodesy::EnuTransform;
 use crate::terrain::heightmap;
@@ -92,7 +92,7 @@ struct ViewState {
     /// 陰影(ヒルシェード)のON/OFF。レンダラー作成時の初期値に使う(以後の変更はEffect 7が反映する)。
     hillshade: HillshadeState,
     /// 各タイルの、いまGPUに載っている状態(全体1枚か、チャンクごとのレベルか。`terrain::lod`参照)。
-    resident: HashMap<TileKey, Resident>,
+    resident: HashMap<TileKey, TileLayout>,
     /// 取得中のグリッド。
     loading: HashSet<FetchKey>,
     /// 取得に失敗したグリッド。同じ取得を延々と繰り返さないよう覚えておく。
@@ -229,7 +229,7 @@ fn try_init(
                 for tile in data.tiles() {
                     let tile_mesh = mesh::build_whole_tile_mesh(&data, tile, &transform);
                     renderer.set_mesh((tile.key.0, tile.key.1, WHOLE_TILE), &tile_mesh);
-                    resident.insert(tile.key, Resident::Whole);
+                    resident.insert(tile.key, TileLayout::Whole);
                 }
                 {
                     let mut s = state.borrow_mut();
@@ -402,12 +402,12 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
         let Some(tile) = terrain.tile(key) else { continue };
         let whole_key: MeshKey = (key.0, key.1, WHOLE_TILE);
         let current: Option<Vec<u8>> = match state.borrow().resident.get(&key) {
-            Some(Resident::Chunks(v)) => Some(v.clone()),
+            Some(TileLayout::Chunks(v)) => Some(v.clone()),
             _ => None,
         };
 
         match tile_plan {
-            TilePlan::Whole => {
+            TileLayout::Whole => {
                 if current.is_some() {
                     // タイル全体の1枚のメッシュへ戻す(小さいので頂点数の上限には数えない)。
                     let whole = mesh::build_whole_tile_mesh(&terrain, tile, &transform);
@@ -418,13 +418,13 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
                             renderer.remove_mesh((key.0, key.1, c as u8));
                         }
                     }
-                    s.resident.insert(key, Resident::Whole);
+                    s.resident.insert(key, TileLayout::Whole);
                     drop(s);
                     terrain.set_whole_tile(key);
                     changed = true;
                 }
             }
-            TilePlan::Chunks(targets) => {
+            TileLayout::Chunks(targets) => {
                 // 各チャンクの目標レベルのうち、取得済みで最も細かいレベル(無ければ0)。
                 let available: Vec<usize> = (0..chunk_count)
                     .map(|c| terrain.best_cached_level(tile, c, targets[c] as usize))
@@ -460,7 +460,7 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
                             renderer.remove_mesh(whole_key);
                         }
                         let levels: Vec<u8> = available.iter().map(|&l| l as u8).collect();
-                        s.resident.insert(key, Resident::Chunks(levels.clone()));
+                        s.resident.insert(key, TileLayout::Chunks(levels.clone()));
                         uploaded_vertices += cost;
                         changed = true;
                         levels
@@ -506,7 +506,7 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
                     }
                 }
                 if resident_changed {
-                    state.borrow_mut().resident.insert(key, Resident::Chunks(levels));
+                    state.borrow_mut().resident.insert(key, TileLayout::Chunks(levels));
                 }
             }
         }
@@ -563,7 +563,7 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
             let resident = &s.resident;
             terrain.evict_unused(
                 |key, chunk, level| match resident.get(&key) {
-                    Some(Resident::Chunks(levels)) => {
+                    Some(TileLayout::Chunks(levels)) => {
                         chunk < chunks && levels[chunk] as usize == level
                     }
                     _ => false,
@@ -1043,11 +1043,11 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             for (&key, resident) in s.resident.iter() {
                 let Some(tile) = terrain.tile(key) else { continue };
                 match resident {
-                    Resident::Whole => {
+                    TileLayout::Whole => {
                         let vertices = mesh::build_whole_tile_vertices(&terrain, tile, &new_transform);
                         renderer.update_mesh_vertices((key.0, key.1, WHOLE_TILE), &vertices);
                     }
-                    Resident::Chunks(levels) => {
+                    TileLayout::Chunks(levels) => {
                         for (c, &level) in levels.iter().enumerate() {
                             if let Some(vertices) = mesh::build_chunk_vertices(
                                 &terrain,
