@@ -344,13 +344,13 @@ move || match tracks.selected_track() {
 ## 右クリックメニュー
 
 `ui::context_menu::ContextMenu`は、項目を使う側が決める汎用の右クリックメニューです(`FloatingPanel`と同じ考え方)。`ContextMenuState`を`provide_context`し、
-`<ContextMenu/>`をどこかに1つ置きます。地図の右クリックにつなぐには、さらに`ui::terrain_view::MapMenuState`に「右クリックした場所から項目を作る関数」を渡して
+`<ContextMenu/>`をどこかに1つ置きます。地図の右クリックにつなぐには、さらに`ui::context_menu::MapMenuState`に「右クリックした場所から項目を作る関数」を渡して
 `provide_context`します。`TerrainView`は右クリックで`MapMenuTarget { position: 地表の(緯度, 経度), track: 航跡のシンボル }`を求め、関数が返した項目でメニューを出します
 (両方のcontextが無ければ、従来どおり右クリックでレーダー観測点を追加します)。
 
 ```rust
 use sim3dview::ui::context_menu::{copy_to_clipboard, ContextMenu, ContextMenuState, MenuItem};
-use sim3dview::ui::terrain_view::MapMenuState;
+use sim3dview::ui::context_menu::MapMenuState;
 
 provide_context(ContextMenuState::new());
 provide_context(MapMenuState::new(move |target| {

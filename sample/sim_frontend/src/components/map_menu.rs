@@ -1,4 +1,4 @@
-//! 地図の右クリックメニューの項目(sim3dviewの`ui::terrain_view::MapMenuState`に渡す、項目を作る関数)。
+//! 地図の右クリックメニューの項目(sim3dviewの`ui::context_menu::MapMenuState`に渡す、項目を作る関数)。
 //! 右クリックした場所(地表の緯度経度・航跡のシンボル)から、そこに対する操作を並べる:
 //! - 航跡のシンボル: 見出し(名前・種別・所属)、中心点をその航跡へ移す、選択の解除
 //! - 地表: 緯度経度の表示、レーダー観測点の追加、原点の指定(シミュレーション停止中のみサーバーが受理)、
@@ -14,7 +14,7 @@ use sim3dview::terrain::origin_pick::OriginPickState;
 use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::terrain::tracks::TracksState;
 use sim3dview::ui::context_menu::{copy_to_clipboard, MenuItem};
-use sim3dview::ui::terrain_view::{MapMenuState, MapMenuTarget};
+use sim3dview::ui::context_menu::{MapMenuState, MapMenuTarget};
 
 /// 項目が操作する状態。すべて`Copy`(シグナルの束)なので、項目のコールバックへそのまま持ち込める。
 #[derive(Clone, Copy)]

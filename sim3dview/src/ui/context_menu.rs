@@ -14,6 +14,7 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use super::floating_panel::viewport_size;
+use crate::terrain::tracks::TrackId;
 
 /// メニューを画面の端からこれだけ(px)離す。
 const EDGE_MARGIN_PX: f64 = 4.0;
@@ -253,5 +254,30 @@ pub fn copy_to_clipboard(text: &str) {
         .and_then(|f| f.dyn_into::<js_sys::Function>().ok());
     if let Some(write) = write {
         let _ = write.call1(&clipboard, &text.into());
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// 地図の右クリック(`TerrainView`が使う)
+// ---------------------------------------------------------------------------------------------
+
+/// 地図を右クリックした場所にあるもの(右クリックメニューの項目を決める材料)。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapMenuTarget {
+    /// 地表の(緯度, 経度)。地形データの範囲外・空ならNone。
+    pub position: Option<(f64, f64)>,
+    /// 右クリックした航跡のシンボル。あればTerrainViewが先にそのトラックを選択する。
+    pub track: Option<TrackId>,
+}
+
+/// 地図の右クリックメニューの項目を作るコールバック(`provide_context`する。`ContextMenuState`も必要)。
+/// 右クリックのたびに、その場所(`MapMenuTarget`)から項目を作って返す。空を返せばメニューは出ない。
+/// レーダー観測点の追加・原点の指定・作図の開始など、何を並べるかはアプリが決める。
+#[derive(Clone, Copy)]
+pub struct MapMenuState(pub UnsyncCallback<MapMenuTarget, Vec<MenuItem>>);
+
+impl MapMenuState {
+    pub fn new(build: impl Fn(MapMenuTarget) -> Vec<MenuItem> + 'static) -> Self {
+        Self(UnsyncCallback::new(build))
     }
 }
