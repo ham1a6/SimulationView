@@ -6,7 +6,7 @@
 (旧指示書・旧設計書の内容は、本書と詳細設計書に漏れなく引き継いだ上で、両旧文書は削除済み。)
 
 設計書は基本設計(本書)→詳細設計([DETAILED_DESIGN.md](DETAILED_DESIGN.md): 地形データ・座標系・プロトコル・C++・ライブラリの設計方針・UML図)→
-ライブラリ実装仕様([impl/](impl/): 定数・アルゴリズム・バイト配置・WGSL・テストを実装コードから起こした正確な仕様)の3層で、全体の索引は[README.md](README.md)。
+ライブラリ実装仕様(詳細設計書9節: 定数・アルゴリズム・バイト配置・テストの要点を実装コードから起こした仕様)の3層で、全体の索引は[README.md](README.md)。
 新しいセッション・新しい開発者が本プロジェクトに参加する際は、まず本書を読み、詳細が必要になった箇所で詳細設計書、さらに正確な数値・手順が必要になった箇所で実装仕様を参照する。
 
 ---
@@ -161,11 +161,10 @@ Sim3dView/
 ├── docs/                      # 設計書一式(索引はdocs/README.md)
 │   ├── README.md                # 文書体系の索引・読み順・保守ルール
 │   ├── BASIC_DESIGN.md          # 基本設計書(本書)
-│   ├── DETAILED_DESIGN.md       # 詳細設計書(データ・座標系・プロトコル・C++・ライブラリの設計方針・UML)
-│   ├── impl/                    # 詳細設計(ライブラリ実装仕様)5本(データ契約・カメラ/LOD/見通し・レンダラー/WGSL・重ね描き・UI)
+│   ├── DETAILED_DESIGN.md       # 詳細設計書(1〜8節: データ・座標系・プロトコル・C++・ライブラリの設計方針・UML。9節: ライブラリ実装仕様)
 │   ├── IMPLEMENTATION_GUIDE.md  # ドキュメントだけでライブラリを再実装するための入口(フェーズ・受け入れ基準・落とし穴)
 │   └── DEVELOPMENT_HISTORY.md   # 機能ごとの実装経緯・ハマりどころの記録
-├── scripts/                   # gen_third_party_notice.py(ライセンス表記の生成)・sync_impl_wgsl.py(docs/implの埋め込みWGSLを実ファイルと同期)
+├── scripts/                   # gen_third_party_notice.py(ライセンス表記の生成)
 ├── Cargo.toml                  # ワークスペースルート(members: sim3dview, sample/sim_frontend)
 ├── map_data/                  # 入力: ALOS DSM GeoTIFFタイル(現在390枚、既存・変更しない。git管理外)
 │   └── ALPSMLC30_N###E###_DSM.tif ...
@@ -304,8 +303,7 @@ DEVELOPMENT_HISTORY.mdおよびコード自体を参照。これ以降に足し�
 ## 8. 関連文書
 
 - [README.md](README.md) — 設計書一式の索引・読み順・保守ルール
-- [DETAILED_DESIGN.md](DETAILED_DESIGN.md) — 詳細設計書。データフォーマット・座標変換・通信プロトコルのバイト定義・C++設計・ライブラリの設計方針・UML図
-- [impl/](impl/) — ライブラリ実装仕様(第1〜5部)。定数・アルゴリズム・バイト配置・シェーダー全文・テストの正確な仕様
+- [DETAILED_DESIGN.md](DETAILED_DESIGN.md) — 詳細設計書。データフォーマット・座標変換・通信プロトコルのバイト定義・C++設計・ライブラリの設計方針・UML図、9節にライブラリの定数・アルゴリズム・バイト配置の要点
 - [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) — ソースを見ずにライブラリを1から再実装するための実装ガイド(フェーズ・受け入れ基準・落とし穴)
 - [DEVELOPMENT_HISTORY.md](DEVELOPMENT_HISTORY.md) — 機能ごとの実装経緯・動作確認済み事項・ハマりどころ
 - [../README.md](../README.md) — セットアップ・ビルド・起動手順、既知の環境問題と回避策

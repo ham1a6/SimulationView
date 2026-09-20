@@ -21,13 +21,12 @@ C++シミュレータ + Rust/Leptos(WASM) Web UI + ALOS DEMベースの3D地形�
 |---|---|
 | 設計書の全体像(どの文書に何があるか・読み順・保守ルール) | [docs/README.md](docs/README.md) |
 | システム概要・確定した設計方針(17項目)・実装フェーズ | [docs/BASIC_DESIGN.md](docs/BASIC_DESIGN.md)(新しいセッションはまずこれ。特に4節・6節) |
-| データフォーマット・座標変換の数式・通信プロトコルのバイト定義・UML・各機能の設計方針(なぜ) | [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) |
-| 定数・アルゴリズム・バイト配置・シェーダー全文など、ライブラリの正確な仕様(コードから起こした。設計書と食い違ったらこちらが正) | [docs/impl/](docs/impl/)(第1〜5部) |
+| データフォーマット・座標変換の数式・通信プロトコルのバイト定義・UML・各機能の設計方針(なぜ)、および9節=ライブラリの定数・アルゴリズム・バイト配置の要点(コードから起こした) | [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) |
 | セットアップ・ビルド・起動手順・環境問題の対処(トラブルシューティング表) | [README.md](README.md) |
 | `sim3dview`ライブラリの使い方(組み込み方・context・CSSテーマ契約) | [sim3dview/README.md](sim3dview/README.md) |
 | 機能ごとの実装経緯(要望→調査→原因→修正→実機確認)・過去のハマりどころ | [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) |
 | 利用しているサードパーティのライセンス・著作権表示(依存を変えたら`python scripts/gen_third_party_notice.py`で再生成) | [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md) |
-| ドキュメントだけでライブラリを1から再実装したい(エージェントへの実装依頼を含む) | [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md)(フェーズ・受け入れ基準・落とし穴)と`docs/impl/`。定数・アルゴリズムを変えたら`docs/impl/`の該当箇所を更新し(詳細設計書に同じ数値を書き写さない)、シェーダー編集後は`python scripts/sync_impl_wgsl.py`で埋め込みWGSLを同期 |
+| ライブラリを1から再実装したい(エージェントへの実装依頼を含む) | [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md)(フェーズ・受け入れ基準・落とし穴)と、詳細設計書9節(仕様の要点)。定数・アルゴリズムを変えたら9節の該当箇所を更新する(1〜8節に同じ数値を書き写さない。シェーダー全文はドキュメントに持たずソースが正) |
 | C++経験者向けに、Rust・WASM・wgpu・各機能のしくみを土台から読みたい | 技術解説ノート(Artifact「Sim3dViewのしくみ」<https://claude.ai/artifact/1hpM7J9MELrr9K8PXsH8VR>。機能を足したら更新する) |
 
 設計判断の「なぜ」を辿りたいときは、上記に加えてgit履歴を参照する。
@@ -42,8 +41,8 @@ sample/
   sim_frontend/          # sim3dviewを使うサンプルアプリ。VAB・状況パネル・メニュー・通信プロトコル等
 tools/
   geotiff_preprocess/    # ライブラリの一部の前処理CLI(C++/GDAL)。GeoTIFF→1度タイルごとの多段解像度グリッド+metadata.json。独立CMakeプロジェクト
-docs/                 # 設計書一式(基本設計・詳細設計・impl/=ライブラリ実装仕様・実装ガイド・開発履歴。索引はdocs/README.md)
-scripts/              # ライセンス表記の生成・impl/のWGSL同期
+docs/                 # 設計書一式(基本設計・詳細設計(9節=ライブラリ実装仕様)・実装ガイド・開発履歴。索引はdocs/README.md)
+scripts/              # ライセンス表記の生成
 map_data/             # 入力: ALOS DSM GeoTIFFタイル(現在390枚、既存・変更しない。git管理外で履歴にも無い)
 Cargo.toml             # ワークスペースルート(members: sim3dview, sample/sim_frontend)
 ```

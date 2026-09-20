@@ -24,7 +24,7 @@ ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し(Line of 
 モジュール構成は[DETAILED_DESIGN.md](../docs/DETAILED_DESIGN.md) 6.0節を参照してください。
 
 > このライブラリを**1から再実装したい**(仕様どおりに作り直す・別環境へ移植する)場合は、
-> [docs/IMPLEMENTATION_GUIDE.md](../docs/IMPLEMENTATION_GUIDE.md)と[docs/impl/](../docs/impl/)の詳細仕様を参照してください
+> [docs/IMPLEMENTATION_GUIDE.md](../docs/IMPLEMENTATION_GUIDE.md)と[docs/DETAILED_DESIGN.md](../docs/DETAILED_DESIGN.md) 9節の詳細仕様を参照してください
 > (設計書全体の索引は[docs/README.md](../docs/README.md))。
 
 ## 依存関係への追加
