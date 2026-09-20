@@ -166,6 +166,10 @@ const Z_FAR: f32 = 8_000_000.0;
 // 特異点になるため少し余裕を持たせる。
 const MIN_PITCH: f32 = -1.5;
 const MAX_PITCH: f32 = 1.5;
+/// 3Dモードで、視点(カメラ位置)が真下の地面(地形の表面、海・データ範囲外は海抜0m)から最低限
+/// 離れる高さ(メートル)。最細の地形のセル(約30m)と同程度にして、視点が近くの斜面の三角形に
+/// めり込んで画面が地形の内側の色で埋まらないようにする。
+pub const MIN_EYE_CLEARANCE_M: f32 = 30.0;
 // 2Dモード(正射影)のカメラ高度。データの最高標高(3710m程度)より十分高く、
 // 一定値でよい(正射影なので見た目の大きさはこの高さに依存しない。近接/遠方
 // クリップ面の範囲を決めるためだけに使う)。
@@ -259,6 +263,43 @@ impl OrbitCamera {
         let delta = right * delta_right + forward_h * delta_forward;
         self.target.x -= delta.x;
         self.target.y -= delta.y;
+    }
+
+    /// 3Dモードで、視点が地面より下にもぐらないようにする。`ground_up(east, north)`は、その水平位置の
+    /// 地面のENU上座標(地形の表面・地球の丸み込み。海・データ範囲外は海抜0mの面)を返す関数
+    /// (camera.rs自体はheightmapを知らないため、呼び出し側(`ui::terrain_view`)が渡す)。
+    ///
+    /// 視点の真下の地面から`MIN_EYE_CLEARANCE_M`未満なら、まず**距離を保ったまま仰角を上げる**
+    /// (ドラッグで下へ回したとき、地面の高さで止まる操作感になる)。仰角は視点の水平位置と一緒に
+    /// 変わり、真下の地面の高さも変わるので数回繰り返す。仰角を最大まで上げても届かない場合
+    /// (ズームインで距離が近すぎる・注視点の周りが高い地形など)は、視点を真上へ持ち上げ、
+    /// 注視点との距離と仰角をそこから求め直す(水平位置は変えない)。
+    /// 仰角は水平より下向き(注視点を見上げる)にもなりうる。谷底から高い所を見上げるのは地面の
+    /// 上なので許す。2Dモード(正射影)は視点の高さが見た目に関係しないので何もしない。
+    pub fn keep_above_ground(&mut self, ground_up: impl Fn(f32, f32) -> f32) {
+        if self.mode != ViewMode::ThreeD {
+            return;
+        }
+        for _ in 0..6 {
+            let eye = self.eye();
+            let min_z = ground_up(eye.x, eye.y) + MIN_EYE_CLEARANCE_M;
+            if eye.z >= min_z {
+                return;
+            }
+            let sin_pitch = (min_z - self.target.z) / self.distance;
+            if sin_pitch >= MAX_PITCH.sin() {
+                break; // 仰角を上げても届かない。
+            }
+            self.pitch = sin_pitch.asin().max(self.pitch).clamp(MIN_PITCH, MAX_PITCH);
+        }
+        let eye = self.eye();
+        let min_z = ground_up(eye.x, eye.y) + MIN_EYE_CLEARANCE_M;
+        if eye.z < min_z {
+            let offset = Vec3::new(eye.x - self.target.x, eye.y - self.target.y, min_z - self.target.z);
+            let distance = offset.length();
+            self.pitch = (offset.z / distance).asin().clamp(MIN_PITCH, MAX_PITCH);
+            self.distance = distance.clamp(MIN_DISTANCE, MAX_DISTANCE);
+        }
     }
 
     fn eye(&self) -> Vec3 {

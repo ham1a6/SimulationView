@@ -183,8 +183,23 @@ fn try_init(
     });
 }
 
+/// 3Dモードのカメラ(視点)が地面の下にもぐらないようにする(`OrbitCamera::keep_above_ground`)。
+/// 視点の真下の地面の高さは、いま画面に出している地形(`mesh::ground_at_enu`)から引く。
+/// カメラの操作(回転・ズーム・移動)・原点変更・LODの切り替えのあとの描画の前に必ず通る。
+fn keep_camera_above_ground(state: &Rc<RefCell<ViewState>>) {
+    let mut s = state.borrow_mut();
+    let (Some(terrain), Some(origin)) = (s.terrain.clone(), s.mesh_origin) else {
+        return;
+    };
+    let transform = mesh::EnuTransform::new(&origin, &terrain.metadata.ellipsoid);
+    s.camera.keep_above_ground(|east, north| {
+        mesh::ground_at_enu(&terrain, &transform, east as f64, north as f64).2
+    });
+}
+
 /// 現在の状態で1フレーム描くだけ(LODの更新は予約しない)。
 fn render_frame(state: &Rc<RefCell<ViewState>>) {
+    keep_camera_above_ground(state);
     let s = state.borrow();
     if let Some(renderer) = s.renderer.as_ref() {
         let camera = s.camera.to_camera(renderer.aspect_ratio());
