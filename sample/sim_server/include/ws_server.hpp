@@ -10,15 +10,25 @@
 //   uWS::Loop::defer() 経由でuWSイベントループスレッドに送信させる。
 
 #include <cstdint>
+#include <string>
 
 #include "simulation.hpp"
 
 namespace sim3dview {
 
+// TLS(HTTPS/WSS)設定。証明書・秘密鍵(PEM)のパスが両方そろったときだけTLSを有効にする。
+// 空ならこれまでどおり平文のHTTP/WSで待ち受ける。
+struct TlsConfig {
+    std::string cert_file;
+    std::string key_file;
+
+    bool enabled() const { return !cert_file.empty() && !key_file.empty(); }
+};
+
 // uWebSocketsベースのWebSocketサーバー。
 class WsServer {
 public:
-    explicit WsServer(uint16_t port);
+    explicit WsServer(uint16_t port, TlsConfig tls = {});
     ~WsServer();
 
     // impl_は所有権を持つ生ポインタでコピー・ムーブ双方が二重解放を招くため禁止する。

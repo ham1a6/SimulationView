@@ -82,6 +82,8 @@ cd sample/sim_frontend && trunk serve                          # 開発サーバ
 
 - `sim_server.exe`(既定ポート9001)を先に起動。地形データ(`metadata.json`/`tile_index.json`/`base.bin`/`tiles/`、約12GB)は
   `geotiff_preprocess.exe`をリポジトリルートから実行して生成する(リポジトリには含まれない)
+- HTTPS/WSSは任意(既定は平文)。`tools/gen_dev_cert.ps1`で自己署名証明書を作り、sim_serverに`--cert/--key`、trunkに`--tls-cert-path/--tls-key-path`を渡す。
+  フロントはページのスキームに合わせて`wss/https`で接続する(両方TLSにすること。手順はREADME.md)
 - `trunk`実行前に`$env:NO_COLOR = "true"`が必要。`Start-Process`でのexe起動はブロックされるので直接実行する
 - **ライブラリ(`sim3dview`)側だけを編集した場合はtrunkを再起動する**(path依存先は自動watchされない)
 - `cargo.exe`が「信頼されていないマウントポイント」で起動しない場合は

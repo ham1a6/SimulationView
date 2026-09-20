@@ -5,6 +5,7 @@
 #include <cctype>
 #include <chrono>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <mutex>
 #include <sstream>
@@ -13,7 +14,8 @@
 #include <thread>
 #include <unordered_map>
 
-// uWebSockets(SSLなし)。LIBUS_NO_SSL は CMake 側で定義する。
+// uWebSockets。TLS(HTTPS/WSS)対応のため、SSLありのSSLAppとSSLなしのAppを両方使う
+// (LIBUS_USE_OPENSSL は CMake 側で定義する)。
 #include <App.h>
 
 namespace sim3dview {
@@ -30,7 +32,9 @@ struct PerSocketData {
     ClientId client_id = 0;
 };
 
-using ServerWebSocket = uWS::WebSocket<false, true, PerSocketData>;
+// SSL=trueがHTTPS/WSS(uWS::SSLApp)、falseが平文HTTP/WS(uWS::App)。
+template <bool SSL>
+using ServerWebSocket = uWS::WebSocket<SSL, true, PerSocketData>;
 
 // "bytes=START-END"または"bytes=START-"(単一範囲のみ)を解釈する。解釈できなければfalse。
 // endは含む(HTTPのRangeの仕様どおり)。END省略時は末尾まで。
@@ -62,7 +66,8 @@ bool parse_byte_range(std::string_view header, std::uintmax_t total, std::uintma
 // 想定CWDは sim_server/ (README.md記載の起動手順に合わせた相対パス)。
 // HTTP Range(単一範囲)に対応する: 細かいレベルのタイルファイルは大きい(最細で1タイル約26MB)
 // ので、フロントは必要なチャンク1個分だけをRangeで取得する。
-void serve_terrain_file(uWS::HttpResponse<false>* res, uWS::HttpRequest* req,
+template <bool SSL>
+void serve_terrain_file(uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req,
                          const std::string& path, const char* content_type) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
     if (!file) {
@@ -110,14 +115,16 @@ bool is_safe_path_component(const std::string& name) {
 } // namespace
 
 struct WsServer::Impl {
-    explicit Impl(uint16_t port_) : port(port_) {}
+    Impl(uint16_t port_, TlsConfig tls_) : port(port_), tls(std::move(tls_)) {}
 
     uint16_t port;
+    TlsConfig tls;
     Simulation simulation;
 
-    // ClientId -> WebSocket* のマップ。uWSイベントループスレッドからのみ生ポインタを
-    // 触ってよいため、参照・変更は必ずclients_mutex経由で行う。
-    std::unordered_map<ClientId, ServerWebSocket*> clients;
+    // ClientId -> 送信関数 のマップ。uWSイベントループスレッドからのみ生ポインタ(WebSocket*)を
+    // 触ってよいため、参照・変更は必ずclients_mutex経由で行う。SSLの有無(WebSocketの型)を
+    // この構造体の外へ漏らさないよう、WebSocket*を捕捉した送信関数として持つ。
+    std::unordered_map<ClientId, std::function<void(const std::string&)>> clients;
     std::mutex clients_mutex;
     std::atomic<ClientId> next_client_id{1};
 
@@ -126,8 +133,8 @@ struct WsServer::Impl {
 
     void broadcast(const std::string& frame) {
         std::lock_guard<std::mutex> lock(clients_mutex);
-        for (auto& [id, ws] : clients) {
-            ws->send(frame, uWS::OpCode::BINARY);
+        for (auto& [id, send] : clients) {
+            send(frame);
         }
     }
 
@@ -135,16 +142,20 @@ struct WsServer::Impl {
         std::lock_guard<std::mutex> lock(clients_mutex);
         auto it = clients.find(client_id);
         if (it != clients.end()) {
-            it->second->send(frame, uWS::OpCode::BINARY);
+            it->second(frame);
         }
     }
 
-    void send_to(ServerWebSocket* ws, const std::string& frame) {
+    template <bool SSL>
+    void send_to(ServerWebSocket<SSL>* ws, const std::string& frame) {
         ws->send(frame, uWS::OpCode::BINARY);
     }
+
+    template <bool SSL, typename AppT>
+    void run_app(AppT app);
 };
 
-WsServer::WsServer(uint16_t port) : impl_(new Impl(port)) {}
+WsServer::WsServer(uint16_t port, TlsConfig tls) : impl_(new Impl(port, std::move(tls))) {}
 
 WsServer::~WsServer() {
     impl_->keep_running = false;
@@ -155,22 +166,36 @@ WsServer::~WsServer() {
 }
 
 void WsServer::run() {
-    Impl* impl = impl_;
+    if (impl_->tls.enabled()) {
+        uWS::SocketContextOptions options{};
+        options.key_file_name = impl_->tls.key_file.c_str();
+        options.cert_file_name = impl_->tls.cert_file.c_str();
+        impl_->run_app<true>(uWS::SSLApp(options));
+    } else {
+        impl_->run_app<false>(uWS::App());
+    }
+}
 
-    // このスレッド(uWSイベントループスレッド)用の Loop を先に確定させておく。
+// SSL=trueならHTTPS/WSS、falseなら平文HTTP/WSでサーバーを起動する(呼び出しスレッドをブロックする)。
+template <bool SSL, typename AppT>
+void WsServer::Impl::run_app(AppT app) {
+    Impl* impl = this;
+
     uWS::Loop* loop = uWS::Loop::get();
 
-    uWS::App::WebSocketBehavior<PerSocketData> behavior;
+    typename AppT::template WebSocketBehavior<PerSocketData> behavior;
     behavior.compression = uWS::DISABLED;
     behavior.maxPayloadLength = 16 * 1024;
     behavior.idleTimeout = 120;
 
-    behavior.open = [impl](ServerWebSocket* ws) {
+    behavior.open = [impl](ServerWebSocket<SSL>* ws) {
         const ClientId client_id = impl->next_client_id.fetch_add(1);
         ws->getUserData()->client_id = client_id;
         {
             std::lock_guard<std::mutex> lock(impl->clients_mutex);
-            impl->clients[client_id] = ws;
+            impl->clients[client_id] = [ws](const std::string& frame) {
+                ws->send(frame, uWS::OpCode::BINARY);
+            };
         }
         std::cout << "[ws_server] client connected (id=" << client_id << ")" << std::endl;
 
@@ -185,7 +210,7 @@ void WsServer::run() {
                                                    impl->simulation.snapshot_app_status()));
     };
 
-    behavior.message = [impl](ServerWebSocket* ws, std::string_view message, uWS::OpCode) {
+    behavior.message = [impl](ServerWebSocket<SSL>* ws, std::string_view message, uWS::OpCode) {
         try {
             ClientCommand cmd =
                 msgpack::unpack(message.data(), message.size()).get().as<ClientCommand>();
@@ -197,30 +222,29 @@ void WsServer::run() {
         }
     };
 
-    behavior.close = [impl](ServerWebSocket* ws, int /*code*/, std::string_view /*message*/) {
+    behavior.close = [impl](ServerWebSocket<SSL>* ws, int /*code*/, std::string_view /*message*/) {
         std::lock_guard<std::mutex> lock(impl->clients_mutex);
         impl->clients.erase(ws->getUserData()->client_id);
         std::cout << "[ws_server] client disconnected" << std::endl;
     };
 
-    uWS::App app;
-    app.ws<PerSocketData>("/sim", std::move(behavior));
+    app.template ws<PerSocketData>("/sim", std::move(behavior));
 
     // 地形データの静的配信(DETAILED_DESIGN.md 5.4節: WebSocketの/simエンドポイントとは独立したHTTPルート)。
     // フロント(trunk serve)とは別オリジンからfetchされるためCORSヘッダーを付与する。
-    app.get("/terrain/metadata.json", [](uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+    app.get("/terrain/metadata.json", [](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
         serve_terrain_file(res, req, "assets/terrain/metadata.json", "application/json");
     });
-    app.get("/terrain/tile_index.json", [](uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+    app.get("/terrain/tile_index.json", [](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
         serve_terrain_file(res, req, "assets/terrain/tile_index.json", "application/json");
     });
     // 全タイルの最粗レベルを連結したもの(起動時にフロントが一度だけ取得する)。
-    app.get("/terrain/base.bin", [](uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+    app.get("/terrain/base.bin", [](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
         serve_terrain_file(res, req, "assets/terrain/base.bin", "application/octet-stream");
     });
     // 細かいレベルのタイル(例: /terrain/tiles/L2/N035E138.bin)。カメラに近いチャンクだけ
     // フロントが必要に応じて取得する(大きいファイルはHTTP Rangeで部分取得)。
-    app.get("/terrain/tiles/:level/:name", [](uWS::HttpResponse<false>* res, uWS::HttpRequest* req) {
+    app.get("/terrain/tiles/:level/:name", [](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
         const std::string level(req->getParameter(0));
         const std::string name(req->getParameter(1));
         if (!is_safe_path_component(level) || !is_safe_path_component(name)) {
@@ -237,8 +261,8 @@ void WsServer::run() {
     // (LAN上の別端末からもsim_frontendで接続できるようにするため)。
     app.listen("0.0.0.0", impl->port, [impl](us_listen_socket_t* token) {
         if (token) {
-            std::cout << "[ws_server] listening on ws://0.0.0.0:" << impl->port
-                       << "/sim (all interfaces)" << std::endl;
+            std::cout << "[ws_server] listening on " << (SSL ? "wss" : "ws") << "://0.0.0.0:"
+                       << impl->port << "/sim (all interfaces)" << std::endl;
         } else {
             std::cerr << "[ws_server] failed to listen on port " << impl->port << std::endl;
         }

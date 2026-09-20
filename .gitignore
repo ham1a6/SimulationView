@@ -23,3 +23,6 @@ Thumbs.db
 
 # Claude Code ローカル実行時ファイル
 .claude/
+
+# 開発用の自己署名証明書・秘密鍵(tools/gen_dev_cert.ps1が生成。秘密鍵をコミットしない)
+certs/

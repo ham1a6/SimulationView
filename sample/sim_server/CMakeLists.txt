@@ -10,18 +10,22 @@ set(UWEBSOCKETS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/uWebSockets)
 set(MSGPACK_CXX_DIR ${CMAKE_CURRENT_SOURCE_DIR}/third_party/msgpack-cxx)
 
 # --- uSockets (uWebSocketsが依存するCネットワーキング層) ---------------------
-# TLS/QUIC/io_uringは本プロジェクトでは不要なため、それらのソース(crypto/, quic.c,
-# io_uring/)はビルド対象から除外する(third_party/uWebSocketsからもboringssl/lsquic/
-# fuzzing等の重いサブモジュールは取得していない)。
+# QUIC/io_uringは本プロジェクトでは不要なため、そのソース(quic.c, io_uring/)はビルド対象から
+# 除外する(third_party/uWebSocketsからもboringssl/lsquic/fuzzing等の重いサブモジュールは
+# 取得していない)。TLS(HTTPS/WSS)はvcpkgのOpenSSLで対応する(crypto/openssl.c, sni_tree.cpp)。
 add_library(usockets STATIC
     ${USOCKETS_DIR}/src/bsd.c
     ${USOCKETS_DIR}/src/context.c
     ${USOCKETS_DIR}/src/loop.c
     ${USOCKETS_DIR}/src/socket.c
     ${USOCKETS_DIR}/src/udp.c
+    ${USOCKETS_DIR}/src/crypto/openssl.c
+    ${USOCKETS_DIR}/src/crypto/sni_tree.cpp
 )
 target_include_directories(usockets PUBLIC ${USOCKETS_DIR}/src)
-target_compile_definitions(usockets PUBLIC LIBUS_NO_SSL)
+find_package(OpenSSL REQUIRED)
+target_compile_definitions(usockets PUBLIC LIBUS_USE_OPENSSL)
+target_link_libraries(usockets PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 
 if (WIN32)
     # libusockets.h は _WIN32 かつ他のイベンティング指定が無い場合、自動的に

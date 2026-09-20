@@ -321,13 +321,27 @@ impl WsConnection {
     }
 }
 
-/// 接続先WebSocket URLを、現在のページのホスト名から組み立てる。
-pub fn default_ws_url() -> String {
-    let hostname = web_sys::window()
-        .map(|w| w.location())
+/// 現在のページの(ホスト名, HTTPSか)。取れなければ("localhost", false)。
+fn page_host_and_tls() -> (String, bool) {
+    let location = web_sys::window().map(|w| w.location());
+    let hostname = location
+        .as_ref()
         .and_then(|loc| loc.hostname().ok())
         .unwrap_or_else(|| "localhost".to_string());
-    format!("ws://{hostname}:9001/sim")
+    // HTTPSのページから平文のws://・http://へは、ブラウザのMixed Content規則で接続できない。
+    // sim_serverも同じ証明書でHTTPS/WSSを待ち受ける前提(README.mdの「HTTPS」節)で、
+    // ページのスキームに合わせて選ぶ。
+    let is_tls = location
+        .and_then(|loc| loc.protocol().ok())
+        .is_some_and(|p| p == "https:");
+    (hostname, is_tls)
+}
+
+/// 接続先WebSocket URLを、現在のページのホスト名・スキームから組み立てる。
+pub fn default_ws_url() -> String {
+    let (hostname, is_tls) = page_host_and_tls();
+    let scheme = if is_tls { "wss" } else { "ws" };
+    format!("{scheme}://{hostname}:9001/sim")
 }
 
 /// `sim3dview::terrain::store::TerrainStore::new()`/`ui::origin_dialog::OriginDialog`へ渡す
@@ -335,9 +349,7 @@ pub fn default_ws_url() -> String {
 /// (`terrain::loader`参照)、このサンプルアプリ側でsample/sim_serverの規約
 /// (`/terrain/*`、ポート9001)に基づいて組み立てる。
 pub fn default_terrain_base_url() -> String {
-    let hostname = web_sys::window()
-        .map(|w| w.location())
-        .and_then(|loc| loc.hostname().ok())
-        .unwrap_or_else(|| "localhost".to_string());
-    format!("http://{hostname}:9001/terrain")
+    let (hostname, is_tls) = page_host_and_tls();
+    let scheme = if is_tls { "https" } else { "http" };
+    format!("{scheme}://{hostname}:9001/terrain")
 }
