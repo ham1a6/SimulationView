@@ -17,6 +17,8 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 use crate::terrain::camera::{CameraPreset, OrbitCamera, ViewMode};
+use crate::terrain::drawing::DrawingState;
+use crate::terrain::drawing_geometry;
 use crate::terrain::loader::{self, MeshKey, TerrainData, TileKey, WHOLE_TILE};
 use crate::terrain::lod::{self, Resident, TilePlan};
 use crate::terrain::markers::{self, RadarMarkersState};
@@ -47,6 +49,8 @@ struct ViewState {
     down_x: f64,
     down_y: f64,
     radar_markers: RadarMarkersState,
+    /// 作図(図形・線)の一覧(`terrain::drawing`)。
+    drawings: DrawingState,
     /// 陰影(ヒルシェード)のON/OFF。レンダラー作成時の初期値に使う(以後の変更はEffect 7が反映する)。
     hillshade: HillshadeState,
     /// 各タイルの、いまGPUに載っている状態(全体1枚か、チャンクごとのレベルか。`terrain::lod`参照)。
@@ -182,6 +186,7 @@ fn try_init(
                 status.set(String::new());
                 drop(s);
                 rebuild_markers(&state, radar_markers);
+                rebuild_drawings(&state);
                 render_now(&state);
             }
             Err(e) => {
@@ -502,6 +507,15 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
             let radar_markers = state.borrow().radar_markers;
             rebuild_markers(state, radar_markers);
         }
+        // 地表に貼り付けた作図も、地形の高さが変わったので作り直す。
+        let follows_terrain = state
+            .borrow()
+            .drawings
+            .items
+            .with_untracked(|list| list.iter().any(|d| d.visible && d.shape.depends_on_terrain()));
+        if follows_terrain {
+            rebuild_drawings(state);
+        }
         render_frame(state);
     }
     if deferred_upload {
@@ -553,6 +567,32 @@ fn rebuild_markers(state: &Rc<RefCell<ViewState>>, radar_markers: RadarMarkersSt
     renderer.update_dome(&coverage_vertices);
 }
 
+/// 作図(`terrain::drawing`)の一覧から頂点列を作り直してGPUバッファへ反映する。一覧の変更・原点変更
+/// (メッシュ再構築後)・地表に貼り付けた図形があるときの地形LOD切り替え・canvasのリサイズ
+/// (画面座標の角の位置が変わる)のときに呼ぶ。描画自体は呼び出し側で`render_now`すること。
+fn rebuild_drawings(state: &Rc<RefCell<ViewState>>) {
+    let mut s = state.borrow_mut();
+    let (Some(terrain), Some(mesh_origin)) = (s.terrain.clone(), s.mesh_origin) else {
+        return;
+    };
+    let drawings = s.drawings;
+    let Some(renderer) = s.renderer.as_mut() else {
+        return;
+    };
+    let transform = mesh::EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
+    let (width, height) = renderer.canvas_size_px();
+    // 地形データの範囲外・海は標高0mとして扱う(`mesh::sample_heightmap`)。
+    let ground = |lat: f64, lon: f64| mesh::sample_heightmap(&terrain, lat, lon).unwrap_or(0.0) as f64;
+    let ctx = drawing_geometry::BuildContext {
+        mesh_transform: &transform,
+        ellipsoid: &terrain.metadata.ellipsoid,
+        ground: &ground,
+        viewport_px: (width as f32, height as f32),
+    };
+    let batches = drawings.items.with_untracked(|list| drawing_geometry::build(&ctx, list));
+    renderer.update_drawings(&batches);
+}
+
 #[component]
 pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let canvas_ref: NodeRef<leptos::html::Canvas> = NodeRef::new();
@@ -567,6 +607,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let hillshade = use_context::<HillshadeState>().unwrap_or_default();
     // 未提供なら「クリックで原点指定」機能なしで動作する(上と同じく後付けのオプション機能)。
     let origin_pick = use_context::<OriginPickState>();
+    // 未提供なら作図なしで動作する(上と同じく後付けのオプション機能)。
+    let drawings = use_context::<DrawingState>().unwrap_or_default();
 
     terrain_store.ensure_loaded();
 
@@ -584,6 +626,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         down_x: 0.0,
         down_y: 0.0,
         radar_markers,
+        drawings,
         hillshade,
         resident: HashMap::new(),
         loading: HashSet::new(),
@@ -624,6 +667,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                             renderer.resize(width, height);
                         }
                         drop(s);
+                        // 画面座標の作図は、canvasの大きさで角の位置が変わる。
+                        rebuild_drawings(&state);
                         render_now(&state);
                     } else {
                         try_init(
@@ -789,8 +834,9 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             }
             s.mesh_origin = Some(new_origin);
             drop(s);
-            // マーカー・覆域リングも新しい原点基準のENU座標へ再変換する。
+            // マーカー・覆域リング・作図も新しい原点基準のENU座標へ再変換する。
             rebuild_markers(&state, radar_markers);
+            rebuild_drawings(&state);
             render_now(&state);
         });
     }
@@ -806,6 +852,17 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             let _ = radar_markers.selected.get();
             let _ = radar_markers.coverage_altitude_m.get();
             rebuild_markers(&state, radar_markers);
+            render_now(&state);
+        });
+    }
+
+    // --- Effect 5: 作図(`terrain::drawing`)の一覧の変化に追従して描き直す ---
+    // 図形の追加・削除・書き換え(位置・大きさ・色・表示/非表示)はすべて`items`の更新なので、購読はこれだけ。
+    {
+        let state = state.clone();
+        Effect::new(move |_| {
+            let _ = drawings.items.get();
+            rebuild_drawings(&state);
             render_now(&state);
         });
     }

@@ -38,6 +38,12 @@ pub struct Camera {
 impl Camera {
     pub fn view_proj_matrix(&self) -> Mat4 {
         let view = look_at_mat4(self.eye, self.target, self.up);
+        self.projection_matrix() * view
+    }
+
+    /// 射影行列だけ(ビュー行列を掛けない)。カメラ固定の作図(`terrain::drawing`の視点空間)は、
+    /// カメラから見た座標(右・上・-前方)をそのまま射影するのでこれを使う。
+    pub fn projection_matrix(&self) -> Mat4 {
         // wgpuの正規化デバイス座標は深度[0,1](OpenGL流の[-1,1]ではない)なので
         // directx::perspective/orthographic(DirectX/WebGPU互換、深度[0,1])を使う。
         //
@@ -60,7 +66,7 @@ impl Camera {
         // near/farを入れ替えて渡すだけで反転Zになる。正射影と同じトリックが透視投影でも
         // 成り立つことを手計算で確認済み)に変更し、z_farには従来通り
         // 1,500,000m(実データの最大想定距離に対して十分な余裕を持たせた値)を使う。
-        let proj = match self.projection {
+        match self.projection {
             Projection::Perspective { fov_y_radians } => {
                 directx::perspective(fov_y_radians, self.aspect, self.z_far, self.z_near)
             }
@@ -71,8 +77,7 @@ impl Camera {
                 // 深度マッピングが反転する(near→1, far→0)。
                 directx::orthographic(-half_w, half_w, -half_h, half_h, self.z_far, self.z_near)
             }
-        };
-        proj * view
+        }
     }
 
     /// 水域レイヤー(`terrain.wgsl`の`fs_water`)が、各画素(正規化デバイス座標ndc_x,ndc_y)の視線を

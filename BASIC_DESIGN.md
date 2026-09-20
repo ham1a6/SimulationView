@@ -182,9 +182,12 @@ Sim3dView/
 │       │   ├── store.rs               # TerrainStore(地形データの共有キャッシュ)
 │       │   ├── origin.rs              # OriginState(現在の原点、プロトコル非依存)
 │       │   ├── markers.rs             # RadarMarker/RadarMarkersState・覆域ジオメトリ生成
+│       │   ├── drawing.rs             # 作図(図形・線)のデータモデル・DrawingState(6.11節)
+│       │   ├── drawing_geometry.rs    # 作図の描画用ジオメトリ生成(純粋関数)
 │       │   ├── los.rs                 # 見通し/覆域計算
 │       │   ├── pick.rs                # 画面クリック→緯度経度のレイキャスト
-│       │   └── terrain.wgsl           # 頂点/フラグメントシェーダ
+│       │   ├── terrain.wgsl           # 頂点/フラグメントシェーダ
+│       │   └── draw.wgsl              # 作図用シェーダ(太い線の画面px幅への展開を含む)
 │       └── ui/                       # 上記を使うLeptosコンポーネント一式
 │           ├── mod.rs
 │           ├── terrain_view.rs         # 3D/2D地形描画canvas

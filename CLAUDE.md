@@ -68,6 +68,9 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
   (`simulation.cpp`。読めなければチェック無効+警告)。`map_data/`を変えたらsim_serverの再起動が必要
 - 描画は**反転Z**(Depth32Float、`depth_compare: Greater`、深度クリア値0.0、透視は有限far)+ MSAA 4x +
   2倍スーパーサンプリング。深度・射影を触るときは`camera.rs`の`screen_to_ray`(ピッキング)も整合させること
+- **作図**(図形・線)は`terrain::drawing::DrawingState`(context)で出し入れする。位置の種類で固定先を選ぶ:
+  `World`(緯度経度+高度、地形と同じ深度)/`View`(カメラからの相対m)/`Screen`(画面px)。カメラ固定は地形と別の2つ目のパスで描く。
+  線の太さはシェーダーで画面pxへ展開(DETAILED_DESIGN.md 6.11節、`sim3dview/README.md`に使い方)
 - VABは開発用ダミー値 rows=4, cols=6・空ラベルはDOM生成しない。状況パネル項目はC++から`StatusPanelConfig`で動的配信
 - WebSocket自動再接続: 指数バックオフ+ジッター、タブ非表示中は一時停止(Page Visibility API)
 - `sim3dview`は通信プロトコル・サーバーのURLを一切知らない(URL組み立て・原点のミラーはアプリ側の責務)

@@ -4,6 +4,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
+use sim3dview::terrain::drawing::DrawingState;
 use sim3dview::terrain::hillshade::HillshadeState;
 use sim3dview::terrain::markers::RadarMarkersState;
 use sim3dview::terrain::origin::OriginState;
@@ -46,6 +47,8 @@ pub fn App() -> impl IntoView {
     provide_context(RecenterRequestState::new());
     // 表示メニューの「陰影表示」のON/OFF(sim3dviewライブラリの型。既定はON)。
     provide_context(HillshadeState::default());
+    // 作図(図形・線)の一覧(sim3dviewライブラリの型)。表示メニューの「作図デモ」が図形を出し入れする。
+    provide_context(DrawingState::new());
     // 現在の原点(sim3dviewライブラリの型)。TerrainViewはこれを読んでメッシュを再計算する。
     // サーバーからのOriginState(protocol)が届くたびに、下のEffectでこちらへミラーする
     // (sim3dviewライブラリは通信プロトコルを一切知らないため、この橋渡しはアプリ側の役目)。

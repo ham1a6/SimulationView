@@ -15,11 +15,15 @@
 
 use leptos::prelude::*;
 
+use sim3dview::terrain::drawing::DrawingState;
 use sim3dview::terrain::hillshade::HillshadeState;
+use sim3dview::terrain::origin::OriginState;
 use sim3dview::terrain::origin_pick::OriginPickState;
 use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::ui::coverage_altitude_dialog::CoverageAltitudeDialogState;
 use sim3dview::ui::origin_dialog::OriginDialogState;
+
+use crate::components::drawing_demo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MenuId {
@@ -41,6 +45,10 @@ pub fn MenuBar() -> impl IntoView {
     let recenter_request =
         use_context::<RecenterRequestState>().expect("RecenterRequestState context not found");
     let hillshade = use_context::<HillshadeState>().expect("HillshadeState context not found");
+    let drawings = use_context::<DrawingState>().expect("DrawingState context not found");
+    let origin = use_context::<OriginState>().expect("OriginState context not found");
+    // 「作図デモ」の表示中か(ライブラリの作図一覧を出し入れするだけ。ライブラリ側にこの状態はない)。
+    let drawing_demo_on = RwSignal::new(false);
 
     let menu_entry = move |id: MenuId, label: &'static str| {
         let dropdown = move || {
@@ -96,6 +104,26 @@ pub fn MenuBar() -> impl IntoView {
                             }
                         >
                             "中心点を原点に戻す"
+                        </button>
+                        <button
+                            class="menu-dropdown-item"
+                            on:click=move |_| {
+                                open_menu.set(None);
+                                if drawing_demo_on.get_untracked() {
+                                    drawings.clear();
+                                    drawing_demo_on.set(false);
+                                } else {
+                                    let (lat, lon) = origin
+                                        .0
+                                        .get_untracked()
+                                        .map(|o| (o.lat_deg, o.lon_deg))
+                                        .unwrap_or((35.355556, 138.859722));
+                                    drawing_demo::add_demo(drawings, lat, lon);
+                                    drawing_demo_on.set(true);
+                                }
+                            }
+                        >
+                            {move || if drawing_demo_on.get() { "✓ 作図デモ" } else { "　 作図デモ" }}
                         </button>
                     </div>
                 }

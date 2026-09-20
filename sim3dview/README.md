@@ -12,7 +12,7 @@ ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し(Line of 
 ## 提供するもの
 
 - `terrain`モジュール: 地形データ取得・座標変換・カメラ・wgpu描画・見通し/覆域計算・
-  レーダー観測点の状態管理
+  レーダー観測点の状態管理・作図(図形・線。絶対座標固定/カメラ固定)
 - `ui`モジュール: 上記を使ったLeptosコンポーネント一式(3D/2D地形描画canvas、見通し範囲タブ、
   タブ付きパネル、汎用フローティングパネル、原点設定・覆域高度設定ダイアログ)
 - `style/sim3dview.css`: 上記コンポーネントのスタイル
@@ -195,6 +195,60 @@ view! { <LosView/> } // RadarMarkersState・TerrainStore contextが必要
 `ui::coverage_altitude_dialog::CoverageAltitudeDialog`は、`TerrainView`の2D表示モードで
 選択中観測点の探知可能領域を表示する対象の海抜高度を編集するフローティングパネルです
 (`RadarMarkersState`のみ参照、通信は一切行いません)。
+
+## 作図(図形・線)
+
+`terrain::drawing::DrawingState`を`provide_context`し、`add`/`update`/`remove`/`clear`で図形を出し入れします
+(`TerrainView`が一覧の変化に追従して描き直します。未提供なら作図なしで動作します)。
+
+- **図形**(`Shape`): 2D=`Circle`・`Rect`(回転可)・`Polygon`(凹も可)・`Sector`(扇形)、3D=`Sphere`・`Cuboid`・`Cylinder`・`Cone`、
+  線=`Polyline`。回転角・方位は時計回りで0度が上(北)。
+- **見た目**(`Style`): `fill`(塗り)・`stroke`(輪郭線・線の色)・`stroke_width_px`(太さ、画面のピクセル)。色は`Color`(RGBA、
+  アルファ<1で半透明)。`None`にすると塗りなし/枠なし。3D図形の`stroke`は稜線(ワイヤーフレーム)。
+- **位置の置き方**(`Position`): 絶対座標に固定するか、カメラに固定するかを、図形を置く座標の種類で選びます
+  (1つの図形の中では同じ種類にそろえる)。
+
+| 種類 | 座標 | 動き | 置ける図形 |
+|---|---|---|---|
+| `Position::world(lat, lon, altitude)` | 緯度経度+高度 | 絶対座標に固定。地形と一緒に動き、山の陰に隠れる | すべて |
+| `Position::view(right, up, forward)` | カメラからの相対(m) | カメラに追従。遠近法つきで地形の手前に浮かぶ | すべて |
+| `Position::screen(corner, x, y)` | 画面の角からのpx | 画面に固定(HUD)。地形の手前に追加順で重なる | 2D図形・線 |
+
+- 高度(`Altitude`): `Msl(h)`は海抜で、2D図形は**その高さの水平な面**。`AboveGround(o)`は地表からで、2D図形・線は**地形の起伏に沿って
+  貼り付く**(3D図形は真下の地表を基準に置くだけ)。
+- 大きさの単位は`world`/`view`ではメートル、`screen`ではピクセル。3D図形の位置は、球は中心・それ以外は底面の中心。
+
+```rust
+use sim3dview::terrain::drawing::*;
+
+let drawings = DrawingState::new();
+provide_context(drawings);
+
+// 地形に貼り付く半透明の緑の円(輪郭線つき)
+drawings.add(
+    Shape::Circle { center: Position::world(35.36, 138.73, Altitude::AboveGround(0.0)), radius: 5_000.0 },
+    Style::fill_and_stroke(Color::rgba(0.2, 0.9, 0.3, 0.35), Color::rgb(0.6, 1.0, 0.6), 3.0),
+);
+// 地表から200mの高さで地形に沿う折れ線(太さ4px)
+drawings.add(
+    Shape::Polyline { points: vec![
+        Position::world(35.0, 138.0, Altitude::AboveGround(200.0)),
+        Position::world(35.4, 138.7, Altitude::AboveGround(200.0)),
+    ] },
+    Style::stroked(Color::rgb(1.0, 0.6, 0.1), 4.0),
+);
+// 画面の左上(20,20)から160x80の半透明の枠(カメラを動かしても動かない)
+let id = drawings.add(
+    Shape::Rect { center: Position::screen(Corner::TopLeft, 100.0, 60.0), width: 160.0, height: 80.0, rotation_deg: 0.0 },
+    Style::fill_and_stroke(Color::rgba(0.0, 0.0, 0.0, 0.5), Color::WHITE, 2.0),
+);
+// 後から書き換え・削除
+drawings.update(id, |d| d.style.fill = Some(Color::rgba(1.0, 0.0, 0.0, 0.5)));
+drawings.remove(id);
+```
+
+`sample/sim_frontend`の「表示」→「作図デモ」(`components/drawing_demo.rs`)に、全種類の図形を絶対座標・視点空間・画面座標で
+置く実例があります。
 
 ## 汎用UI部品の再利用
 

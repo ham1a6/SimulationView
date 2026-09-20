@@ -1,4 +1,6 @@
 pub mod camera;
+pub mod drawing;
+pub mod drawing_geometry;
 pub mod hillshade;
 pub mod loader;
 pub mod lod;
