@@ -11,6 +11,8 @@
 //! - **ラベル**: 名前と高度・速度。`TerrainView`が重ねるHTML要素(`ui::terrain_view`)。
 //! - **航跡**: 過去の位置をつないだ線。位置は`set`のたびに一定距離動いたものだけを、`TRAIL_MAX_POINTS`まで貯める。
 //! - **高度線**: 空中のトラックから地表へ下ろす細い線(3Dのみ)。高度が分かりやすくなる。
+//! - **選択**: 地図上のシンボルをクリックすると`TracksState::selected`にそのIDが入り、シンボルに強調の輪が付く
+//!   (`TerrainView`が当たり判定`pick_track`を行う)。詳細の表示は呼び出し側(アプリ)が`selected_track`を読んで行う。
 
 use std::collections::HashMap;
 
@@ -35,6 +37,20 @@ pub enum SymbolKind {
     Missile,
 }
 
+impl SymbolKind {
+    /// 表示用の名前(日本語)。詳細パネルなどに使う。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "不明",
+            Self::Aircraft => "固定翼機",
+            Self::Helicopter => "ヘリコプター",
+            Self::Ship => "艦船",
+            Self::Vehicle => "地上車両",
+            Self::Missile => "ミサイル",
+        }
+    }
+}
+
 /// 所属(色が変わる)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Affiliation {
@@ -48,6 +64,16 @@ pub enum Affiliation {
 }
 
 impl Affiliation {
+    /// 表示用の名前(日本語)。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "不明",
+            Self::Friendly => "友軍",
+            Self::Hostile => "敵",
+            Self::Neutral => "中立",
+        }
+    }
+
     /// シンボル・航跡・ラベルの色。
     pub fn color(self) -> Color {
         match self {
@@ -128,6 +154,9 @@ pub struct TracksState {
     pub show_trails: RwSignal<bool>,
     /// 高度線(空中のトラックから地表へ下ろす線。3Dのみ)を出すか。
     pub show_altitude_lines: RwSignal<bool>,
+    /// 選択中のトラックのID。地図上のシンボルのクリックで`TerrainView`が設定し(何もない所のクリックで`None`)、
+    /// アプリからも`select`/`set`で設定・解除できる。`selected_track`で中身を読める。
+    pub selected: RwSignal<Option<TrackId>>,
 }
 
 impl TracksState {
@@ -137,12 +166,29 @@ impl TracksState {
             show_labels: RwSignal::new(true),
             show_trails: RwSignal::new(true),
             show_altitude_lines: RwSignal::new(true),
+            selected: RwSignal::new(None),
+        }
+    }
+
+    /// 選択中のトラックの最新の状態(選択がない・そのトラックが一覧から消えたら`None`)。
+    /// リアクティブに読める(詳細パネルなどが、選択の変更・位置の更新に追従する)。
+    pub fn selected_track(&self) -> Option<Track> {
+        let id = self.selected.get()?;
+        self.entries.with(|entries| entries.iter().find(|e| e.track.id == id).map(|e| e.track.clone()))
+    }
+
+    /// トラックを選択する(`None`で解除)。
+    pub fn select(&self, id: Option<TrackId>) {
+        if self.selected.get_untracked() != id {
+            self.selected.set(id);
         }
     }
 
     /// トラックの一覧を最新のものへ置き換える(受信のたびに全件を渡す)。前回に無かったIDは新規、
-    /// 今回に無いIDは消える。航跡は同じIDの間だけ貯まる。
+    /// 今回に無いIDは消える(選択中のトラックが消えたら、選択も解除する)。航跡は同じIDの間だけ貯まる。
     pub fn set(&self, tracks: Vec<Track>) {
+        let selected = self.selected.get_untracked();
+        let selected_remains = selected.is_none_or(|id| tracks.iter().any(|t| t.id == id));
         self.entries.update(|entries| {
             let mut previous: HashMap<TrackId, TrackEntry> =
                 entries.drain(..).map(|e| (e.track.id, e)).collect();
@@ -151,11 +197,15 @@ impl TracksState {
                 entries.push(TrackEntry { track, trail });
             }
         });
+        if !selected_remains {
+            self.selected.set(None);
+        }
     }
 
-    /// すべてのトラックと航跡を消す。
+    /// すべてのトラックと航跡を消す(選択も解除する)。
     pub fn clear(&self) {
         self.entries.update(|entries| entries.clear());
+        self.selected.set(None);
     }
 }
 
@@ -181,6 +231,13 @@ const ALTITUDE_LINE_MIN_M: f64 = 30.0;
 const ALTITUDE_LINE_WIDTH_PX: f32 = 1.0;
 const TRAIL_WIDTH_PX: f32 = 1.5;
 const LINE_ALPHA: f32 = 0.55;
+/// 選択中のシンボルの強調の輪(画面のpx。縁取り→白の輪の順)。
+const SELECT_RING_OUTER_PX: f32 = 26.0;
+const SELECT_RING_INNER_PX: f32 = 21.0;
+const SELECT_RING_BAND_PX: f32 = 3.0;
+const SELECT_RING_SEGMENTS: usize = 40;
+/// シンボルの当たり判定の半径(画面のpx。シンボルの縁取りより少し大きい)。
+pub const PICK_RADIUS_PX: f32 = 20.0;
 
 /// シンボルの形(ポリゴンの集まり)。座標は進行方向が+y・その右が+x、全体がおよそ[-1,1]の範囲。
 fn glyph(kind: SymbolKind) -> Vec<Vec<[f64; 2]>> {
@@ -268,6 +325,9 @@ fn push_symbol(
 /// ラベル1つぶん: 表示位置(ENU座標。メッシュ原点基準)と、名前・詳細・色。`TerrainView`が毎フレーム画面へ射影して置く。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackLabel {
+    pub id: TrackId,
+    /// 選択中か(ラベルを強調する)。
+    pub selected: bool,
     pub position: [f32; 3],
     pub name: String,
     pub detail: String,
@@ -277,6 +337,8 @@ pub struct TrackLabel {
 /// 表示するもの(`TracksState`の設定+2D/3D)。
 #[derive(Debug, Clone, Copy)]
 pub struct TrackOptions {
+    /// 強調の輪を付けるトラック。
+    pub selected: Option<TrackId>,
     pub trails: bool,
     /// 高度線(3Dのみ。2D=真上から見た地図では縦の線が点になるので出さない)。
     pub altitude_lines: bool,
@@ -288,6 +350,45 @@ pub struct TrackGeometry {
     /// 描画用の頂点(TriangleList。シンボル・航跡・高度線)。
     pub vertices: Vec<DrawVertex>,
     pub labels: Vec<TrackLabel>,
+}
+
+/// 選択の強調の輪(円環)を`out`に追加する(画面サイズ固定のビルボード)。
+fn push_ring(out: &mut Vec<DrawVertex>, anchor: [f32; 3], outer_px: f32, inner_px: f32, color: [f32; 4]) {
+    let at = |r: f32, i: usize| {
+        let t = std::f32::consts::TAU * i as f32 / SELECT_RING_SEGMENTS as f32;
+        [r * t.cos(), r * t.sin()]
+    };
+    for i in 0..SELECT_RING_SEGMENTS {
+        let (a, b, c, d) = (at(outer_px, i), at(outer_px, i + 1), at(inner_px, i + 1), at(inner_px, i));
+        for p in [a, b, c, a, c, d] {
+            out.push(DrawVertex::billboard(anchor, p, color));
+        }
+    }
+}
+
+/// 画面上の点`point`(canvas内のpx、左上原点)に最も近いシンボルのIDを返す。`anchors`は(ID, シンボルの位置(ENU座標))、
+/// `radius_px`以内に無ければ`None`。カメラの後ろのシンボルは対象外。地形の陰に隠れたシンボルも対象になる(深度は見ない)。
+pub fn pick_track(
+    anchors: &[(TrackId, [f32; 3])],
+    view_proj: &glam::Mat4,
+    viewport_px: (f32, f32),
+    point: (f32, f32),
+    radius_px: f32,
+) -> Option<TrackId> {
+    let mut best: Option<(TrackId, f32)> = None;
+    for &(id, [x, y, z]) in anchors {
+        let clip = *view_proj * glam::Vec4::new(x, y, z, 1.0);
+        if clip.w <= 0.0 {
+            continue;
+        }
+        let sx = (clip.x / clip.w + 1.0) * 0.5 * viewport_px.0;
+        let sy = (1.0 - clip.y / clip.w) * 0.5 * viewport_px.1;
+        let distance = (sx - point.0).hypot(sy - point.1);
+        if distance <= radius_px && best.is_none_or(|(_, d)| distance < d) {
+            best = Some((id, distance));
+        }
+    }
+    best.map(|(id, _)| id)
 }
 
 fn height_of(ctx: &BuildContext, lat_deg: f64, lon_deg: f64, altitude: Altitude) -> f64 {
@@ -341,6 +442,12 @@ pub fn build_track_geometry(ctx: &BuildContext, entries: &[TrackEntry], options:
             }
         }
 
+        // 選択中: シンボルの後ろに強調の輪(縁取り→白)。
+        if options.selected == Some(track.id) {
+            push_ring(out, anchor, SELECT_RING_OUTER_PX, SELECT_RING_INNER_PX - 1.0, SYMBOL_OUTLINE_COLOR);
+            push_ring(out, anchor, SELECT_RING_INNER_PX + SELECT_RING_BAND_PX, SELECT_RING_INNER_PX, [1.0, 1.0, 1.0, 1.0]);
+        }
+
         // シンボル: 縁取り(暗色、少し大きく)→本体。
         let triangles = glyphs.entry(track.kind as u8).or_insert_with(|| {
             glyph(track.kind).iter().flat_map(|polygon| triangulate(polygon)).collect()
@@ -351,6 +458,8 @@ pub fn build_track_geometry(ctx: &BuildContext, entries: &[TrackEntry], options:
         push_symbol(out, anchor, heading, triangles, half, color);
 
         geometry.labels.push(TrackLabel {
+            id: track.id,
+            selected: options.selected == Some(track.id),
             position: anchor,
             name: track.label.clone(),
             detail: label_detail(track),
@@ -429,7 +538,7 @@ mod tests {
     #[test]
     fn symbol_is_oriented_billboard_with_heading_and_outline() {
         let entries = [TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail: vec![] }];
-        let geometry = build(&entries, TrackOptions { trails: false, altitude_lines: false });
+        let geometry = build(&entries, TrackOptions { selected: None, trails: false, altitude_lines: false });
         assert_eq!(geometry.labels.len(), 1);
         let v = &geometry.vertices;
         assert!(!v.is_empty() && v.len() % 6 == 0, "縁取りと本体で同じ数の三角形");
@@ -450,7 +559,7 @@ mod tests {
         let high = TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail: vec![] };
         let low = TrackEntry { track: track(2, 35.4, 138.9, Altitude::AboveGround(0.0)), trail: vec![] };
         let lines = |entry: &TrackEntry, altitude_lines| {
-            build(std::slice::from_ref(entry), TrackOptions { trails: false, altitude_lines })
+            build(std::slice::from_ref(entry), TrackOptions { selected: None, trails: false, altitude_lines })
                 .vertices
                 .iter()
                 .filter(|v| v.params[0] > 0.0 && v.params[2] == 0.0)
@@ -486,7 +595,7 @@ mod tests {
     fn trail_line_connects_past_positions_to_current() {
         let trail = vec![(35.30, 138.80, Altitude::Msl(3000.0)), (35.35, 138.85, Altitude::Msl(3000.0))];
         let entry = TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail };
-        let options = TrackOptions { trails: true, altitude_lines: false };
+        let options = TrackOptions { selected: None, trails: true, altitude_lines: false };
         let with = build(std::slice::from_ref(&entry), options).vertices;
         let without = build(&[TrackEntry { trail: vec![], ..entry.clone() }], options).vertices;
         // 航跡の点は3つ(過去2+現在)=線分2本=三角形4枚=12頂点。
@@ -500,5 +609,69 @@ mod tests {
         assert_eq!(label_detail(&msl), "3000 m  720 km/h");
         let agl = track(2, 35.0, 139.0, Altitude::AboveGround(120.0));
         assert_eq!(label_detail(&agl), "AGL 120 m  720 km/h");
+    }
+
+    #[test]
+    fn selected_track_gets_a_ring_and_a_highlighted_label() {
+        let entries = [
+            TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail: vec![] },
+            TrackEntry { track: track(2, 35.5, 139.0, Altitude::Msl(3000.0)), trail: vec![] },
+        ];
+        let none = build(&entries, TrackOptions { selected: None, trails: false, altitude_lines: false });
+        let one = build(&entries, TrackOptions { selected: Some(2), trails: false, altitude_lines: false });
+        // 輪は縁取りと白の2本の円環(1本=分割数x三角形2枚x3頂点)。
+        assert_eq!(one.vertices.len() - none.vertices.len(), 2 * SELECT_RING_SEGMENTS * 6);
+        assert_eq!(one.labels.iter().map(|l| (l.id, l.selected)).collect::<Vec<_>>(), [(1, false), (2, true)]);
+        // 輪は選択したトラックの位置(アンカー)にあり、白い輪が含まれ、円環が縁取りの中(縁取りの半径以内)に収まる。
+        let anchor = one.labels[1].position;
+        let ring: Vec<&DrawVertex> = one.vertices.iter().filter(|v| v.params[2] == 1.0).collect();
+        assert!(ring.iter().all(|v| v.position == anchor));
+        assert!(ring.iter().any(|v| v.color == [1.0, 1.0, 1.0, 1.0]));
+        let max_radius = ring.iter().map(|v| v.aux[0].hypot(v.aux[1])).fold(0.0, f32::max);
+        assert!((max_radius - SELECT_RING_OUTER_PX).abs() < 1e-3, "max_radius={max_radius}");
+        // 輪はシンボルより大きい(シンボルの縁取りは半径19.5px)。
+        assert!(SELECT_RING_INNER_PX - 1.0 > SYMBOL_SIZE_PX * 0.5 * SYMBOL_OUTLINE_SCALE);
+    }
+
+    #[test]
+    fn pick_chooses_the_nearest_symbol_within_the_radius() {
+        // clip = (x, y, z, -z): z<0が視点の前(w=-z>0)、z>0はカメラの後ろ(w<0)。
+        let vp = glam::Mat4::from_cols(
+            glam::Vec4::new(1.0, 0.0, 0.0, 0.0),
+            glam::Vec4::new(0.0, 1.0, 0.0, 0.0),
+            glam::Vec4::new(0.0, 0.0, 1.0, -1.0),
+            glam::Vec4::ZERO,
+        );
+        // 画面(800x600)の中心は(0,0)。x=+0.1(z=-1でw=1) → 画面で右へ40px。
+        let anchors = [(1, [0.0, 0.0, -1.0]), (2, [0.1, 0.0, -1.0]), (3, [0.0, 0.0, 1.0])];
+        let center = (400.0, 300.0);
+        assert_eq!(pick_track(&anchors, &vp, (800.0, 600.0), center, PICK_RADIUS_PX), Some(1));
+        assert_eq!(pick_track(&anchors, &vp, (800.0, 600.0), (435.0, 300.0), PICK_RADIUS_PX), Some(2), "近い方");
+        assert_eq!(pick_track(&anchors, &vp, (800.0, 600.0), (420.0, 300.0), PICK_RADIUS_PX), Some(1), "20px離れた1と、20px離れた2は、先に見つけた近い方(同距離なら先)");
+        assert_eq!(pick_track(&anchors, &vp, (800.0, 600.0), (600.0, 100.0), PICK_RADIUS_PX), None, "半径の外");
+        // カメラの後ろのアンカー(3)は、画面上の位置が同じでも選ばれない。
+        assert_eq!(pick_track(&[(3, [0.0, 0.0, 1.0])], &vp, (800.0, 600.0), center, PICK_RADIUS_PX), None);
+    }
+
+    #[test]
+    fn labels_are_japanese_and_selected_track_survives_updates() {
+        assert_eq!(SymbolKind::Aircraft.label(), "固定翼機");
+        assert_eq!(Affiliation::Hostile.label(), "敵");
+        // 選択中のIDが次の一覧にも有れば選択は続き、無ければ解除される(リアクティブなownerが要るので、状態の判定だけを確認)。
+        let owner = leptos::reactive::owner::Owner::new();
+        owner.with(|| {
+            let state = TracksState::new();
+            state.set(vec![track(1, 35.0, 139.0, Altitude::Msl(0.0)), track(2, 35.1, 139.1, Altitude::Msl(0.0))]);
+            state.select(Some(2));
+            assert_eq!(state.selected_track().map(|t| t.label), Some("T2".to_string()));
+            state.set(vec![track(2, 35.2, 139.2, Altitude::Msl(0.0))]);
+            assert_eq!(state.selected.get_untracked(), Some(2));
+            assert_eq!(state.selected_track().map(|t| t.lat_deg), Some(35.2), "最新の位置");
+            state.set(vec![track(1, 35.0, 139.0, Altitude::Msl(0.0))]);
+            assert_eq!(state.selected.get_untracked(), None, "選択中のトラックが消えたら解除");
+            state.select(Some(1));
+            state.clear();
+            assert_eq!(state.selected.get_untracked(), None);
+        });
     }
 }

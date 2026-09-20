@@ -73,7 +73,7 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
   線の太さはシェーダーで画面pxへ展開(DETAILED_DESIGN.md 6.11節、`sim3dview/README.md`に使い方)
 - **航跡**(航空機・艦船・車両等の現在位置)は`terrain::tracks::TracksState`(context)へアプリが`set`する(サンプルは`track_bridge.rs`が
   `TrackList`を変換)。シンボルは向きつきビルボード(画面サイズ固定、進行方向が画面上の実際の向きを指す)、ラベルはHTML要素の重ね合わせ
-  (DETAILED_DESIGN.md 6.12節)
+  (DETAILED_DESIGN.md 6.12節)。シンボルのクリックで`TracksState::selected`が変わり、詳細はアプリ側で表示(サンプルはトップパネルの「航跡情報」タブ)
 - VABは開発用ダミー値 rows=4, cols=6・空ラベルはDOM生成しない。状況パネル項目はC++から`StatusPanelConfig`で動的配信
 - WebSocket自動再接続: 指数バックオフ+ジッター、タブ非表示中は一時停止(Page Visibility API)
 - `sim3dview`は通信プロトコル・サーバーのURLを一切知らない(URL組み立て・原点のミラーはアプリ側の責務)

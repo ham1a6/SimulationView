@@ -264,6 +264,9 @@ drawings.remove(id);
 - **ラベル**は名前+「高度 速度」。**航跡**は過去の位置の折れ線、**高度線**は地表へ下ろす細い線(3Dのみ)。
   `TracksState`の`show_labels`/`show_trails`/`show_altitude_lines`(`RwSignal<bool>`、既定ON)で切り替えます。
 - ラベルは`TerrainView`が重ねるHTML要素です(`sim3dview.css`の`.track-label`)。
+- **クリックで選択**: 地図上のシンボルをクリックすると`TracksState::selected`にそのIDが入り、シンボルに白い輪が付きます(何もない所をクリックすると解除)。
+  詳細の表示はアプリ側で、`tracks.selected_track()`(最新の`Track`。位置の更新にも追従)を読んで作ります。`tracks.select(Some(id))`で
+  コードから選択もできます。`TabbedPanel`に`active`(`RwSignal<usize>`)を渡すと、選択されたら詳細のタブへ切り替える、ということもできます。
 
 ```rust
 use sim3dview::terrain::drawing::Altitude;
@@ -297,6 +300,14 @@ tracks.set(vec![
         speed_mps: 15.0,
     },
 ]);
+```
+
+```rust
+// 選択された航跡の詳細を出す(sample/sim_frontend/src/components/track_detail.rs が実例)
+move || match tracks.selected_track() {
+    None => view! { <p>"シンボルをクリックしてください"</p> }.into_any(),
+    Some(t) => view! { <p>{t.label} " " {t.kind.label()} " " {t.affiliation.label()}</p> }.into_any(),
+}
 ```
 
 サンプルアプリ(`sample/`)に、サーバー(C++)からのデータ受信を含む一通りの実例があります。`sample/sim_server`の

@@ -1,7 +1,6 @@
 //! 汎用タブパネル。パネル見出し(`title`)の下にタブバーを表示し、選択中タブの内容を表示する。
 //! 右パネル上段(トップステータスパネル)・下段(ボトムステータスパネル)が共通で使う。
-//! 現状はどちらも1タブのみだが、後から同じ枠に別内容のタブを追加できるようにするための
-//! 共通コンポーネントとして切り出してある。
+//! 後から同じ枠に別内容のタブを追加できるようにするための共通コンポーネントとして切り出してある。
 
 use leptos::prelude::*;
 
@@ -16,8 +15,15 @@ pub fn tab(label: &'static str, view: impl IntoView + 'static) -> Tab {
 }
 
 #[component]
-pub fn TabbedPanel(#[prop(into)] title: String, tabs: Vec<Tab>) -> impl IntoView {
-    let active = RwSignal::new(0usize);
+pub fn TabbedPanel(
+    #[prop(into)] title: String,
+    tabs: Vec<Tab>,
+    /// 選択中のタブの番号(0始まり)。渡すと、呼び出し側からタブを切り替えられる
+    /// (例: 何かを選択したら詳細のタブへ移る)。渡さなければ、パネルが自分で持つ(最初は0)。
+    #[prop(optional)]
+    active: Option<RwSignal<usize>>,
+) -> impl IntoView {
+    let active = active.unwrap_or_else(|| RwSignal::new(0usize));
     let labels: Vec<&'static str> = tabs.iter().map(|t| t.label).collect();
 
     view! {

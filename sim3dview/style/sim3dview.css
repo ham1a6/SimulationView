@@ -369,6 +369,19 @@
     font-weight: 600;
 }
 
+/* 選択中(地図上のシンボルをクリックしたもの)。名前を枠で囲んで目立たせる。 */
+.track-label.selected {
+    z-index: 1;
+}
+
+.track-label.selected .track-label-name {
+    display: inline-block;
+    padding: 0 4px;
+    border: 1px solid currentColor;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.55);
+}
+
 .track-label-detail {
     font-size: 10px;
     opacity: 0.85;

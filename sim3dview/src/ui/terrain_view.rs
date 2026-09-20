@@ -30,7 +30,7 @@ use crate::terrain::hillshade::HillshadeState;
 use crate::terrain::recenter::RecenterRequestState;
 use crate::terrain::renderer::TerrainRenderer;
 use crate::terrain::store::TerrainStore;
-use crate::terrain::tracks::{self, TrackLabel, TrackOptions, TracksState};
+use crate::terrain::tracks::{self, TrackId, TrackLabel, TrackOptions, TracksState};
 
 struct ViewState {
     renderer: Option<TerrainRenderer>,
@@ -57,6 +57,8 @@ struct ViewState {
     /// 航跡のラベルを置くHTML要素(canvasに重ねる層)と、いま置いているラベル。
     labels_ref: NodeRef<leptos::html::Div>,
     labels: Vec<LabelView>,
+    /// クリックでの選択(当たり判定)に使う、各トラックのシンボルの位置(ENU座標)。ラベルの表示設定に関係なく持つ。
+    pick_anchors: Vec<(TrackId, [f32; 3])>,
     /// 陰影(ヒルシェード)のON/OFF。レンダラー作成時の初期値に使う(以後の変更はEffect 7が反映する)。
     hillshade: HillshadeState,
     /// 各タイルの、いまGPUに載っている状態(全体1枚か、チャンクごとのレベルか。`terrain::lod`参照)。
@@ -131,6 +133,25 @@ fn pick_at_client(
         canvas.width() as f32,
         canvas.height() as f32,
     )
+}
+
+/// canvas上の画面座標(client座標)にある航跡のシンボルのID(なければNone)。`terrain::tracks::pick_track`で、
+/// シンボルの位置を画面へ射影して最も近いものを選ぶ。
+fn pick_track_at_client(
+    state: &Rc<RefCell<ViewState>>,
+    canvas: &web_sys::HtmlCanvasElement,
+    client_x: f64,
+    client_y: f64,
+) -> Option<TrackId> {
+    let rect = canvas.get_bounding_client_rect();
+    // CSSのpxからcanvasの内部解像度のpxへ(通常は同じ)。
+    let x = (client_x - rect.left()) as f32 * canvas.width() as f32 / rect.width().max(1.0) as f32;
+    let y = (client_y - rect.top()) as f32 * canvas.height() as f32 / rect.height().max(1.0) as f32;
+    let s = state.borrow();
+    let renderer = s.renderer.as_ref()?;
+    let view_proj = s.camera.to_camera(renderer.aspect_ratio()).view_proj_matrix();
+    let (width, height) = renderer.canvas_size_px();
+    tracks::pick_track(&s.pick_anchors, &view_proj, (width as f32, height as f32), (x, y), tracks::PICK_RADIUS_PX)
 }
 
 /// 現在の状態でレンダラーを構築できるなら構築する。
@@ -634,6 +655,7 @@ fn rebuild_tracks(state: &Rc<RefCell<ViewState>>) {
             viewport_px: (width as f32, height as f32),
         };
         let options = TrackOptions {
+            selected: tracks_state.selected.get_untracked(),
             trails: tracks_state.show_trails.get_untracked(),
             // 真上から見る2D地図では、縦の線は点になるので出さない。
             altitude_lines: tracks_state.show_altitude_lines.get_untracked() && mode == ViewMode::ThreeD,
@@ -644,6 +666,7 @@ fn rebuild_tracks(state: &Rc<RefCell<ViewState>>) {
         renderer.update_tracks(&geometry.vertices);
         geometry
     };
+    s.pick_anchors = geometry.labels.iter().map(|l| (l.id, l.position)).collect();
     let labels = if tracks_state.show_labels.get_untracked() { geometry.labels } else { Vec::new() };
     set_labels(&mut s, layer.as_ref(), labels);
 }
@@ -681,7 +704,13 @@ fn set_labels(s: &mut ViewState, layer: Option<&web_sys::HtmlElement>, labels: V
             let _ = layer.append_child(&root);
             // 位置は毎フレーム`update_labels`が決める。名前・詳細・色は下で入れる(初回は必ず異なる扱いにする)。
             s.labels.push(LabelView {
-                anchor: TrackLabel { name: String::new(), detail: String::new(), color: [-1.0; 3], ..anchor.clone() },
+                anchor: TrackLabel {
+                    name: String::new(),
+                    detail: String::new(),
+                    color: [-1.0; 3],
+                    selected: false,
+                    ..anchor.clone()
+                },
                 root,
                 name,
                 detail,
@@ -694,6 +723,9 @@ fn set_labels(s: &mut ViewState, layer: Option<&web_sys::HtmlElement>, labels: V
         }
         if view.anchor.detail != new.detail {
             view.detail.set_text_content(Some(&new.detail));
+        }
+        if view.anchor.selected != new.selected {
+            view.root.set_class_name(if new.selected { "track-label selected" } else { "track-label" });
         }
         if view.anchor.color != new.color {
             let [r, g, b] = new.color;
@@ -777,6 +809,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         tracks,
         labels_ref,
         labels: Vec::new(),
+        pick_anchors: Vec::new(),
         hillshade,
         resident: HashMap::new(),
         loading: HashSet::new(),
@@ -1027,6 +1060,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             let _ = tracks.show_labels.get();
             let _ = tracks.show_trails.get();
             let _ = tracks.show_altitude_lines.get();
+            let _ = tracks.selected.get();
             rebuild_tracks(&state);
             render_frame(&state);
         });
@@ -1156,8 +1190,10 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         state_pc.borrow_mut().dragging = false;
     };
 
-    // 「クリックで原点指定」モード中に、ドラッグではない左クリックが離されたら、その地点を
-    // 原点として`on_pick`へ渡してモードを解除する(通常のドラッグ=回転・パンは従来通り動く)。
+    // ドラッグではない左クリックが離されたとき:
+    // - 「クリックで原点指定」モード中なら、その地点を原点として`on_pick`へ渡してモードを解除する
+    // - そうでなければ、クリックしたシンボルの航跡(`terrain::tracks`)を選択する(何もない所なら選択解除)
+    // (通常のドラッグ=回転・パンは従来通り動く)
     let state_pu = state.clone();
     let on_pointer_up = move |ev: leptos::ev::PointerEvent| {
         let (down_x, down_y) = {
@@ -1165,10 +1201,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             s.dragging = false;
             (s.down_x, s.down_y)
         };
-        let Some(pick_state) = origin_pick else {
-            return;
-        };
-        if !pick_state.active.get_untracked() || ev.button() != 0 {
+        if ev.button() != 0 {
             return;
         }
         let moved = (ev.client_x() as f64 - down_x).hypot(ev.client_y() as f64 - down_y);
@@ -1181,13 +1214,18 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         let Ok(canvas) = target.dyn_into::<web_sys::HtmlCanvasElement>() else {
             return;
         };
-        // 地形データ範囲外(海の外側など)をクリックした場合は、モードを維持して指定し直せるようにする。
-        if let Some((lat, lon)) =
-            pick_at_client(&state_pu, &canvas, ev.client_x() as f64, ev.client_y() as f64)
-        {
-            pick_state.active.set(false);
-            pick_state.on_pick.run((lat, lon));
+        if let Some(pick_state) = origin_pick.filter(|p| p.active.get_untracked()) {
+            // 地形データ範囲外(海の外側など)をクリックした場合は、モードを維持して指定し直せるようにする。
+            if let Some((lat, lon)) =
+                pick_at_client(&state_pu, &canvas, ev.client_x() as f64, ev.client_y() as f64)
+            {
+                pick_state.active.set(false);
+                pick_state.on_pick.run((lat, lon));
+            }
+            return;
         }
+        let picked = pick_track_at_client(&state_pu, &canvas, ev.client_x() as f64, ev.client_y() as f64);
+        tracks.select(picked);
     };
 
     let state_wheel = state.clone();

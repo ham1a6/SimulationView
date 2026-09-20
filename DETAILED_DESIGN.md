@@ -1458,6 +1458,21 @@ WebGPUの線プリミティブは太さ1pxしかないため、線分1本を四�
   HTML要素(`.terrain-track-labels`内の`.track-label`)で、毎フレーム(`render_frame`→`update_labels`)アンカーを画面へ射影して`transform`で動かす。
   カメラの後ろ・画面の外は非表示。トラック数が変わったときだけ要素を作り直し、文字は変わったときだけ更新する。
 
+**選択(クリックで詳細を出す)**
+
+- `TracksState.selected`(`RwSignal<Option<TrackId>>`)が選択中のID。`selected_track()`が最新の`Track`を返す(位置の更新・選択の変更にリアクティブに追従)。
+  `select(Option<id>)`で選択・解除でき、`set`で選択中のトラックが一覧から消えたら自動で解除、`clear`でも解除する。
+- 当たり判定: `TerrainView`の`pointerup`で、ドラッグではない左クリック(移動が5px未満)のとき、「原点クリック指定」モード中なら従来どおり原点指定、
+  そうでなければ`terrain::tracks::pick_track`(各シンボルのアンカーを`view_proj`で画面へ射影し、クリック位置に最も近く半径`PICK_RADIUS_PX`(20px)以内のもの。
+  カメラの後ろは対象外、地形の陰に隠れたシンボルも対象)で選び、`selected`へ入れる。**何もない所のクリックは選択解除**。当たり判定用のアンカーは
+  ラベルの表示設定に関係なく`ViewState::pick_anchors`が持つ(`rebuild_tracks`で更新)。
+- 強調: 選択中のシンボルの後ろに白い輪(縁取り→白、画面サイズ固定のビルボードの円環)を描き、ラベルに`.selected`クラス(名前が枠で囲まれる)を付ける。
+  `selected`の変化で`rebuild_tracks`が走る(Effect 5b)。
+- 詳細の表示はアプリの役目。ライブラリは`selected`と`selected_track()`、種別・所属の日本語名(`SymbolKind::label`・`Affiliation::label`)だけを渡す。
+  サンプルは、トップステータスパネルの**「航跡情報」タブ**(`components/track_detail.rs`)に、名前・識別番号・種別・所属(色の丸つき)・位置(緯度経度)・高度・
+  針路(16方位)・速度(m/s・km/h・kt)・原点からの距離と方位(大円距離)と「選択を解除」ボタンを出す。`TabbedPanel`の`active`(任意のprop)を
+  渡して、航跡が選択されたら自動でこのタブへ移る(選択が外れてもタブはそのまま)。
+
 **描画・再構築**: `TerrainRenderer::update_tracks`(専用バッファ、`draw_blend_pipeline`・絶対座標のuniform)。再構築(`ui/terrain_view.rs::rebuild_tracks`)は、
 トラックの受信・表示設定の変更・原点変更・2D/3D切替・地形LOD切替(地表基準・高度線があるとき)。トラックは高頻度で更新されるので、
 受信のたびに`render_frame`だけ呼び、LODの更新(`render_now`)は予約しない。

@@ -372,3 +372,26 @@ body {
     background: var(--accent);
     color: #003;
 }
+
+/* トップステータスパネルの「航跡情報」タブ(地図上でクリックして選択した航跡の詳細)。 */
+.track-detail {
+    width: 100%;
+}
+
+.track-detail .track-detail-name {
+    font-weight: 600;
+}
+
+.track-detail .track-chip {
+    display: inline-block;
+    width: 0.7em;
+    height: 0.7em;
+    margin-right: 0.4em;
+    border-radius: 50%;
+    border: 1px solid rgba(0, 0, 0, 0.6);
+}
+
+.track-detail .track-deselect {
+    margin-top: 0.5rem;
+    flex: none;
+}
