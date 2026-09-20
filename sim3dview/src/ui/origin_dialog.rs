@@ -1,7 +1,7 @@
 //! 原点設定フローティングパネル。呼び出し側(アプリ)のメニュー等から
 //! `OriginDialogState`を`true`にすることで開く。DETAILED_DESIGN.md 3.5節:
 //! 地形データ範囲外の値はそもそも送信できないようにする(入力段階でブロック)。
-//! 範囲(`geodetic_bounds`)はmetadata.jsonから取得する。
+//! 範囲(`geodetic_bounds`)は地形データ(`terrain::store::TerrainStore`。metadata.json)から読む。
 //!
 //! 実際に緯度経度をどう配信するか(通信プロトコル)はアプリごとに異なるため、
 //! ライブラリはそれを知らない。「設定」ボタンが押されたら`on_submit`コールバックを
@@ -10,8 +10,7 @@
 use leptos::prelude::*;
 
 use super::floating_panel::FloatingPanel;
-use crate::terrain::fetch;
-use crate::terrain::loader::GeodeticBounds;
+use crate::terrain::store::TerrainStore;
 use crate::terrain::origin::OriginState;
 
 /// 原点設定フローティングパネルの開閉状態。トリガー(メニュー等)と本体で共有する。
@@ -20,34 +19,24 @@ pub struct OriginDialogState(pub RwSignal<bool>);
 
 #[component]
 pub fn OriginDialog(
-    /// 地形データ配信のベースURL(`terrain::loader`参照)。`geodetic_bounds`の取得に使う。
-    #[prop(into)] base_url: String,
     /// 「設定」ボタンで緯度経度が確定した際に呼ばれる。実際の送信方法は呼び出し側に委ねる。
     on_submit: UnsyncCallback<(f64, f64)>,
 ) -> impl IntoView {
     let origin_state = use_context::<OriginState>().expect("OriginState context not found");
     let dialog = use_context::<OriginDialogState>().expect("OriginDialogState context not found");
 
-    let bounds = RwSignal::new(None::<GeodeticBounds>);
+    let terrain_store = use_context::<TerrainStore>().expect("TerrainStore context not found");
+    // バリデーション用の地形データの範囲。`TerrainView`が取得したデータ(`TerrainStore`)を共有する
+    // (このパネルだけがmetadata.jsonを別に取得し直すことはしない)。
+    let bounds = move || terrain_store.get().map(|d| d.metadata.geodetic_bounds);
     let lat_input = RwSignal::new(String::new());
     let lon_input = RwSignal::new(String::new());
     // ユーザーが手で編集を始めたら、OriginState受信による自動上書きを止める
     // (再配信で入力中の値が消えてしまうのを防ぐ)。
     let dirty = RwSignal::new(false);
 
-    // 起動時に一度だけmetadata.jsonを取得してバリデーション用のgeodetic_boundsを得る。
-    Effect::new(move |_| {
-        if bounds.get_untracked().is_some() {
-            return;
-        }
-        let base_url = base_url.clone();
-        wasm_bindgen_futures::spawn_local(async move {
-            match fetch::fetch_metadata(&base_url).await {
-                Ok(meta) => bounds.set(Some(meta.geodetic_bounds)),
-                Err(e) => log::error!("[origin_dialog] failed to fetch metadata.json: {e}"),
-            }
-        });
-    });
+    // 地形データがまだなら取得を始める(取得は`TerrainStore`が1回だけ行う)。
+    Effect::new(move |_| terrain_store.ensure_loaded());
 
     // 原点(OriginState)が変わるたびに、まだ編集していなければ入力欄へ反映する。
     Effect::new(move |_| {
@@ -71,7 +60,7 @@ pub fn OriginDialog(
             .trim()
             .parse()
             .map_err(|_| "経度は数値で入力してください".to_string())?;
-        let Some(b) = bounds.get() else {
+        let Some(b) = bounds() else {
             return Err("地形データ範囲を取得中です...".to_string());
         };
         if lat < b.min_lat || lat > b.max_lat {

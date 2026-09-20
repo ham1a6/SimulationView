@@ -7,3 +7,4 @@ pub mod los_view;
 pub mod origin_dialog;
 pub mod tabbed_panel;
 pub mod terrain_view;
+pub mod util;

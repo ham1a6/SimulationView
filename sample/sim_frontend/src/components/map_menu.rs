@@ -13,7 +13,8 @@ use sim3dview::terrain::markers::RadarMarkersState;
 use sim3dview::terrain::origin_pick::OriginPickState;
 use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::terrain::tracks::TracksState;
-use sim3dview::ui::context_menu::{copy_to_clipboard, MenuItem};
+use sim3dview::ui::context_menu::MenuItem;
+use sim3dview::ui::util::copy_to_clipboard;
 use sim3dview::ui::context_menu::{MapMenuState, MapMenuTarget};
 
 /// 項目が操作する状態。すべて`Copy`(シグナルの束)なので、項目のコールバックへそのまま持ち込める。

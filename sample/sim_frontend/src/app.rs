@@ -176,7 +176,6 @@ pub fn App() -> impl IntoView {
                 </div>
             </div>
             <OriginDialog
-                base_url=default_terrain_base_url()
                 on_submit=UnsyncCallback::new(move |(lat, lon)| {
                     conn.send_command(&ClientCommand::set_origin(lat, lon));
                 })

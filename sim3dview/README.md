@@ -44,7 +44,7 @@ sim3dview = { git = "https://example.com/your-fork/Sim3dView.git" }
 複数の解像度レベル**を持ちます(地形LOD。離れたタイルは全体で1枚の粗いメッシュ、カメラに近いタイルは
 6x6のチャンクに分けて、近いチャンクほど細かいレベル(最細は元データの30m)を取得して描画します。
 `terrain::lod`・DETAILED_DESIGN.md 6.10節)。呼び出し側が用意するサーバーは、任意のベースURL
-(例: `http://localhost:9001/terrain`)の下に以下を返す必要があります(`terrain::loader`参照)。
+(例: `http://localhost:9001/terrain`)の下に以下を返す必要があります(`terrain::fetch`・`terrain::loader`のソースのコメント参照。内部モジュールなので`pub(crate)`)。
 
 - `{base_url}/metadata.json`(`Content-Type: application/json`):
 
@@ -150,6 +150,7 @@ Effect::new(move |_| {
 `ui::origin_dialog::OriginDialog`(原点入力フォームのフローティングパネル)を使う場合、
 「設定」ボタンが押されたときの送信方法もあなたのアプリに委ねられています
 (`on_submit: UnsyncCallback<(f64, f64)>`。`Send`不要なので、`Rc`などを持つ接続をそのまま捕捉できる)。
+入力値の範囲チェックには、`TerrainView`が使うのと同じ`TerrainStore`(context)の地形データの範囲を使います。
 
 ```rust
 use sim3dview::ui::origin_dialog::{OriginDialog, OriginDialogState};
@@ -158,7 +159,6 @@ provide_context(OriginDialogState(RwSignal::new(false))); // 開閉状態
 
 view! {
     <OriginDialog
-        base_url="http://localhost:9001/terrain"
         on_submit=UnsyncCallback::new(move |(lat, lon)| {
             // ここであなたのプロトコルで実際に送信する。
         })
@@ -349,7 +349,8 @@ move || match tracks.selected_track() {
 (両方のcontextが無ければ、従来どおり右クリックでレーダー観測点を追加します)。
 
 ```rust
-use sim3dview::ui::context_menu::{copy_to_clipboard, ContextMenu, ContextMenuState, MenuItem};
+use sim3dview::ui::context_menu::{ContextMenu, ContextMenuState, MenuItem};
+use sim3dview::ui::util::copy_to_clipboard;
 use sim3dview::ui::context_menu::MapMenuState;
 
 provide_context(ContextMenuState::new());
