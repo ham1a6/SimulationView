@@ -135,14 +135,14 @@ crates.io公開クレートとして使う場合)では、`sim3dview/style/sim3d
 ## 原点をサーバーと同期する
 
 `OriginState`(`terrain::origin::OriginState`)はこのライブラリが通信プロトコルを知らずに
-済むよう、`RwSignal<Option<terrain::mesh::Origin>>`を包んだだけの薄い型です。あなたのアプリが
+済むよう、`RwSignal<Option<terrain::origin::Origin>>`を包んだだけの薄い型です。あなたのアプリが
 自分のプロトコルから受け取った緯度経度を、Effectでこのシグナルへミラーしてください
 (`sample/sim_frontend/src/app.rs`に実例があります):
 
 ```rust
 Effect::new(move |_| {
     if let Some(o) = my_protocol_signals.origin.get() {
-        origin_state.0.set(Some(sim3dview::terrain::mesh::Origin { lat_deg: o.lat_deg, lon_deg: o.lon_deg }));
+        origin_state.0.set(Some(sim3dview::terrain::origin::Origin { lat_deg: o.lat_deg, lon_deg: o.lon_deg }));
     }
 });
 ```

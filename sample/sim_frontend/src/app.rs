@@ -93,7 +93,7 @@ pub fn App() -> impl IntoView {
     // (ライブラリが読む値)への橋渡し。
     Effect::new(move |_| {
         if let Some(o) = signals.origin.get() {
-            origin_state.0.set(Some(sim3dview::terrain::mesh::Origin { lat_deg: o.lat_deg, lon_deg: o.lon_deg }));
+            origin_state.0.set(Some(sim3dview::terrain::origin::Origin { lat_deg: o.lat_deg, lon_deg: o.lon_deg }));
         }
     });
 
