@@ -1,6 +1,9 @@
 # 実装仕様 第4部: 地形の上に重ねるもの(観測点・覆域・作図・航跡)
 
-[IMPLEMENTATION_GUIDE.md](../../IMPLEMENTATION_GUIDE.md)の一部。`terrain::{render_bias, markers, drawing, drawing_geometry, draw_tool, tracks}`。
+設計書体系([README](../README.md))の詳細設計(ライブラリ実装仕様)第4部で、[IMPLEMENTATION_GUIDE.md](../IMPLEMENTATION_GUIDE.md)の一部。
+上位設計(方針・理由・図): [詳細設計書](../DETAILED_DESIGN.md) 6.9節(観測点・覆域)・6.11節(作図)・6.12節(航跡)。数値・手順はこの文書が正。
+
+`terrain::{render_bias, markers, drawing, drawing_geometry, draw_tool, tracks}`。
 すべて「状態(Leptosのシグナルcontext)」+「頂点列を作る純粋関数」に分かれ、頂点列は[第3部](3_renderer_and_shaders.md)の`DrawVertex`/`TerrainVertex`で表す。
 前提: 第1〜3部。
 

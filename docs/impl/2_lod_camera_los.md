@@ -1,6 +1,9 @@
 # 実装仕様 第2部: カメラ・LOD計画・ピッキング・断面・見通し(覆域)計算
 
-[IMPLEMENTATION_GUIDE.md](../../IMPLEMENTATION_GUIDE.md)の一部。GPUにもネットワークにも触れない**純粋関数**を集めた部。
+設計書体系([README](../README.md))の詳細設計(ライブラリ実装仕様)第2部で、[IMPLEMENTATION_GUIDE.md](../IMPLEMENTATION_GUIDE.md)の一部。
+上位設計(方針・理由・図): [詳細設計書](../DETAILED_DESIGN.md) 6.6節(カメラ)・6.9節(見通し・覆域)・6.10節(地形LOD)。数値・手順はこの文書が正。
+
+GPUにもネットワークにも触れない**純粋関数**を集めた部。
 すべてネイティブ(`cargo test`)で検証できる。前提: [第1部](1_data_and_geodesy.md)。
 
 ---

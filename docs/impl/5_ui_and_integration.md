@@ -1,6 +1,9 @@
 # 実装仕様 第5部: UI層(Leptosコンポーネント)・context・LOD適用ループ・CSS契約・crate構成
 
-[IMPLEMENTATION_GUIDE.md](../../IMPLEMENTATION_GUIDE.md)の一部。`sim3dview::ui::*`、`terrain::{origin, origin_pick, recenter, hillshade, store}`。
+設計書体系([README](../README.md))の詳細設計(ライブラリ実装仕様)第5部で、[IMPLEMENTATION_GUIDE.md](../IMPLEMENTATION_GUIDE.md)の一部。
+上位設計(方針・理由・図): [詳細設計書](../DETAILED_DESIGN.md) 6.0〜6.1節(モジュール・コンポーネント構成)・6.10節(LOD適用)・7.6〜7.7節(UI部品)。数値・手順はこの文書が正。
+
+`sim3dview::ui::*`、`terrain::{origin, origin_pick, recenter, hillshade, store}`。
 前提: 第1〜4部。**Leptos 0.8(`csr`)** 前提。
 
 ---

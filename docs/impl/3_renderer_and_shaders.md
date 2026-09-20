@@ -1,6 +1,9 @@
 # 実装仕様 第3部: wgpuレンダラー・シェーダー
 
-[IMPLEMENTATION_GUIDE.md](../../IMPLEMENTATION_GUIDE.md)の一部。`terrain::renderer`(`TerrainRenderer`)、`terrain::vertex`、`terrain.wgsl`、`draw.wgsl`。
+設計書体系([README](../README.md))の詳細設計(ライブラリ実装仕様)第3部で、[IMPLEMENTATION_GUIDE.md](../IMPLEMENTATION_GUIDE.md)の一部。
+上位設計(方針・理由・図): [詳細設計書](../DETAILED_DESIGN.md) 6.4節(描画パイプライン)・6.8節(シェーダー・MSAA)・6.10節(水域)・6.11節(描画パス)。数値・手順はこの文書が正。
+
+`terrain::renderer`(`TerrainRenderer`)、`terrain::vertex`、`terrain.wgsl`、`draw.wgsl`。
 前提: [第1部](1_data_and_geodesy.md)(`TerrainVertex`)、[第2部](2_lod_camera_los.md)(`Camera`)。
 
 依存: `wgpu = "30"`、`bytemuck`(`Pod`/`Zeroable`)、`glam 0.33`、WGSL検証用に`naga = { version = "30", features = ["wgsl-in"] }`(dev-dependency)。

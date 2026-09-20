@@ -1,6 +1,9 @@
 # 実装仕様 第1部: 地形データ・測地・標高サンプリング・メッシュ・前処理ツール
 
-[IMPLEMENTATION_GUIDE.md](../../IMPLEMENTATION_GUIDE.md)の一部。本書だけで、以下を1から実装できることを目標にする。
+設計書体系([README](../README.md))の詳細設計(ライブラリ実装仕様)第1部で、[IMPLEMENTATION_GUIDE.md](../IMPLEMENTATION_GUIDE.md)の一部。
+上位設計(方針・理由・図): [詳細設計書](../DETAILED_DESIGN.md) 1節(地形データの実態)・2節(前処理)・3節(座標系)・6.6〜6.7節。数値・手順はこの文書が正。
+
+本書だけで、以下を1から実装できることを目標にする。
 
 - 地形データのファイル形式(前処理ツールの出力 = フロントの入力。**バイト単位の契約**)
 - 前処理ツール`geotiff_preprocess`(C++/GDAL)

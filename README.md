@@ -14,7 +14,12 @@ sample/            「これはサンプルです」という位置づけのデ�
   sim_frontend/      sim3dviewライブラリを使ったサンプルアプリ(Rust)。VAB・状況パネル・
                      メニュー・WebSocket/msgpackプロトコルなど、アプリ固有の部分を実装する。
   sim_server/        C++シミュレータ本体 + WebSocket/HTTPサーバー(sample/sim_frontendの
-                     通信相手の参照実装)+ GeoTIFF前処理ツール。
+                     通信相手の参照実装)。
+tools/
+  geotiff_preprocess/ GeoTIFF前処理ツール(ライブラリの一部。C++/GDAL)。ALOS DSM→1度タイルごとの
+                     多段解像度グリッド+metadata.json。sim_serverとは独立したCMakeプロジェクト。
+docs/              設計書一式(基本設計・詳細設計・ライブラリ実装仕様・実装ガイド・開発履歴)。索引はdocs/README.md。
+scripts/           補助スクリプト(ライセンス表記の生成・実装仕様のWGSL同期)。
 map_data/          入力: ALOS DSM GeoTIFFタイル(容量が大きいためgit管理外。各自で配置する)
 ```
 
@@ -23,9 +28,9 @@ map_data/          入力: ALOS DSM GeoTIFFタイル(容量が大きいためgit
 - このリポジトリを丸ごと動かして完成品(C++シミュレータ + Web UI)を試したい場合は、
   以下のセットアップ手順に従ってください。
 
-詳しい設計は [BASIC_DESIGN.md](BASIC_DESIGN.md)(基本設計書)・[DETAILED_DESIGN.md](DETAILED_DESIGN.md)
-(詳細設計書、UML図つき)を参照。開発環境固有の既知の問題は本書の「既知の環境問題・トラブルシューティング」、
-実装の経緯・ハマりどころは [DEVELOPMENT_HISTORY.md](DEVELOPMENT_HISTORY.md) を参照。
+詳しい設計は [docs/README.md](docs/README.md)(設計書の索引)から、[基本設計書](docs/BASIC_DESIGN.md)・
+[詳細設計書](docs/DETAILED_DESIGN.md)(UML図つき)・[ライブラリ実装仕様](docs/impl/)へ。開発環境固有の既知の問題は
+本書の「既知の環境問題・トラブルシューティング」、実装の経緯・ハマりどころは [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) を参照。
 
 ---
 
@@ -151,7 +156,7 @@ tools\geotiff_preprocess\build\Debug\geotiff_preprocess.exe
 緯度経度から毎回自動計算されるため、`map_data/`に別の場所のタイルを追加/削除してもコード変更は不要
 (ただし`sim_server`は起動時に`metadata.json`を読むので再起動が必要)。
 フロントは全タイルの最粗レベルだけを起動時に取得し、カメラに近いチャンクだけ細かいレベルをその都度
-取得して描画する(地形LOD。DETAILED_DESIGN.md 6.10節)。
+取得して描画する(地形LOD。docs/DETAILED_DESIGN.md 6.10節)。
 成功すると以下のようなログが出る:
 
 ```
@@ -289,8 +294,11 @@ C++シミュレータ本体・Web UI(サンプルアプリ)とも実装・動作
 
 - [README.md](README.md) — 本書。セットアップ・起動手順
 - [sim3dview/README.md](sim3dview/README.md) — `sim3dview`ライブラリの使い方(開発者向け)
-- [BASIC_DESIGN.md](BASIC_DESIGN.md) — 基本設計書(要求仕様・確定した設計方針・全体構成)
-- [DETAILED_DESIGN.md](DETAILED_DESIGN.md) — 詳細設計書(データフォーマット・プロトコル・UML図)
-- [DEVELOPMENT_HISTORY.md](DEVELOPMENT_HISTORY.md) — 実装の経緯・ハマりどころの記録(機能ごとの「要望→原因→修正→確認」)
+- [docs/README.md](docs/README.md) — 設計書一式の索引・読み順・保守ルール
+- [docs/BASIC_DESIGN.md](docs/BASIC_DESIGN.md) — 基本設計書(要求仕様・確定した設計方針・全体構成)
+- [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) — 詳細設計書(データ・座標系・プロトコル・C++・ライブラリの設計方針・UML図)
+- [docs/impl/](docs/impl/) — ライブラリ実装仕様(定数・アルゴリズム・バイト配置・シェーダー・テスト)
+- [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md) — ドキュメントだけでライブラリを1から再実装するための実装ガイド
+- [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) — 実装の経緯・ハマりどころの記録(機能ごとの「要望→原因→修正→確認」)
 - [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md) — 利用しているサードパーティ(Rustクレート・C++ライブラリ・ALOS地形データ)の一覧・著作権表示・ライセンス。依存を変えたら`python scripts/gen_third_party_notice.py`で再生成する
 - [CLAUDE.md](CLAUDE.md) — AIエージェント向けの作業方針・要点(短い索引)

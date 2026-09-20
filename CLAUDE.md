@@ -19,13 +19,15 @@ C++シミュレータ + Rust/Leptos(WASM) Web UI + ALOS DEMベースの3D地形�
 
 | 知りたいこと | 参照先 |
 |---|---|
-| システム概要・確定した設計方針(17項目)・実装フェーズ | [BASIC_DESIGN.md](BASIC_DESIGN.md)(新しいセッションはまずこれ。特に4節・6節) |
-| データフォーマット・座標変換の数式・通信プロトコルのバイト定義・UML・各機能の仕様 | [DETAILED_DESIGN.md](DETAILED_DESIGN.md) |
+| 設計書の全体像(どの文書に何があるか・読み順・保守ルール) | [docs/README.md](docs/README.md) |
+| システム概要・確定した設計方針(17項目)・実装フェーズ | [docs/BASIC_DESIGN.md](docs/BASIC_DESIGN.md)(新しいセッションはまずこれ。特に4節・6節) |
+| データフォーマット・座標変換の数式・通信プロトコルのバイト定義・UML・各機能の設計方針(なぜ) | [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) |
+| 定数・アルゴリズム・バイト配置・シェーダー全文など、ライブラリの正確な仕様(コードから起こした。設計書と食い違ったらこちらが正) | [docs/impl/](docs/impl/)(第1〜5部) |
 | セットアップ・ビルド・起動手順・環境問題の対処(トラブルシューティング表) | [README.md](README.md) |
 | `sim3dview`ライブラリの使い方(組み込み方・context・CSSテーマ契約) | [sim3dview/README.md](sim3dview/README.md) |
-| 機能ごとの実装経緯(要望→調査→原因→修正→実機確認)・過去のハマりどころ | [DEVELOPMENT_HISTORY.md](DEVELOPMENT_HISTORY.md) |
+| 機能ごとの実装経緯(要望→調査→原因→修正→実機確認)・過去のハマりどころ | [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) |
 | 利用しているサードパーティのライセンス・著作権表示(依存を変えたら`python scripts/gen_third_party_notice.py`で再生成) | [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md) |
-| ドキュメントだけでライブラリを1から再実装したい(エージェントへの実装依頼を含む) | [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md)(フェーズ・受け入れ基準・落とし穴)と`docs/impl/`の詳細仕様5本。定数・アルゴリズムを変えたら該当箇所を更新し、シェーダー編集後は`python scripts/sync_impl_wgsl.py`で埋め込みWGSLを同期 |
+| ドキュメントだけでライブラリを1から再実装したい(エージェントへの実装依頼を含む) | [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md)(フェーズ・受け入れ基準・落とし穴)と`docs/impl/`。定数・アルゴリズムを変えたら`docs/impl/`の該当箇所を更新し(詳細設計書に同じ数値を書き写さない)、シェーダー編集後は`python scripts/sync_impl_wgsl.py`で埋め込みWGSLを同期 |
 | C++経験者向けに、Rust・WASM・wgpu・各機能のしくみを土台から読みたい | 技術解説ノート(Artifact「Sim3dViewのしくみ」<https://claude.ai/artifact/1hpM7J9MELrr9K8PXsH8VR>。機能を足したら更新する) |
 
 設計判断の「なぜ」を辿りたいときは、上記に加えてgit履歴を参照する。
@@ -40,11 +42,13 @@ sample/
   sim_frontend/          # sim3dviewを使うサンプルアプリ。VAB・状況パネル・メニュー・通信プロトコル等
 tools/
   geotiff_preprocess/    # ライブラリの一部の前処理CLI(C++/GDAL)。GeoTIFF→1度タイルごとの多段解像度グリッド+metadata.json。独立CMakeプロジェクト
+docs/                 # 設計書一式(基本設計・詳細設計・impl/=ライブラリ実装仕様・実装ガイド・開発履歴。索引はdocs/README.md)
+scripts/              # ライセンス表記の生成・impl/のWGSL同期
 map_data/             # 入力: ALOS DSM GeoTIFFタイル(現在390枚、既存・変更しない。git管理外で履歴にも無い)
 Cargo.toml             # ワークスペースルート(members: sim3dview, sample/sim_frontend)
 ```
 
-ライブラリ/サンプルの責務分割の詳細は BASIC_DESIGN.md 5節・DETAILED_DESIGN.md 6節冒頭の対応関係表を参照。
+ライブラリ/サンプルの責務分割の詳細は docs/BASIC_DESIGN.md 5節・docs/DETAILED_DESIGN.md 6節冒頭の対応関係表を参照。
 
 ## 主要な設計判断(要約)
 
@@ -56,13 +60,13 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
   (185m/62m/最細31m=元データの30m)をサーバーから取得して差し替える(`terrain/lod.rs`が計画、
   `ui/terrain_view/lod_driver.rs`が適用。チャンクの頂点は全タイルの下限を含めて合計2500万まで。画面外のメッシュは
   視錐台カリングで描かない)。大きいレベルはHTTP Rangeでチャンク1個分だけ取得する。標高サンプリングは各チャンクの
-  「いま画面に出しているレベル」で引く。標高グラデーション着色+陰影(ヒルシェード、表示メニューでON/OFF、既定ON)。詳細はDETAILED_DESIGN.md 6.8節・6.10節
+  「いま画面に出しているレベル」で引く。標高グラデーション着色+陰影(ヒルシェード、表示メニューでON/OFF、既定ON)。詳細はdocs/DETAILED_DESIGN.md 6.8節・6.10節
 - 海域はheightmapのNaN(`*_MSK.tif`の海+欠損タイル)で表し、フロントはNaN頂点を含む三角形を描画しない。
   その「地形が無いところ」には**水域レイヤー**(WGS84楕円体の海抜0mの面)を水色で描く。メッシュではなく、
   画面いっぱいの三角形1枚で各画素の視線と楕円体の交点をシェーダーで直接求め(`terrain.wgsl`の`fs_water`)、
   地形メッシュより先に、楕円体との交点の深度(視線方向に1km奥へずらした値)を書いて描く。地球本体の向こう側や
   海面の下の地形は隠れ(水面越しに透けない)、標高0m以下の地形は余裕の範囲で水域より手前になり隠れない。
-  視線が楕円体に当たらない画素(空)は黒(DETAILED_DESIGN.md 6.7節)。以前(メッシュ方式)は撤去した経緯あり
+  視線が楕円体に当たらない画素(空)は黒(docs/DETAILED_DESIGN.md 6.10節)。以前(メッシュ方式)は撤去した経緯あり
 - 地形は楕円体(WGS84相当)をENUへ変換した曲面で、遠方ほど丸みで下がる(原点から1,000kmで約80km)。
   遠方の地表の高さ・クリック判定は標高ではなく`heightmap.rs`の`ground_at_enu`(丸み込みのENU上座標)を使うこと。
   `EnuTransform::inverse`は原点近傍の接平面近似なので遠方には使わない。2Dモードの奥行き範囲
@@ -73,14 +77,14 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
   2倍スーパーサンプリング。深度・射影を触るときは`camera.rs`の`screen_to_ray`(ピッキング)も整合させること
 - **作図**(図形・線)は`terrain::drawing::DrawingState`(context)で出し入れする。位置の種類で固定先を選ぶ:
   `World`(緯度経度+高度、地形と同じ深度)/`View`(カメラからの相対m)/`Screen`(画面px)。カメラ固定は地形と別の2つ目のパスで描く。
-  線の太さはシェーダーで画面pxへ展開(DETAILED_DESIGN.md 6.11節、`sim3dview/README.md`に使い方)。ユーザーが地図をクリックして図形を作る機能は`terrain::draw_tool::DrawToolState`+`ui::drawing_editor::DrawingEditor`
+  線の太さはシェーダーで画面pxへ展開(docs/DETAILED_DESIGN.md 6.11節、`sim3dview/README.md`に使い方)。ユーザーが地図をクリックして図形を作る機能は`terrain::draw_tool::DrawToolState`+`ui::drawing_editor::DrawingEditor`
   (作成中の図形は`DrawingState`に仮の要素として置く。作った図形はlocalStorageへ保存。サンプルは表示メニューの「作図...」で開く移動可能なウインドウ)
 - **右クリックメニュー**は`ui::context_menu`(汎用。項目は使う側が渡す)。地図の右クリックは`ui::context_menu::MapMenuState`に項目を作るコールバックを渡す
   (サンプルは`components/map_menu.rs`。観測点の追加もここの1項目。`MapMenuState`/`ContextMenuState`が無ければ従来どおり右クリックで観測点を追加)
 - **航跡**(航空機・艦船・車両等の現在位置)は`terrain::tracks::TracksState`(context)へアプリが`set`する(サンプルは`track_bridge.rs`が
   `TrackList`を変換)。シンボルは向きつきビルボード(画面サイズ固定、進行方向が画面上の実際の向きを指す)、ラベルはHTML要素の重ね合わせ
-  (DETAILED_DESIGN.md 6.12節)。シンボルのクリックで`TracksState::selected`が変わり、詳細はアプリ側で表示(サンプルはトップパネルの「航跡情報」タブ)
-- VABは開発用ダミー値 rows=4, cols=6・空ラベルはDOM生成しない。状況パネル項目はC++から`StatusPanelConfig`で動的配信
+  (docs/DETAILED_DESIGN.md 6.12節)。シンボルのクリックで`TracksState::selected`が変わり、詳細はアプリ側で表示(サンプルはトップパネルの「航跡情報」タブ)
+- VABは開発用ダミー値 rows=6, cols=4(先頭行=カテゴリ、中段4行、下段1行)・空ラベルはDOM生成しない。状況パネル項目はC++から`StatusPanelConfig`で動的配信
 - WebSocket自動再接続: 指数バックオフ+ジッター、タブ非表示中は一時停止(Page Visibility API)
 - `sim3dview`は通信プロトコル・サーバーのURLを一切知らない(URL組み立て・原点のミラーはアプリ側の責務)
 
@@ -118,9 +122,9 @@ cd sample/sim_frontend && trunk serve                          # 開発サーバ
 | 0x07 | TrackList | Server→Client(航跡。進行中は約20Hz) |
 | — | ClientCommand | Client→Server |
 
-フレーミング: `[1byte: msg_type][MessagePack body]`。詳細はDETAILED_DESIGN.md 4節。
+フレーミング: `[1byte: msg_type][MessagePack body]`。詳細はdocs/DETAILED_DESIGN.md 4節。
 
-## 実装時の落とし穴(過去に踏んだもの。詳細はDEVELOPMENT_HISTORY.md)
+## 実装時の落とし穴(過去に踏んだもの。詳細はdocs/DEVELOPMENT_HISTORY.md)
 
 - Leptosの`view!`属性値に演算子を含む式を直接書かない(`let`で受けてから渡す。隣の属性が誤認識される)
 - `{move || ...}`等のchildren位置のクロージャは`Send`境界を要求する。`Rc<RefCell<..>>`を直接捕捉できない

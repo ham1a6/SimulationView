@@ -21,10 +21,11 @@ ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し(Line of 
 
 公開しているのは、アプリが使う`terrain::{camera, draw_tool, drawing, hillshade, markers, origin, origin_pick, recenter, store, tracks}`と
 `ui`の各部品だけで、それ以外の`terrain`のモジュール(座標変換・LOD・描画・見通し計算など)はライブラリの内部(`pub(crate)`)です。
-モジュール構成は[DETAILED_DESIGN.md](../DETAILED_DESIGN.md) 6.0節を参照してください。
+モジュール構成は[DETAILED_DESIGN.md](../docs/DETAILED_DESIGN.md) 6.0節を参照してください。
 
-> このライブラリを**1から再実装したい**(仕様どおりに作り直す・別環境へ移植する)場合は、リポジトリルートの
-> [IMPLEMENTATION_GUIDE.md](../IMPLEMENTATION_GUIDE.md)と`docs/impl/`の詳細仕様を参照してください。
+> このライブラリを**1から再実装したい**(仕様どおりに作り直す・別環境へ移植する)場合は、
+> [docs/IMPLEMENTATION_GUIDE.md](../docs/IMPLEMENTATION_GUIDE.md)と[docs/impl/](../docs/impl/)の詳細仕様を参照してください
+> (設計書全体の索引は[docs/README.md](../docs/README.md))。
 
 ## 依存関係への追加
 
@@ -48,9 +49,9 @@ sim3dview = { git = "https://example.com/your-fork/Sim3dView.git" }
 ## サーバーに必要なもの(データ契約)
 
 このライブラリはHTTPで配信される地形データを前提とします。地形は**1度x1度のタイル単位で、タイルごとに
-複数の解像度レベル**を持ちます(地形LOD。離れたタイルは全体で1枚の粗いメッシュ、カメラに近いタイルは
-6x6のチャンクに分けて、近いチャンクほど細かいレベル(最細は元データの30m)を取得して描画します。
-`terrain::lod`・DETAILED_DESIGN.md 6.10節)。呼び出し側が用意するサーバーは、任意のベースURL
+複数の解像度レベル**を持ちます(地形LOD。全タイルを6x6のチャンクに分けて常駐し(最も粗くても約620m/セル。
+起動直後だけタイル全体1枚の粗いメッシュ)、カメラに近いチャンクほど細かいレベル(最細は元データの30m)を
+取得して描画します。`terrain::lod`・[DETAILED_DESIGN.md](../docs/DETAILED_DESIGN.md) 6.10節)。呼び出し側が用意するサーバーは、任意のベースURL
 (例: `http://localhost:9001/terrain`)の下に以下を返す必要があります(`terrain::fetch`・`terrain::loader`のソースのコメント参照。内部モジュールなので`pub(crate)`)。
 
 - `{base_url}/metadata.json`(`Content-Type: application/json`):
