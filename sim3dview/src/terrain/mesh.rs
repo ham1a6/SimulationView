@@ -1,6 +1,8 @@
-//! 地形メッシュ生成。DETAILED_DESIGN.md 3.2節(ENU変換)・6.5節(頂点構造)・6.7節(配色)。
+//! 地形メッシュ生成。DETAILED_DESIGN.md 6.5節(頂点構造)・6.7節(配色)。座標変換は`geodesy`、標高の
+//! サンプリングは`heightmap`。
 
-use super::loader::{Ellipsoid, TerrainData, TileEntry, NO_DATA};
+use super::geodesy::EnuTransform;
+use super::loader::{TerrainData, TileEntry, NO_DATA};
 
 /// 頂点構造(DETAILED_DESIGN.md 6.5節)。UV座標は使わず、標高由来の色を直接持たせる。
 #[repr(C)]
@@ -29,154 +31,6 @@ impl TerrainVertex {
 pub struct TerrainMesh {
     pub vertices: Vec<TerrainVertex>,
     pub indices: Vec<u32>,
-}
-
-/// 基準位置(原点)。DETAILED_DESIGN.md 3.1節。
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Origin {
-    pub lat_deg: f64,
-    pub lon_deg: f64,
-}
-
-/// 緯度経度(+標高)からENU座標(東=X, 北=Y, 上=Z)へ変換する。DETAILED_DESIGN.md 3.2節の変換式そのもの。
-/// C++側 sim_server の座標系定義と完全に一致させること(3.4節: サーバーとフロントで同一座標系)。
-pub struct EnuTransform {
-    origin_lat_rad: f64,
-    origin_lon_rad: f64,
-    origin_x: f64,
-    origin_y: f64,
-    origin_z: f64,
-    /// 原点の緯度経度の三角関数(`transform_f64`・`enu_to_geodetic`が毎回求め直すと、
-    /// 覆域ドームの頂点変換のように大量に呼ぶ場面で重いので、`new`で1回だけ求めておく)。
-    sin_lat0: f64,
-    cos_lat0: f64,
-    sin_lon0: f64,
-    cos_lon0: f64,
-    a: f64,
-    e2: f64,
-    /// 原点緯度における子午線曲率半径(`inverse`用。呼び出しごとに求め直すと見通し計算で
-    /// 数百万回呼ぶため重いので、`new`で1回だけ求めておく)。
-    meridian_radius: f64,
-    /// 原点緯度における「卯酉線曲率半径*cos(緯度)」(=原点緯度の緯線の半径、`inverse`用)。
-    parallel_radius: f64,
-}
-
-impl EnuTransform {
-    pub fn new(origin: &Origin, ellipsoid: &Ellipsoid) -> Self {
-        let a = ellipsoid.a_m;
-        let f = 1.0 / ellipsoid.inv_f;
-        let e2 = f * (2.0 - f);
-        let lat0 = origin.lat_deg.to_radians();
-        let lon0 = origin.lon_deg.to_radians();
-        let (x0, y0, z0) = geodetic_to_ecef(lat0, lon0, 0.0, a, e2);
-        let sin_lat0 = lat0.sin();
-        let denom = (1.0 - e2 * sin_lat0 * sin_lat0).sqrt();
-        Self {
-            origin_lat_rad: lat0,
-            origin_lon_rad: lon0,
-            origin_x: x0,
-            origin_y: y0,
-            origin_z: z0,
-            sin_lat0,
-            cos_lat0: lat0.cos(),
-            sin_lon0: lon0.sin(),
-            cos_lon0: lon0.cos(),
-            a,
-            e2,
-            meridian_radius: a * (1.0 - e2) / denom.powi(3),
-            parallel_radius: a / denom * lat0.cos(),
-        }
-    }
-
-    pub fn transform(&self, lat_deg: f64, lon_deg: f64, h: f64) -> [f32; 3] {
-        let [east, north, up] = self.transform_f64(lat_deg, lon_deg, h);
-        [east as f32, north as f32, up as f32]
-    }
-
-    /// 水域レイヤー(WGS84楕円体の海抜0mの面、`terrain.wgsl`の`fs_water`)の視線との交点判定に使う係数
-    /// (行列M(3行、各行はvec4の先頭3要素を使う), g・c0)。ENU座標の点pに対し、楕円体の陰関数は
-    /// `f(p) = c0 + 2 g・(M p) + |M p|^2`(f=0が楕円体の面、f<0が内側)。原点は楕円体上(h=0)に
-    /// あるので定数項が(丸め誤差の)c0だけになり、原点から遠い点でも桁落ちしない(ECEFの絶対座標
-    /// 約6.4e6mのままf32で二乗すると数mの誤差になる)。
-    /// M = diag(1/a,1/a,1/b) * R(ENU→ECEFの回転)、g = diag(1/a,1/a,1/b) * 原点のECEF。c0は、シェーダーが
-    /// 使うf32に丸めたgについて`|g|^2-1`をf64で求めたもの(丸め誤差で原点が面からずれない)。
-    pub fn ellipsoid_shader_params(&self) -> ([[f32; 4]; 3], [f32; 4]) {
-        let (sin_lat, cos_lat, sin_lon, cos_lon) =
-            (self.sin_lat0, self.cos_lat0, self.sin_lon0, self.cos_lon0);
-        let b = self.a * (1.0 - self.e2).sqrt();
-        let (da, db) = (1.0 / self.a, 1.0 / b);
-        let rows = [
-            [-sin_lon * da, -sin_lat * cos_lon * da, cos_lat * cos_lon * da],
-            [cos_lon * da, -sin_lat * sin_lon * da, cos_lat * sin_lon * da],
-            [0.0, cos_lat * db, sin_lat * db],
-        ];
-        let m = rows.map(|r| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0]);
-        let g = [
-            (self.origin_x * da) as f32,
-            (self.origin_y * da) as f32,
-            (self.origin_z * db) as f32,
-        ];
-        let c0 = g.iter().map(|&v| v as f64 * v as f64).sum::<f64>() - 1.0;
-        (m, [g[0], g[1], g[2], c0 as f32])
-    }
-
-    /// `transform`のf64版(遠方の地表の上座標を丸めずに扱いたい呼び出し側用)。
-    pub fn transform_f64(&self, lat_deg: f64, lon_deg: f64, h: f64) -> [f64; 3] {
-        let lat = lat_deg.to_radians();
-        let lon = lon_deg.to_radians();
-        let (x, y, z) = geodetic_to_ecef(lat, lon, h, self.a, self.e2);
-        let dx = x - self.origin_x;
-        let dy = y - self.origin_y;
-        let dz = z - self.origin_z;
-
-        let (sin_lat0, cos_lat0, sin_lon0, cos_lon0) =
-            (self.sin_lat0, self.cos_lat0, self.sin_lon0, self.cos_lon0);
-
-        let east = -sin_lon0 * dx + cos_lon0 * dy;
-        let north = -sin_lat0 * cos_lon0 * dx - sin_lat0 * sin_lon0 * dy + cos_lat0 * dz;
-        let up = cos_lat0 * cos_lon0 * dx + cos_lat0 * sin_lon0 * dy + sin_lat0 * dz;
-        [east, north, up]
-    }
-
-    /// `transform`の厳密な逆: ENU座標(東, 北, 上。メートル)から(緯度, 経度, 楕円体高)を求める。
-    /// ENU→ECEF(原点の回転行列の転置)→測地座標(反復法)。原点から数千km離れた点でも
-    /// 地球の丸み・楕円体を正しく扱う(下の`inverse`は原点近傍の接平面近似)。
-    pub fn enu_to_geodetic(&self, east: f64, north: f64, up: f64) -> (f64, f64, f64) {
-        let (sin_lat0, cos_lat0, sin_lon0, cos_lon0) =
-            (self.sin_lat0, self.cos_lat0, self.sin_lon0, self.cos_lon0);
-
-        let x = self.origin_x - sin_lon0 * east - sin_lat0 * cos_lon0 * north + cos_lat0 * cos_lon0 * up;
-        let y = self.origin_y + cos_lon0 * east - sin_lat0 * sin_lon0 * north + cos_lat0 * sin_lon0 * up;
-        let z = self.origin_z + cos_lat0 * north + sin_lat0 * up;
-
-        let p = x.hypot(y);
-        let lon = y.atan2(x);
-        let mut lat = z.atan2(p * (1.0 - self.e2));
-        let mut h = 0.0;
-        for _ in 0..6 {
-            let n = self.a / (1.0 - self.e2 * lat.sin().powi(2)).sqrt();
-            h = p / lat.cos() - n;
-            lat = z.atan2(p * (1.0 - self.e2 * n / (n + h)));
-        }
-        (lat.to_degrees(), lon.to_degrees(), h)
-    }
-
-    /// `transform`の逆(近似): 原点からのENUオフセット(東, 北。メートル)から緯度経度を求める。
-    /// ローカル接平面近似(原点緯度における子午線・卯酉線曲率半径を使う)。断面図
-    /// (`terrain/profile.rs`)で、原点から方位角方向へ地表をサンプリングするために使う。
-    pub fn inverse(&self, east: f64, north: f64) -> (f64, f64) {
-        let lat = self.origin_lat_rad + north / self.meridian_radius;
-        let lon = self.origin_lon_rad + east / self.parallel_radius;
-        (lat.to_degrees(), lon.to_degrees())
-    }
-}
-
-fn geodetic_to_ecef(lat: f64, lon: f64, h: f64, a: f64, e2: f64) -> (f64, f64, f64) {
-    let n = a / (1.0 - e2 * lat.sin().powi(2)).sqrt();
-    let x = (n + h) * lat.cos() * lon.cos();
-    let y = (n + h) * lat.cos() * lon.sin();
-    let z = (n * (1.0 - e2) + h) * lat.sin();
-    (x, y, z)
 }
 
 /// 色の正規化に使う標高の下限(メートル)。元データ(DSM)には水面などのノイズによる大きな
@@ -214,66 +68,6 @@ fn elevation_to_color(elevation: f32, min: f32, max: f32) -> [f32; 3] {
         }
     }
     STOPS[STOPS.len() - 1].1
-}
-
-/// 標高を双線形補間でサンプリングする。範囲外ならNone。タイルが無い・海域(周辺4ノードの
-/// いずれかがデータなし)は標高0mとして扱う(欠損をそのまま返すと呼び出し側の計算が破綻するため)。
-/// 各タイル(のチャンク)は、いま画面に出しているレベルのグリッド(`TerrainData::set_chunk_level`)
-/// で引くので、描画されている地形と観測点・見通し計算・クリック判定の標高が一致する。
-/// `terrain/los.rs`(見通し)・`terrain/markers.rs`(観測点)・`terrain/profile.rs`(断面図)・
-/// `terrain/pick.rs`(クリック判定)・`ui/terrain_view.rs`(カメラ注視点の高さ)から使う。
-pub fn sample_heightmap(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> Option<f32> {
-    let b = &data.metadata.geodetic_bounds;
-    if lat_deg < b.min_lat || lat_deg > b.max_lat || lon_deg < b.min_lon || lon_deg > b.max_lon {
-        return None;
-    }
-
-    // 東端・北端ちょうどは、その内側のタイルの端として扱う。
-    let lat0 = (lat_deg.floor() as i32).min(b.max_lat as i32 - 1);
-    let lon0 = (lon_deg.floor() as i32).min(b.max_lon as i32 - 1);
-    let Some(tile) = data.tile((lat0, lon0)) else {
-        return Some(0.0);
-    };
-    let u = (lon_deg - lon0 as f64).clamp(0.0, 1.0);
-    let v = (lat_deg - lat0 as f64).clamp(0.0, 1.0);
-    Some(data.sample_bilinear(tile, u, v))
-}
-
-/// ENUの水平位置(東, 北)の真上/真下にある地表点の(緯度, 経度, ENU上座標)。
-/// 地形メッシュの頂点は楕円体上の地表をENUへ変換したもの(遠方ほど丸みで下がる)なので、
-/// 視線との交差判定・注視点の高さ合わせには、標高そのものではなくこの上座標を使うこと。
-/// 「(東, 北)を通る鉛直線」と地表の交点は、上座標を仮定→測地座標へ戻す→その地点の地表の
-/// 上座標で更新、を数回繰り返して求める(地表の傾きが小さいので速やかに収束する)。
-/// 地形データ範囲外・海域(NaN)は標高0mとして扱う。
-pub fn ground_at_enu(
-    data: &TerrainData,
-    transform: &EnuTransform,
-    east: f64,
-    north: f64,
-) -> (f64, f64, f32) {
-    // 丸みによる低下量の第一近似を初期値にする(0から始めるより収束が速い)。
-    let mut up = -(east * east + north * north) / (2.0 * transform.a);
-    let mut lat_lon = (0.0, 0.0);
-    for _ in 0..4 {
-        let (lat, lon, _h) = transform.enu_to_geodetic(east, north, up);
-        let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0);
-        up = transform.transform_f64(lat, lon, elevation as f64)[2];
-        lat_lon = (lat, lon);
-    }
-    (lat_lon.0, lat_lon.1, up as f32)
-}
-
-/// 地表上の(緯度, 経度)のENU座標(東, 北, 上)。`ground_at_enu`の逆向き。
-/// 地形データ範囲外・海域(NaN)は標高0mとして扱う。
-pub fn ground_at_geodetic(
-    data: &TerrainData,
-    transform: &EnuTransform,
-    lat_deg: f64,
-    lon_deg: f64,
-) -> (f32, f32, f32) {
-    let elevation = sample_heightmap(data, lat_deg, lon_deg).unwrap_or(0.0);
-    let [east, north, up] = transform.transform(lat_deg, lon_deg, elevation as f64);
-    (east, north, up)
 }
 
 /// メッシュの縁に沿って下へ垂らす「スカート」の深さ(メートル)。解像度の違う隣のメッシュ同士は、
@@ -372,7 +166,7 @@ fn grid_vertices(
     transform: &EnuTransform,
 ) -> Vec<TerrainVertex> {
     let n = cells + 1;
-    let (a, e2) = (transform.a, transform.e2);
+    let (a, e2) = transform.ellipsoid_params();
 
     // 行(緯度)ごと: (sinφ, cosφ, 卯酉線曲率半径N)。列(経度)ごと: (sinλ, cosλ)。
     let rows: Vec<(f64, f64, f64)> = (0..n)
@@ -385,21 +179,14 @@ fn grid_vertices(
         .map(|i| (place.lon_start + i as f64 * place.step_deg).to_radians().sin_cos())
         .collect();
 
-    let (slat0, clat0) = transform.origin_lat_rad.sin_cos();
-    let (slon0, clon0) = transform.origin_lon_rad.sin_cos();
-
     // ノード(行j, 列i)の、楕円体高hでのENU座標(東, 北, 上)。
     let enu = |j: usize, i: usize, h: f64| -> [f64; 3] {
         let (s, c, prime) = rows[j];
         let (sl, cl) = cols[i];
-        let x = (prime + h) * c * cl - transform.origin_x;
-        let y = (prime + h) * c * sl - transform.origin_y;
-        let z = (prime * (1.0 - e2) + h) * s - transform.origin_z;
-        [
-            -slon0 * x + clon0 * y,
-            -slat0 * clon0 * x - slat0 * slon0 * y + clat0 * z,
-            clat0 * clon0 * x + clat0 * slon0 * y + slat0 * z,
-        ]
+        let x = (prime + h) * c * cl;
+        let y = (prime + h) * c * sl;
+        let z = (prime * (1.0 - e2) + h) * s;
+        transform.ecef_to_enu(x, y, z)
     };
 
     let mut vertices = Vec::with_capacity(tile_vertex_count(cells));
@@ -551,93 +338,16 @@ pub fn build_chunk_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain::geodesy::Ellipsoid;
+    use crate::terrain::origin::Origin;
 
     fn transform_at(lat: f64, lon: f64) -> EnuTransform {
-        EnuTransform::new(
-            &Origin { lat_deg: lat, lon_deg: lon },
-            &Ellipsoid { a_m: 6378137.0, inv_f: 298.257222101 },
-        )
-    }
-
-    // 原点から数千km離れた点でも、transform_f64とenu_to_geodeticが往復で一致すること。
-    #[test]
-    fn enu_round_trip_far_from_origin() {
-        let t = transform_at(35.355556, 138.859722);
-        for &(lat, lon, h) in &[(24.34, 124.16, 0.0), (33.0, 130.0, 500.0), (37.5, 127.0, 100.0), (49.0, 121.0, 3000.0)] {
-            let [e, n, u] = t.transform_f64(lat, lon, h);
-            let (lat2, lon2, h2) = t.enu_to_geodetic(e, n, u);
-            assert!((lat - lat2).abs() < 1e-9, "lat {lat} vs {lat2}");
-            assert!((lon - lon2).abs() < 1e-9, "lon {lon} vs {lon2}");
-            assert!((h - h2).abs() < 1e-3, "h {h} vs {h2}");
-        }
-    }
-
-    // 丸みで遠方の地表が下がる量が概算(d^2/2R)と同程度であること(石垣島は原点から約2,000km)。
-    #[test]
-    fn far_ground_curves_down() {
-        let t = transform_at(35.355556, 138.859722);
-        let [e, n, u] = t.transform_f64(24.34, 124.16, 0.0);
-        let d = e.hypot(n);
-        assert!(d > 1_800_000.0 && d < 2_000_000.0, "d={d}");
-        assert!(u < -250_000.0 && u > -350_000.0, "u={u}");
+        EnuTransform::new(&Origin { lat_deg: lat, lon_deg: lon }, &Ellipsoid::WGS84)
     }
 
     /// 東へ1度で600m上がる斜面(ノード間隔1/6度で整数になる)。タイル(30,120)用。
     fn east_slope(_lat: f64, lon: f64) -> i16 {
         (600.0 * (lon - 120.0)).round() as i16
-    }
-
-    #[test]
-    fn heightmap_is_sampled_inside_bounds_only() {
-        let data = TerrainData::synthetic(30, 120, 1, 1, east_slope);
-        assert!((sample_heightmap(&data, 30.5, 120.25).unwrap() - 150.0).abs() < 1e-3);
-        // 東端・北端ちょうどは範囲内(内側のタイルの端として扱う)。
-        assert!((sample_heightmap(&data, 31.0, 121.0).unwrap() - 600.0).abs() < 1e-3);
-        assert!(sample_heightmap(&data, 29.99, 120.5).is_none());
-        assert!(sample_heightmap(&data, 30.5, 121.01).is_none());
-    }
-
-    #[test]
-    fn ground_curves_down_like_d2_over_2r() {
-        let data = TerrainData::synthetic(30, 130, 10, 10, |_, _| 0);
-        let t = transform_at(35.0, 135.0);
-        for &(east, north) in &[(400_000.0, 0.0), (0.0, -400_000.0), (300_000.0, 300_000.0)] {
-            let (lat, lon, up) = ground_at_enu(&data, &t, east, north);
-            let d2 = east * east + north * north;
-            let drop = d2 / (2.0 * 6_378_137.0);
-            // 楕円体の曲率半径は場所で1%ほど違うので、球の概算とは数%以内で一致すればよい。
-            assert!((up as f64 + drop).abs() < 0.03 * drop, "east={east} north={north} up={up} drop={drop}");
-            // 返した緯度経度の地表(標高0m)を変換し直すと、同じENU位置に戻る。
-            let [e2, n2, u2] = t.transform_f64(lat, lon, 0.0);
-            assert!((e2 - east).abs() < 1.0 && (n2 - north).abs() < 1.0, "{e2},{n2}");
-            assert!((u2 - up as f64).abs() < 1.0, "{u2} vs {up}");
-        }
-    }
-
-    #[test]
-    fn ground_follows_terrain_height_far_away() {
-        let flat = TerrainData::synthetic(30, 130, 10, 10, |_, _| 0);
-        let hill = TerrainData::synthetic(30, 130, 10, 10, |_, _| 1000);
-        let t = transform_at(35.0, 135.0);
-        let (_, _, up0) = ground_at_enu(&flat, &t, 400_000.0, 0.0);
-        let (_, _, up1) = ground_at_enu(&hill, &t, 400_000.0, 0.0);
-        // 遠方では鉛直方向が傾くので、1000m高い地表の上座標の差は1000mよりわずかに小さい。
-        assert!((up1 - up0 - 1000.0).abs() < 10.0, "{up0} -> {up1}");
-    }
-
-    #[test]
-    fn same_ground_point_regardless_of_origin() {
-        let data = TerrainData::synthetic(30, 130, 10, 10, |lat, lon| ((lat + lon) * 3.0) as i16);
-        let (lat, lon) = (33.3, 137.7);
-        let expected = sample_heightmap(&data, lat, lon).unwrap();
-        for origin in [(35.0, 135.0), (31.0, 139.0), (39.0, 131.0)] {
-            let t = transform_at(origin.0, origin.1);
-            let (east, north, _) = ground_at_geodetic(&data, &t, lat, lon);
-            let (lat2, lon2, _) = ground_at_enu(&data, &t, east as f64, north as f64);
-            // f32のENU座標(数百km)の丸めは0.1m程度なので、緯度経度は1e-5度(約1m)以内で戻る。
-            assert!((lat2 - lat).abs() < 1e-5 && (lon2 - lon).abs() < 1e-5, "{origin:?}: {lat2},{lon2}");
-            assert!((sample_heightmap(&data, lat2, lon2).unwrap() - expected).abs() < 0.05);
-        }
     }
 
     #[test]

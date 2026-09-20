@@ -23,6 +23,8 @@ use std::rc::Rc;
 
 use serde::Deserialize;
 
+use super::geodesy::Ellipsoid;
+
 /// タイルの識別子: 南西角の(緯度, 経度)(整数度)。
 pub type TileKey = (i32, i32);
 
@@ -46,12 +48,6 @@ pub struct GeodeticBounds {
     pub max_lat: f64,
     pub min_lon: f64,
     pub max_lon: f64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct Ellipsoid {
-    pub a_m: f64,
-    pub inv_f: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -535,7 +531,7 @@ impl TerrainData {
                 min_lon: min_lon as f64,
                 max_lon: (min_lon + cols) as f64,
             },
-            ellipsoid: Ellipsoid { a_m: 6_378_137.0, inv_f: 298.257_222_101 },
+            ellipsoid: Ellipsoid::WGS84,
             has_texture: false,
             default_origin: DefaultOrigin { lat_deg: min_lat as f64 + 0.5, lon_deg: min_lon as f64 + 0.5 },
         };

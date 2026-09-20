@@ -6,8 +6,9 @@
 
 use super::camera::Camera;
 use super::loader::TerrainData;
-use super::mesh::{ground_at_enu, EnuTransform, Origin};
-
+use super::geodesy::EnuTransform;
+use super::heightmap::ground_at_enu;
+use super::origin::Origin;
 /// レイをマーチングする最大距離(メートル)。カメラは最大ズームアウト(`camera.rs`の
 /// MAX_DISTANCE=2,000,000m)まで地形から離れうるため、そこから地形データ範囲(現在は30°四方、
 /// 対角線で約4,000km)の遠端まで届く値にしておく。刻み幅は約1.3kmで、従来(約2.25km)以下。

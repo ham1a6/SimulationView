@@ -16,9 +16,9 @@
 use std::f64::consts::{PI, TAU};
 
 use super::drawing::{Altitude, Corner, Drawing, Position, Shape, Space, Style};
-use super::loader::Ellipsoid;
-use super::mesh::{EnuTransform, Origin};
-
+use super::geodesy::Ellipsoid;
+use super::geodesy::EnuTransform;
+use super::origin::Origin;
 /// 描画用の頂点。面と線(太さ付き)を同じ頂点形式・同じパイプラインで描く(`draw.wgsl`)。
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -920,14 +920,13 @@ mod tests {
     use super::*;
     use crate::terrain::drawing::Color;
 
-    const WGS84: Ellipsoid = Ellipsoid { a_m: 6378137.0, inv_f: 298.257222101 };
     const ORIGIN: Origin = Origin { lat_deg: 35.355556, lon_deg: 138.859722 };
 
     fn with_ctx<R>(viewport: (f32, f32), f: impl FnOnce(&BuildContext) -> R) -> R {
-        let transform = EnuTransform::new(&ORIGIN, &WGS84);
+        let transform = EnuTransform::new(&ORIGIN, &Ellipsoid::WGS84);
         // 地表は標高100mの平地とみなす。
         let ground = |_: f64, _: f64| 100.0;
-        f(&BuildContext { mesh_transform: &transform, ellipsoid: &WGS84, ground: &ground, viewport_px: viewport })
+        f(&BuildContext { mesh_transform: &transform, ellipsoid: &Ellipsoid::WGS84, ground: &ground, viewport_px: viewport })
     }
 
     fn drawing(id: u64, shape: Shape, style: Style) -> Drawing {
@@ -944,7 +943,7 @@ mod tests {
 
     #[test]
     fn local_coordinates_round_trip() {
-        let r = mean_radius(&WGS84, ORIGIN.lat_deg);
+        let r = mean_radius(&Ellipsoid::WGS84, ORIGIN.lat_deg);
         for &(dx, dy) in &[(1000.0, 0.0), (-25_000.0, 40_000.0), (0.0, -120_000.0), (300_000.0, 200_000.0)] {
             let (lat, lon) = destination(ORIGIN.lat_deg, ORIGIN.lon_deg, f64::atan2(dx, dy), f64::hypot(dx, dy), r);
             let [x, y] = to_local(ORIGIN.lat_deg, ORIGIN.lon_deg, lat, lon, r);
@@ -955,9 +954,9 @@ mod tests {
     // 東へ10km進んだ点は、ENU(接平面)の東10kmから丸みで少し下がった位置になる。
     #[test]
     fn destination_matches_enu_scale() {
-        let r = mean_radius(&WGS84, ORIGIN.lat_deg);
+        let r = mean_radius(&Ellipsoid::WGS84, ORIGIN.lat_deg);
         let (lat, lon) = destination(ORIGIN.lat_deg, ORIGIN.lon_deg, PI / 2.0, 10_000.0, r);
-        let t = EnuTransform::new(&ORIGIN, &WGS84);
+        let t = EnuTransform::new(&ORIGIN, &Ellipsoid::WGS84);
         let [e, n, u] = t.transform_f64(lat, lon, 0.0);
         // 球(平均曲率半径)と楕円体の東西方向の曲率半径の差(約0.3%)による誤差が数十m出る。
         assert!((e - 10_000.0).abs() < 60.0, "e={e}");

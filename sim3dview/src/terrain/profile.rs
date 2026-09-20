@@ -3,8 +3,9 @@
 //! `max_valid_distance`は`terrain::los`(見通し範囲)とも共有している。
 
 use super::loader::TerrainData;
-use super::mesh::{sample_heightmap, EnuTransform, Origin};
-
+use super::geodesy::EnuTransform;
+use super::heightmap::sample_heightmap;
+use super::origin::Origin;
 pub struct ProfilePoint {
     pub distance_m: f64,
     pub elevation_m: f32,
@@ -76,12 +77,11 @@ pub fn build_profile(data: &TerrainData, origin: &Origin, azimuth_deg: f64) -> V
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terrain::loader::Ellipsoid;
-
+    use crate::terrain::geodesy::Ellipsoid;
     fn transform(lat: f64, lon: f64) -> EnuTransform {
         EnuTransform::new(
             &Origin { lat_deg: lat, lon_deg: lon },
-            &Ellipsoid { a_m: 6_378_137.0, inv_f: 298.257_222_101 },
+            &Ellipsoid::WGS84,
         )
     }
 

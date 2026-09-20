@@ -3,7 +3,9 @@
 //! 各方位角ごとの見通し限界距離を求める。`components/los_view.rs`から使う。
 
 use super::loader::TerrainData;
-use super::mesh::{sample_heightmap, EnuTransform, Origin};
+use super::geodesy::EnuTransform;
+use super::heightmap::sample_heightmap;
+use super::origin::Origin;
 use super::profile::max_valid_distance;
 
 /// 平均地球半径(メートル)。

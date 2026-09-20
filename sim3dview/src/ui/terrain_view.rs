@@ -28,8 +28,10 @@ use crate::terrain::drawing_geometry;
 use crate::terrain::loader::{self, MeshKey, TerrainData, TileKey, WHOLE_TILE};
 use crate::terrain::lod::{self, Resident, TilePlan};
 use crate::terrain::markers::{self, RadarMarkersState};
-use crate::terrain::mesh::{self, Origin};
-use crate::terrain::origin::OriginState;
+use crate::terrain::geodesy::EnuTransform;
+use crate::terrain::heightmap;
+use crate::terrain::mesh;
+use crate::terrain::origin::{Origin, OriginState};
 use crate::terrain::origin_pick::OriginPickState;
 use crate::terrain::pick;
 use crate::terrain::hillshade::HillshadeState;
@@ -215,14 +217,14 @@ fn try_init(
     });
     // 注視点は原点の実際の地表標高に置く(Vec3::ZEROのままだと、原点が高山の
     // 斜面にある場合にズームインした際カメラが地面に埋まって真っ黒になる)。
-    let target_up = mesh::sample_heightmap(&data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0);
+    let target_up = heightmap::sample_heightmap(&data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0);
 
     wasm_bindgen_futures::spawn_local(async move {
         match TerrainRenderer::new(canvas).await {
             Ok(mut renderer) => {
                 // 全タイルを最粗のレベル0(タイル全体で1枚)で載せる(細かいレベルはカメラに近い
                 // チャンクだけ、あとから`update_lod`が差し替える)。
-                let transform = mesh::EnuTransform::new(&origin, &data.metadata.ellipsoid);
+                let transform = EnuTransform::new(&origin, &data.metadata.ellipsoid);
                 let mut resident = HashMap::new();
                 for tile in data.tiles() {
                     let tile_mesh = mesh::build_whole_tile_mesh(&data, tile, &transform);
@@ -265,16 +267,16 @@ fn try_init(
 }
 
 /// 3Dモードのカメラ(視点)が地面の下にもぐらないようにする(`OrbitCamera::keep_above_ground`)。
-/// 視点の真下の地面の高さは、いま画面に出している地形(`mesh::ground_at_enu`)から引く。
+/// 視点の真下の地面の高さは、いま画面に出している地形(`heightmap::ground_at_enu`)から引く。
 /// カメラの操作(回転・ズーム・移動)・原点変更・LODの切り替えのあとの描画の前に必ず通る。
 fn keep_camera_above_ground(state: &Rc<RefCell<ViewState>>) {
     let mut s = state.borrow_mut();
     let (Some(terrain), Some(origin)) = (s.terrain.clone(), s.mesh_origin) else {
         return;
     };
-    let transform = mesh::EnuTransform::new(&origin, &terrain.metadata.ellipsoid);
+    let transform = EnuTransform::new(&origin, &terrain.metadata.ellipsoid);
     s.camera.keep_above_ground(|east, north| {
-        mesh::ground_at_enu(&terrain, &transform, east as f64, north as f64).2
+        heightmap::ground_at_enu(&terrain, &transform, east as f64, north as f64).2
     });
 }
 
@@ -349,7 +351,7 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
         else {
             return;
         };
-        let transform = mesh::EnuTransform::new(&origin, &terrain.metadata.ellipsoid);
+        let transform = EnuTransform::new(&origin, &terrain.metadata.ellipsoid);
         let camera = s.camera.to_camera(renderer.aspect_ratio());
         let plan = lod::plan_levels(
             &terrain,
@@ -360,7 +362,7 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
         );
         (terrain, origin, plan)
     };
-    let transform = mesh::EnuTransform::new(&origin, &terrain.metadata.ellipsoid);
+    let transform = EnuTransform::new(&origin, &terrain.metadata.ellipsoid);
     let chunk_count = terrain.chunk_count();
 
     let round_start = js_sys::Date::now();
@@ -553,10 +555,10 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
         // 地表に貼り付いている観測点・覆域を合わせ直す。
         {
             let mut s = state.borrow_mut();
-            s.target_up = mesh::sample_heightmap(&terrain, origin.lat_deg, origin.lon_deg)
+            s.target_up = heightmap::sample_heightmap(&terrain, origin.lat_deg, origin.lon_deg)
                 .unwrap_or(0.0);
             let (tx, ty) = (s.camera.target.x as f64, s.camera.target.y as f64);
-            s.camera.target.z = mesh::ground_at_enu(&terrain, &transform, tx, ty).2;
+            s.camera.target.z = heightmap::ground_at_enu(&terrain, &transform, tx, ty).2;
             let chunks = terrain.chunks_per_tile() * terrain.chunks_per_tile();
             let resident = &s.resident;
             terrain.evict_unused(
@@ -647,10 +649,10 @@ fn rebuild_drawings(state: &Rc<RefCell<ViewState>>) {
     let Some(renderer) = s.renderer.as_mut() else {
         return;
     };
-    let transform = mesh::EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
+    let transform = EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
     let (width, height) = renderer.canvas_size_px();
-    // 地形データの範囲外・海は標高0mとして扱う(`mesh::sample_heightmap`)。
-    let ground = |lat: f64, lon: f64| mesh::sample_heightmap(&terrain, lat, lon).unwrap_or(0.0) as f64;
+    // 地形データの範囲外・海は標高0mとして扱う(`heightmap::sample_heightmap`)。
+    let ground = |lat: f64, lon: f64| heightmap::sample_heightmap(&terrain, lat, lon).unwrap_or(0.0) as f64;
     let ctx = drawing_geometry::BuildContext {
         mesh_transform: &transform,
         ellipsoid: &terrain.metadata.ellipsoid,
@@ -675,9 +677,9 @@ fn rebuild_tracks(state: &Rc<RefCell<ViewState>>) {
         let Some(renderer) = s.renderer.as_mut() else {
             return;
         };
-        let transform = mesh::EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
+        let transform = EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
         let (width, height) = renderer.canvas_size_px();
-        let ground = |lat: f64, lon: f64| mesh::sample_heightmap(&terrain, lat, lon).unwrap_or(0.0) as f64;
+        let ground = |lat: f64, lon: f64| heightmap::sample_heightmap(&terrain, lat, lon).unwrap_or(0.0) as f64;
         let ctx = drawing_geometry::BuildContext {
             mesh_transform: &transform,
             ellipsoid: &terrain.metadata.ellipsoid,
@@ -1006,27 +1008,27 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             if s.mesh_origin == Some(new_origin) {
                 return;
             }
-            let new_transform = mesh::EnuTransform::new(&new_origin, &terrain.metadata.ellipsoid);
+            let new_transform = EnuTransform::new(&new_origin, &terrain.metadata.ellipsoid);
             // 注視点(中心点)の扱い: 原点の真上を見ていた(x=y=0)なら新しい原点に追従する。
             // パンして別の場所を見ていたなら、ENU座標のオフセットが新しい原点基準のまま残って
             // 表示が飛んでしまわないよう、同じ緯度経度を見続けるよう新しいENU座標へ変換し直す。
             let follows_origin = s.camera.target.x == 0.0 && s.camera.target.y == 0.0;
             s.target_up =
-                mesh::sample_heightmap(&terrain, new_origin.lat_deg, new_origin.lon_deg).unwrap_or(0.0);
+                heightmap::sample_heightmap(&terrain, new_origin.lat_deg, new_origin.lon_deg).unwrap_or(0.0);
             if follows_origin {
                 // 高さも新しい原点の地表標高へ更新する(古い標高のままだと、原点移動後に
                 // ズームインした際カメラが地面に埋まって真っ黒になりうる)。
                 s.camera.target.z = s.target_up;
             } else if let Some(old_origin) = s.mesh_origin {
                 let old_transform =
-                    mesh::EnuTransform::new(&old_origin, &terrain.metadata.ellipsoid);
-                let (lat, lon, _) = mesh::ground_at_enu(
+                    EnuTransform::new(&old_origin, &terrain.metadata.ellipsoid);
+                let (lat, lon, _) = heightmap::ground_at_enu(
                     &terrain,
                     &old_transform,
                     s.camera.target.x as f64,
                     s.camera.target.y as f64,
                 );
-                let (x, y, up) = mesh::ground_at_geodetic(&terrain, &new_transform, lat, lon);
+                let (x, y, up) = heightmap::ground_at_geodetic(&terrain, &new_transform, lat, lon);
                 s.camera.target.x = x;
                 s.camera.target.y = y;
                 s.camera.target.z = up;
@@ -1136,8 +1138,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 // 右クリックメニュー等で指定した地点へ。高さはその地点の実際の地表(ENU上座標)にする
                 // (Shift+ドラッグでの移動と同じ。古い高さのままだとズームインしたときカメラが地面に埋まる)。
                 (Some((lat, lon)), Some(terrain), Some(mesh_origin)) => {
-                    let transform = mesh::EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
-                    let (east, north, up) = mesh::ground_at_geodetic(&terrain, &transform, lat, lon);
+                    let transform = EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
+                    let (east, north, up) = heightmap::ground_at_geodetic(&terrain, &transform, lat, lon);
                     s.camera.target.x = east;
                     s.camera.target.y = north;
                     s.camera.target.z = up;
@@ -1245,8 +1247,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                                 (s.terrain.clone(), s.mesh_origin)
                             {
                                 let transform =
-                                    mesh::EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
-                                let (_, _, up) = mesh::ground_at_enu(
+                                    EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
+                                let (_, _, up) = heightmap::ground_at_enu(
                                     &terrain,
                                     &transform,
                                     s.camera.target.x as f64,

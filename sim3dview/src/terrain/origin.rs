@@ -8,7 +8,12 @@
 
 use leptos::prelude::*;
 
-use super::mesh::Origin;
+/// 基準位置(原点)。DETAILED_DESIGN.md 3.1節。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Origin {
+    pub lat_deg: f64,
+    pub lon_deg: f64,
+}
 
 /// 現在の原点。`None`はまだ受信/設定されていない状態
 /// (`TerrainView`は地形データの`default_origin`にフォールバックする)。

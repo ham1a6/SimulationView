@@ -14,8 +14,10 @@ use leptos::prelude::*;
 use super::drawing_geometry::{append_line_strip, DrawVertex};
 use super::loader::TerrainData;
 use super::los::{compute_coverage_area, compute_los_dome, LosParams};
-use super::mesh::{sample_heightmap, EnuTransform, Origin, TerrainVertex};
-
+use super::mesh::TerrainVertex;
+use super::geodesy::EnuTransform;
+use super::heightmap::sample_heightmap;
+use super::origin::Origin;
 /// 地図上に配置したレーダー観測点1つ分の情報。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RadarMarker {

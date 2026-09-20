@@ -18,10 +18,7 @@ use serde::{Deserialize, Serialize};
 
 use super::drawing::{Altitude, Color, Drawing, DrawingId, DrawingState, Position, Shape, Style};
 use super::drawing_geometry::{destination, mean_radius, to_local};
-use super::loader::Ellipsoid;
-
-/// クリックの距離計算に使う楕円体。地形データのellipsoidと厳密に同じでなくても、見た目に差は出ない。
-const WGS84: Ellipsoid = Ellipsoid { a_m: 6378137.0, inv_f: 298.257222101 };
+use super::geodesy::Ellipsoid;
 
 /// 直前の点とこれ未満(メートル)しか離れていないクリックは、ダブルクリックの2回目などとみなして無視する。
 const MIN_POINT_SPACING_M: f64 = 1.0;
@@ -117,7 +114,8 @@ impl ToolKind {
 type LatLon = (f64, f64);
 
 fn radius_at(lat_deg: f64) -> f64 {
-    mean_radius(&WGS84, lat_deg)
+    // 地形データのellipsoidを持たないので、WGS84を使う(厳密に同じでなくても見た目に差は出ない)。
+    mean_radius(&Ellipsoid::WGS84, lat_deg)
 }
 
 /// `from`から見た`to`の位置([東, 北]、メートル)。

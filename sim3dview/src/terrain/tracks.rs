@@ -464,10 +464,9 @@ pub fn build_track_geometry(ctx: &BuildContext, entries: &[TrackEntry], options:
 mod tests {
     use super::*;
     use crate::terrain::drawing_geometry::signed_area;
-    use crate::terrain::loader::Ellipsoid;
-    use crate::terrain::mesh::{EnuTransform, Origin};
-
-    const WGS84: Ellipsoid = Ellipsoid { a_m: 6378137.0, inv_f: 298.257222101 };
+    use crate::terrain::geodesy::Ellipsoid;
+    use crate::terrain::geodesy::EnuTransform;
+    use crate::terrain::origin::Origin;
     const ORIGIN: Origin = Origin { lat_deg: 35.355556, lon_deg: 138.859722 };
 
     fn track(id: u64, lat: f64, lon: f64, altitude: Altitude) -> Track {
@@ -485,9 +484,9 @@ mod tests {
     }
 
     fn build(entries: &[TrackEntry], options: TrackOptions) -> TrackGeometry {
-        let transform = EnuTransform::new(&ORIGIN, &WGS84);
+        let transform = EnuTransform::new(&ORIGIN, &Ellipsoid::WGS84);
         let ground = |_: f64, _: f64| 100.0;
-        let ctx = BuildContext { mesh_transform: &transform, ellipsoid: &WGS84, ground: &ground, viewport_px: (800.0, 600.0) };
+        let ctx = BuildContext { mesh_transform: &transform, ellipsoid: &Ellipsoid::WGS84, ground: &ground, viewport_px: (800.0, 600.0) };
         build_track_geometry(&ctx, entries, options)
     }
 

@@ -22,8 +22,8 @@ use glam::{Mat4, Vec3};
 
 use super::camera::{Camera, Projection};
 use super::loader::{TerrainData, TileKey};
-use super::mesh::{tile_vertex_count, EnuTransform};
-
+use super::mesh::tile_vertex_count;
+use super::geodesy::EnuTransform;
 /// チャンクの頂点数の合計の上限(全タイルの下限=レベル1の分を含む)。全タイルのレベル1は
 /// 約1520万頂点(390タイル x 36チャンク x 1チャンク1085頂点)で、残りの約980万頂点を細かくする
 /// のに使う。最細(30m)のチャンクは1個で約36万頂点なので、下限から最細へ上げられるチャンクは
@@ -315,9 +315,8 @@ fn plan_levels_with_budget(
 mod tests {
     use super::*;
     use crate::terrain::camera::{CameraPreset, OrbitCamera};
-    use crate::terrain::loader::Ellipsoid;
-    use crate::terrain::mesh::Origin;
-
+    use crate::terrain::geodesy::Ellipsoid;
+    use crate::terrain::origin::Origin;
     /// 実データと同じレベル定義(1度あたり60/180/600/1800/3600セル、6x6チャンク)の3x3タイル
     /// (緯度30〜33度・経度130〜133度)。標高は全部0m。
     fn data() -> TerrainData {
@@ -328,7 +327,7 @@ mod tests {
     fn transform() -> EnuTransform {
         EnuTransform::new(
             &Origin { lat_deg: 31.5, lon_deg: 131.5 },
-            &Ellipsoid { a_m: 6_378_137.0, inv_f: 298.257_222_101 },
+            &Ellipsoid::WGS84,
         )
     }
 

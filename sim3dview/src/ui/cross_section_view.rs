@@ -12,7 +12,7 @@ use leptos::prelude::*;
 use crate::terrain::loader::TerrainData;
 use crate::terrain::los::{is_visible, min_visible_altitude};
 use crate::terrain::markers::{RadarMarker, RadarMarkersState};
-use crate::terrain::mesh::Origin;
+use crate::terrain::origin::Origin;
 use crate::terrain::origin::OriginState;
 use crate::terrain::profile::{build_profile, ProfilePoint};
 use crate::terrain::store::TerrainStore;

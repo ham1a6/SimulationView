@@ -2,6 +2,8 @@ pub mod camera;
 pub mod draw_tool;
 pub mod drawing;
 pub mod drawing_geometry;
+pub mod geodesy;
+pub mod heightmap;
 pub mod hillshade;
 pub mod loader;
 pub mod lod;

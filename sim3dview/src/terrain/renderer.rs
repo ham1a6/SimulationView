@@ -889,7 +889,7 @@ impl TerrainRenderer {
 
     /// 水域レイヤー(WGS84楕円体の海抜0mの面)の基準を、地形メッシュの現在の原点に合わせる。
     /// 頂点位置を新しい原点のENU座標で作り直すとき(初期化・原点変更)に、同時に呼ぶこと。
-    pub fn set_ellipsoid_origin(&self, transform: &super::mesh::EnuTransform) {
+    pub fn set_ellipsoid_origin(&self, transform: &super::geodesy::EnuTransform) {
         self.ellipsoid.set(transform.ellipsoid_shader_params());
     }
 

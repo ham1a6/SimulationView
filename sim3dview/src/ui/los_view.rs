@@ -6,7 +6,7 @@ use leptos::prelude::*;
 
 use crate::terrain::los::{compute_los, LosParams, LosPoint};
 use crate::terrain::markers::RadarMarkersState;
-use crate::terrain::mesh::Origin;
+use crate::terrain::origin::Origin;
 use crate::terrain::store::TerrainStore;
 
 const VIEW_SIZE: f64 = 300.0;
