@@ -271,7 +271,7 @@ view! { <DrawingEditor/> } // 地図(TerrainView)をクリックできるよう�
 このエディタで作った図形だけが一覧・保存の対象です(アプリが`drawings.add`で足した図形は別扱いで、`DrawToolState`の操作では消えません)。
 
 `sample/sim_frontend`の「表示」→「作図デモ」(`components/drawing_demo.rs`)に、全種類の図形を絶対座標・視点空間・画面座標で
-置く実例があります(右パネル上段の「作図」タブが、上の対話作成の実例です)。
+置く実例があります(表示メニューの「作図...」で開く移動可能なウインドウが、上の対話作成の実例です)。
 
 ## 航跡(航空機・艦船・車両等の現在位置とシンボル)
 
@@ -342,9 +342,15 @@ move || match tracks.selected_track() {
 
 - `ui::tabbed_panel::{TabbedPanel, tab}`: タブ付きパネル。VAB設定など、独自タブを持つ
   パネルを作る際にも使えます。
-- `ui::floating_panel::FloatingPanel`: `OriginDialog`/`CoverageAltitudeDialog`が内部で
-  使っている、半透明バックドロップ+中央パネルのフローティングウインドウ。独自のフローティング
-  ウインドウ(VAB設定パネルなど)を同じ見た目で作りたい場合に使ってください。
+- `ui::floating_panel::FloatingPanel`: フローティングウインドウ。`OriginDialog`/`CoverageAltitudeDialog`が内部で
+  使っています。独自のフローティングウインドウ(VAB設定パネルなど)を同じ見た目で作りたい場合に使ってください。
+  既定は、半透明バックドロップが画面を覆う**モーダル**(中央に出て、背景クリックか✕で閉じる)です。
+
+  | プロパティ | 既定 | 意味 |
+  |---|---|---|
+  | `modal` | `true` | `false`にするとバックドロップなしの**ウインドウ**になり、背後(地図など)を操作したまま出しておける(✕でだけ閉じる) |
+  | `draggable` | `false` | `true`でタイトルバーのドラッグで動かせる。タイトルバーの一部(横80px・縦40px)が必ず画面内に残る範囲に制限され、動かした位置は閉じて開き直しても保たれる |
+  | `initial_position` | `(80, 60)` | ウインドウ(`modal=false`)の初期位置(画面左上からの`(x, y)`、px)。モーダルは常に中央 |
 
   ```rust
   use sim3dview::ui::floating_panel::FloatingPanel;
@@ -353,6 +359,16 @@ move || match tracks.selected_track() {
   view! {
       <FloatingPanel open=open title="独自設定">
           <p>"ここに好きな内容を置ける。"</p>
+      </FloatingPanel>
+  }
+  ```
+
+  地図を操作しながら使う、動かせるウインドウにする例(サンプルの作図ウインドウ。`sample/sim_frontend/src/components/drawing_window.rs`):
+
+  ```rust
+  view! {
+      <FloatingPanel open=open title="作図" modal=false draggable=true initial_position=(360.0, 60.0)>
+          <DrawingEditor/>
       </FloatingPanel>
   }
   ```

@@ -16,6 +16,7 @@ use sim3dview::terrain::tracks::TracksState;
 use sim3dview::ui::coverage_altitude_dialog::{CoverageAltitudeDialog, CoverageAltitudeDialogState};
 use sim3dview::ui::origin_dialog::{OriginDialog, OriginDialogState};
 
+use crate::components::drawing_window::{DrawingWindow, DrawingWindowState};
 use crate::components::main_panel::MainPanel;
 use crate::components::menu_bar::MenuBar;
 use crate::components::operation_panel::SimulationStatusPanel;
@@ -37,6 +38,8 @@ pub fn App() -> impl IntoView {
     provide_context(OriginDialogState(RwSignal::new(false)));
     // 覆域高度設定フローティングパネルの開閉状態(メニューバーから開く。sim3dviewライブラリの型)。
     provide_context(CoverageAltitudeDialogState(RwSignal::new(false)));
+    // 作図ウインドウ(移動できる非モーダルのウインドウ)の開閉状態(表示メニューの「作図...」から開く)。
+    provide_context(DrawingWindowState(RwSignal::new(false)));
     // 地形データはメインパネル・見通し範囲タブで共有する(フェッチは1回だけ、
     // BASIC_DESIGN.md 6節フェーズ10: 同一の地形メッシュに異なるカメラを適用する構成)。
     // sample/sim_server(ポート9001)の`/terrain/*`から取得する(sim3dviewライブラリ自体は
@@ -173,6 +176,7 @@ pub fn App() -> impl IntoView {
                 })
             />
             <CoverageAltitudeDialog/>
+            <DrawingWindow/>
         </div>
     }
 }

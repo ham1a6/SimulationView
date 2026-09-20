@@ -495,6 +495,37 @@
     margin-bottom: 0.6rem;
 }
 
+/* 背後を操作できるウインドウ(FloatingPanelの`modal=false`)。画面全体の透明な層はクリックを通し、
+   ウインドウだけがクリックを受ける。位置は`left`/`top`(初期位置)+`transform`(ドラッグ量)。 */
+.floating-window-layer {
+    position: fixed;
+    inset: 0;
+    z-index: 15;
+    pointer-events: none;
+    display: none;
+}
+
+.floating-panel--window {
+    position: absolute;
+    pointer-events: auto;
+    max-width: calc(100vw - 16px);
+    max-height: calc(100vh - 16px);
+    display: flex;
+    flex-direction: column;
+}
+
+.floating-panel--window .floating-panel-body {
+    overflow-y: auto;
+    min-height: 0;
+}
+
+/* `draggable`のとき、タイトルバーが持ち手になる。 */
+.floating-panel-header.draggable {
+    cursor: move;
+    user-select: none;
+    touch-action: none;
+}
+
 .floating-panel-header h3 {
     font-size: 0.85rem;
     margin: 0;
