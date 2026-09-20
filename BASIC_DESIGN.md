@@ -157,6 +157,9 @@ Sim3dView/
 ├── DETAILED_DESIGN.md         # 詳細設計書(数式・プロトコル・UML)
 ├── README.md                  # セットアップ・起動手順・環境問題の対処
 ├── DEVELOPMENT_HISTORY.md     # 機能ごとの実装経緯・ハマりどころの記録
+├── IMPLEMENTATION_GUIDE.md    # ドキュメントだけでライブラリを再実装するための入口(フェーズ・受け入れ基準・落とし穴)
+├── docs/impl/                 # 再実装用の詳細仕様5本(データ契約・カメラ/LOD/見通し・レンダラー/WGSL・重ね描き・UI)
+├── scripts/                   # gen_third_party_notice.py(ライセンス表記の生成)・sync_impl_wgsl.py(docs/implの埋め込みWGSLを実ファイルと同期)
 ├── CLAUDE.md                  # AIエージェント向けの作業方針・要点(短い索引)
 ├── Cargo.toml                  # ワークスペースルート(members: sim3dview, sample/sim_frontend)
 ├── map_data/                  # 入力: ALOS DSM GeoTIFFタイル(17枚、既存・変更しない)
@@ -298,4 +301,5 @@ Sim3dView/
   バイト定義・クラス図/シーケンス図/状態遷移図(UML)を含む
 - [README.md](README.md) — セットアップ・ビルド・起動手順、既知の環境問題と回避策
 - [DEVELOPMENT_HISTORY.md](DEVELOPMENT_HISTORY.md) — 機能ごとの実装経緯・動作確認済み事項・ハマりどころ
+- [IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) — ソースを見ずにライブラリを1から再実装するための実装ガイド(詳細仕様は`docs/impl/`)
 - [CLAUDE.md](CLAUDE.md) — AIエージェント向けの作業方針・要点(短い索引)

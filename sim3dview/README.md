@@ -23,6 +23,9 @@ ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し(Line of 
 `ui`の各部品だけで、それ以外の`terrain`のモジュール(座標変換・LOD・描画・見通し計算など)はライブラリの内部(`pub(crate)`)です。
 モジュール構成は[DETAILED_DESIGN.md](../DETAILED_DESIGN.md) 6.0節を参照してください。
 
+> このライブラリを**1から再実装したい**(仕様どおりに作り直す・別環境へ移植する)場合は、リポジトリルートの
+> [IMPLEMENTATION_GUIDE.md](../IMPLEMENTATION_GUIDE.md)と`docs/impl/`の詳細仕様を参照してください。
+
 ## 依存関係への追加
 
 モノレポ内(このリポジトリの`sample/sim_frontend`のように)ならpath依存で:
