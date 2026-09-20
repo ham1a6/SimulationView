@@ -17,6 +17,9 @@
 ルート直下の[README.md](../README.md)(セットアップ・ビルド・トラブルシューティング)・[CLAUDE.md](../CLAUDE.md)(AIエージェント向けの作業方針)・
 [sim3dview/README.md](../sim3dview/README.md)(ライブラリの使い方=公開API)・[THIRD_PARTY_NOTICE.md](../THIRD_PARTY_NOTICE.md)(ライセンス表記)は設計書ではなく、利用者・作業者向け。
 
+[tech_note.html](tech_note.html)は、C++経験者向けにRust・WASM・wgpu・各機能を土台から解説する技術解説ノート(Artifact「Sim3dViewのしくみ」)の**スナップショット**(ブラウザで開く1枚のHTML、約2MB)。
+正はArtifact側で、機能を足すたびにArtifactを更新し、必要に応じてこのファイルも取り直す(設計書ではないので、仕様の正としては使わない)。
+
 ## 読み順
 
 | 知りたいこと | 読むもの |

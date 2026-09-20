@@ -27,7 +27,7 @@ C++シミュレータ + Rust/Leptos(WASM) Web UI + ALOS DEMベースの3D地形�
 | 機能ごとの実装経緯(要望→調査→原因→修正→実機確認)・過去のハマりどころ | [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) |
 | 利用しているサードパーティのライセンス・著作権表示(依存を変えたら`python scripts/gen_third_party_notice.py`で再生成) | [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md) |
 | ライブラリを1から再実装したい(エージェントへの実装依頼を含む) | [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md)(フェーズ・受け入れ基準・落とし穴)と、詳細設計書9節(仕様の要点)。定数・アルゴリズムを変えたら9節の該当箇所を更新する(1〜8節に同じ数値を書き写さない。シェーダー全文はドキュメントに持たずソースが正) |
-| C++経験者向けに、Rust・WASM・wgpu・各機能のしくみを土台から読みたい | 技術解説ノート(Artifact「Sim3dViewのしくみ」<https://claude.ai/artifact/1hpM7J9MELrr9K8PXsH8VR>。機能を足したら更新する) |
+| C++経験者向けに、Rust・WASM・wgpu・各機能のしくみを土台から読みたい | 技術解説ノート(Artifact「Sim3dViewのしくみ」<https://claude.ai/artifact/1hpM7J9MELrr9K8PXsH8VR>。機能を足したら更新する)。HTMLのスナップショットは[docs/tech_note.html](docs/tech_note.html) |
 
 設計判断の「なぜ」を辿りたいときは、上記に加えてgit履歴を参照する。
 
