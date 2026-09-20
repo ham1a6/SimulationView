@@ -75,6 +75,34 @@ impl Camera {
         proj * view
     }
 
+    /// 水域レイヤー(`terrain.wgsl`の`fs_water`)が、各画素(正規化デバイス座標ndc_x,ndc_y)の視線を
+    /// 求めるための値: [視点(w=1なら透視投影、0なら正射影), 視線方向, 右(画面端までの長さ倍),
+    /// 上(同)]。視線は`screen_to_ray`と同じ式で、透視投影は原点=視点・向き=前+右*ndc_x+上*ndc_y、
+    /// 正射影は原点=視点+右*ndc_x+上*ndc_y・向き=前。逆VP行列で求めないのは、`screen_to_ray`の
+    /// コメントにある通りf32の丸め誤差で向きが大きくずれるため。
+    pub fn water_ray_basis(&self) -> [[f32; 4]; 4] {
+        let forward = (self.target - self.eye).normalize();
+        let right = forward.cross(self.up).normalize();
+        let up = right.cross(forward);
+        let (half_w, half_h, perspective) = match self.projection {
+            Projection::Perspective { fov_y_radians } => {
+                let half_h = (fov_y_radians * 0.5).tan();
+                (half_h * self.aspect, half_h, 1.0)
+            }
+            Projection::Orthographic { view_height_m } => {
+                let half_h = view_height_m * 0.5;
+                (half_h * self.aspect, half_h, 0.0)
+            }
+        };
+        let (right, up) = (right * half_w, up * half_h);
+        [
+            [self.eye.x, self.eye.y, self.eye.z, perspective],
+            [forward.x, forward.y, forward.z, 0.0],
+            [right.x, right.y, right.z, 0.0],
+            [up.x, up.y, up.z, 0.0],
+        ]
+    }
+
     /// 画面上の点(canvas内のCSSピクセル座標、左上原点)を通る視線をENU座標系のレイ
     /// (origin, direction)として返す。地図上での右クリック→緯度経度変換(`terrain/pick.rs`)に使う。
     pub fn screen_to_ray(&self, x: f32, y: f32, width: f32, height: f32) -> (Vec3, Vec3) {

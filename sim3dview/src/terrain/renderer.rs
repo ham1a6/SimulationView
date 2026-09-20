@@ -18,6 +18,14 @@ struct CameraUniform {
     view_proj: [[f32; 4]; 4],
     /// x: 陰影(ヒルシェード)を付けるなら1、付けないなら0(`terrain.wgsl`の`camera.shading`)。
     shading: [f32; 4],
+    /// 水域レイヤーの視線の計算用(`Camera::water_ray_basis`): 視点(w=透視なら1)・視線方向・右・上。
+    eye: [f32; 4],
+    forward: [f32; 4],
+    right: [f32; 4],
+    up: [f32; 4],
+    /// WGS84楕円体(海抜0m)の陰関数の係数(`EnuTransform::ellipsoid_shader_params`)。
+    ellipsoid_m: [[f32; 4]; 3],
+    ellipsoid_g: [f32; 4],
 }
 
 /// マルチサンプルアンチエイリアシング(MSAA)のサンプル数。地形メッシュの解像度を
@@ -134,6 +142,12 @@ pub struct TerrainRenderer {
     num_dome_vertices: u32,
     // 陰影(ヒルシェード)を付けるか(`set_hillshade`)。描画のたびにuniformへ書く。
     hillshade: bool,
+    // 水域レイヤー(WGS84楕円体の海抜0mの面)。地形メッシュより先に、画面いっぱいの三角形1枚で描く
+    // (`terrain.wgsl`の`fs_water`)。楕円体の係数は現在の原点(地形メッシュの原点)基準で、
+    // 原点変更のたびに`set_ellipsoid_origin`で更新する(頂点バッファの更新と同じ場面のため`&self`で
+    // 呼べるよう`Cell`)。
+    water_pipeline: wgpu::RenderPipeline,
+    ellipsoid: Cell<([[f32; 4]; 3], [f32; 4])>,
 }
 
 impl TerrainRenderer {
@@ -191,6 +205,12 @@ impl TerrainRenderer {
         let camera_uniform = CameraUniform {
             view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
             shading: [0.0; 4],
+            eye: [0.0; 4],
+            forward: [0.0, 0.0, -1.0, 0.0],
+            right: [1.0, 0.0, 0.0, 0.0],
+            up: [0.0, 1.0, 0.0, 0.0],
+            ellipsoid_m: [[0.0; 4]; 3],
+            ellipsoid_g: [0.0; 4],
         };
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera_buffer"),
@@ -203,7 +223,8 @@ impl TerrainRenderer {
                 label: Some("camera_bind_group_layout"),
                 entries: &[wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    // 頂点(view_proj・陰影)と、水域レイヤーのフラグメント(視線・楕円体)が読む。
+                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -328,6 +349,53 @@ impl TerrainRenderer {
                 depth_write_enabled: Some(true),
                 // 反転Z(camera.rs参照)。
                 depth_compare: Some(wgpu::CompareFunction::Greater),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: SAMPLE_COUNT,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // 水域レイヤー用パイプライン。画面いっぱいの三角形(頂点バッファなし)を、地形メッシュより先に
+        // 描く。深度は書かず、テストもしない(地形は必ずこの上に上書きされる)。視線が楕円体に当たらない
+        // 画素(空)は`discard`してclearの黒のままにする。
+        let water_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("water_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_fullscreen"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_water"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
@@ -495,6 +563,8 @@ impl TerrainRenderer {
             dome_vertex_buffer: None,
             num_dome_vertices: 0,
             hillshade: false,
+            water_pipeline,
+            ellipsoid: Cell::new(([[0.0; 4]; 3], [0.0; 4])),
         })
     }
 
@@ -620,10 +690,24 @@ impl TerrainRenderer {
         self.hillshade = enabled;
     }
 
+    /// 水域レイヤー(WGS84楕円体の海抜0mの面)の基準を、地形メッシュの現在の原点に合わせる。
+    /// 頂点位置を新しい原点のENU座標で作り直すとき(初期化・原点変更)に、同時に呼ぶこと。
+    pub fn set_ellipsoid_origin(&self, transform: &super::mesh::EnuTransform) {
+        self.ellipsoid.set(transform.ellipsoid_shader_params());
+    }
+
     pub fn render(&self, camera: &Camera) -> Result<(), String> {
+        let [eye, forward, right, up] = camera.water_ray_basis();
+        let (ellipsoid_m, ellipsoid_g) = self.ellipsoid.get();
         let camera_uniform = CameraUniform {
             view_proj: camera.view_proj_matrix().to_cols_array_2d(),
             shading: [if self.hillshade { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            eye,
+            forward,
+            right,
+            up,
+            ellipsoid_m,
+            ellipsoid_g,
         };
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
@@ -672,6 +756,11 @@ impl TerrainRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+
+            // 水域レイヤーを最初に描く(深度は書かないので、続く地形メッシュは常にこの上に描かれる)。
+            render_pass.set_pipeline(&self.water_pipeline);
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.draw(0..3, 0..1);
 
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);

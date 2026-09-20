@@ -93,6 +93,33 @@ impl EnuTransform {
         [east as f32, north as f32, up as f32]
     }
 
+    /// 水域レイヤー(WGS84楕円体の海抜0mの面、`terrain.wgsl`の`fs_water`)の視線との交点判定に使う係数
+    /// (行列M(3行、各行はvec4の先頭3要素を使う), g・c0)。ENU座標の点pに対し、楕円体の陰関数は
+    /// `f(p) = c0 + 2 g・(M p) + |M p|^2`(f=0が楕円体の面、f<0が内側)。原点は楕円体上(h=0)に
+    /// あるので定数項が(丸め誤差の)c0だけになり、原点から遠い点でも桁落ちしない(ECEFの絶対座標
+    /// 約6.4e6mのままf32で二乗すると数mの誤差になる)。
+    /// M = diag(1/a,1/a,1/b) * R(ENU→ECEFの回転)、g = diag(1/a,1/a,1/b) * 原点のECEF。c0は、シェーダーが
+    /// 使うf32に丸めたgについて`|g|^2-1`をf64で求めたもの(丸め誤差で原点が面からずれない)。
+    pub fn ellipsoid_shader_params(&self) -> ([[f32; 4]; 3], [f32; 4]) {
+        let (sin_lat, cos_lat, sin_lon, cos_lon) =
+            (self.sin_lat0, self.cos_lat0, self.sin_lon0, self.cos_lon0);
+        let b = self.a * (1.0 - self.e2).sqrt();
+        let (da, db) = (1.0 / self.a, 1.0 / b);
+        let rows = [
+            [-sin_lon * da, -sin_lat * cos_lon * da, cos_lat * cos_lon * da],
+            [cos_lon * da, -sin_lat * sin_lon * da, cos_lat * sin_lon * da],
+            [0.0, cos_lat * db, sin_lat * db],
+        ];
+        let m = rows.map(|r| [r[0] as f32, r[1] as f32, r[2] as f32, 0.0]);
+        let g = [
+            (self.origin_x * da) as f32,
+            (self.origin_y * da) as f32,
+            (self.origin_z * db) as f32,
+        ];
+        let c0 = g.iter().map(|&v| v as f64 * v as f64).sum::<f64>() - 1.0;
+        (m, [g[0], g[1], g[2], c0 as f32])
+    }
+
     /// `transform`のf64版(遠方の地表の上座標を丸めずに扱いたい呼び出し側用)。
     pub fn transform_f64(&self, lat_deg: f64, lon_deg: f64, h: f64) -> [f64; 3] {
         let lat = lat_deg.to_radians();

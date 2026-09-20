@@ -2,6 +2,16 @@ struct CameraUniform {
     view_proj: mat4x4<f32>,
     // x: 陰影(ヒルシェード)を付けるなら1、付けないなら0。y,z,wは未使用。
     shading: vec4<f32>,
+    // 水域レイヤー(fs_water)が各画素の視線を求めるための値(`Camera::water_ray_basis`):
+    // eye.xyz=視点、eye.w=1なら透視投影・0なら正射影。forward=視線方向。right/up=画面端までの長さ倍。
+    eye: vec4<f32>,
+    forward: vec4<f32>,
+    right: vec4<f32>,
+    up: vec4<f32>,
+    // WGS84楕円体(海抜0m)の陰関数の係数(`EnuTransform::ellipsoid_shader_params`)。
+    // f(p) = ellipsoid_g.w + 2 g・(M p) + |M p|^2。M=ellipsoid_m(3行)、g=ellipsoid_g.xyz。
+    ellipsoid_m: array<vec4<f32>, 3>,
+    ellipsoid_g: vec4<f32>,
 };
 @group(0) @binding(0)
 var<uniform> camera: CameraUniform;
@@ -58,6 +68,50 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 @fragment
 fn fs_dome(in: VertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color, 0.22);
+}
+
+// 水域レイヤー。「地形データが無いところ(マスクファイルの水域・欠損タイル・地形データの範囲外)」は
+// 地形メッシュが張られないので、そこから見えるのは地形の後ろの背景になる。そこにWGS84楕円体の
+// 海抜0mの面を水色で描く。メッシュではなく画面いっぱいの三角形1枚で、各画素の視線と楕円体の
+// 交点があるかをシェーダーで直接判定する(交点なし=空は描かずclearの黒のまま)。
+// - 地球の丸み・楕円体を厳密に扱える(メッシュ近似の弦の誤差・継ぎ目・範囲の限りがない)
+// - 深度は書かず、地形メッシュより先に描く。地形は必ず水域の上に上書きされるので、地形の標高が
+//   0m以下(DSMの負の値・海面以下の陸地)でも水域が地形を隠すことはない
+const WATER_COLOR = vec3<f32>(0.25, 0.55, 0.85);
+
+@fragment
+fn fs_water(in: DownsampleOutput) -> @location(0) vec4<f32> {
+    let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
+    let offset = camera.right.xyz * ndc.x + camera.up.xyz * ndc.y;
+    let perspective = camera.eye.w;
+    let origin = camera.eye.xyz + offset * (1.0 - perspective);
+    let dir = camera.forward.xyz + offset * perspective;
+
+    let m0 = camera.ellipsoid_m[0].xyz;
+    let m1 = camera.ellipsoid_m[1].xyz;
+    let m2 = camera.ellipsoid_m[2].xyz;
+    let g = camera.ellipsoid_g.xyz;
+    let q0 = vec3<f32>(dot(m0, origin), dot(m1, origin), dot(m2, origin));
+    let w = vec3<f32>(dot(m0, dir), dot(m1, dir), dot(m2, dir));
+
+    // f(origin + t*dir) = a t^2 + 2 half_b t + c = 0 の解(視線と楕円体の交点)。
+    let a = dot(w, w);
+    let half_b = dot(g, w) + dot(q0, w);
+    let c = camera.ellipsoid_g.w + 2.0 * dot(g, q0) + dot(q0, q0);
+    let disc = half_b * half_b - a * c;
+    if (disc < 0.0) {
+        discard;
+    }
+    // 桁落ちしにくい解の公式。視点は楕円体の外にあるので、2つの解は同符号で、
+    // 正なら視線の前方で交わる(負なら後ろ向き=空)。
+    let s = sqrt(disc);
+    let q = -(half_b + select(-s, s, half_b >= 0.0));
+    let t1 = q / a;
+    let t2 = c / q;
+    if (!(max(t1, t2) > 0.0)) {
+        discard;
+    }
+    return vec4<f32>(WATER_COLOR, 1.0);
 }
 
 // スーパーサンプリングのダウンサンプル用(renderer.rsのdownsample_pipeline)。地形メッシュを

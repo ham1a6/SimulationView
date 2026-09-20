@@ -159,6 +159,7 @@ fn try_init(
                     s.resident = resident;
                 }
                 renderer.set_hillshade(state.borrow().hillshade.enabled.get_untracked());
+                renderer.set_ellipsoid_origin(&transform);
                 let camera = state.borrow().camera.to_camera(renderer.aspect_ratio());
                 if let Err(e) = renderer.render(&camera) {
                     log::error!("[terrain] initial render failed: {e}");
@@ -700,6 +701,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             // 常駐している全メッシュ(タイル全体・各チャンク、各自の解像度レベル)の頂点位置を、新しい原点のENU座標で
             // 作り直してアップロードする(頂点数・並びは原点に依存しない)。
             let renderer = s.renderer.as_ref().expect("checked is_some above");
+            // 水域レイヤー(楕円体の海抜0mの面)も新しい原点基準にする。
+            renderer.set_ellipsoid_origin(&new_transform);
             for (&key, resident) in s.resident.iter() {
                 let Some(tile) = terrain.tile(key) else { continue };
                 match resident {
