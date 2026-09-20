@@ -773,17 +773,21 @@ graph TD
     App --> MainPanel["MainPanel<br/>(main_panel.rs) 地形描画canvas(3D, TerrainView)"]
     App --> TopStatusPanel["TopStatusPanel<br/>TabbedPanel: [各種情報]タブ=StatusPanel"]
     App --> BottomStatusPanel["BottomStatusPanel<br/>TabbedPanel: [見通し範囲]=LosView"]
+    App --> DrawingWindow["DrawingWindow<br/>(drawing_window.rs) 非モーダルFloatingPanel+DrawingEditor(7.7節)"]
+    App --> ContextMenu["ContextMenu<br/>右クリックメニュー本体(項目はmap_menu.rsが決める。7.7節)"]
 
     App -.provide_context.-> WsSignals["WsSignals<br/>(接続状態・受信データのシグナル群)"]
     App -.provide_context.-> TerrainStore["TerrainStore<br/>(heightmap/metadataを両パネルで共有)"]
     App -.provide_context.-> RadarMarkersState["RadarMarkersState<br/>(観測点一覧・選択状態、全パネル共有)"]
+    App -.provide_context.-> DrawToolState["DrawToolState<br/>(図形の対話作成: ツール・作った図形・選択。6.11節)"]
+    App -.provide_context.-> MenuStates["ContextMenuState / MapMenuState<br/>(右クリックメニューの状態と、地図の項目を作る関数)"]
     App -.propとして渡す.-> WsConnection["WsConnection<br/>(Rc<RefCell<...>>、Send/Sync境界回避のためcontext不使用)"]
 
     MainPanel --> Loader["terrain::loader<br/>heightmap.bin/metadata.json取得"]
     MainPanel --> Mesh["terrain::mesh<br/>ENU変換・頂点/インデックス生成"]
     MainPanel --> Renderer["terrain::renderer::TerrainRenderer<br/>wgpu Device/Queue/Pipeline(地形)+draw系パイプライン(観測点ピン/2D覆域/作図)"]
     MainPanel --> Camera["terrain::camera::Camera<br/>view_proj行列・screen_to_ray"]
-    MainPanel --> Pick["terrain::pick::pick_lat_lon<br/>右クリック→レイキャストで緯度経度取得"]
+    MainPanel --> Pick["terrain::pick::pick_lat_lon<br/>クリック→レイキャストで緯度経度取得(右クリックメニュー・作図・原点指定)"]
     MainPanel --> Markers["terrain::markers::build_marker_geometry<br/>観測点・覆域リングの3D頂点生成"]
     BottomStatusPanel --> Los["terrain::los::compute_los<br/>全方位角の見通し限界距離"]
     TerrainStore -.共有データ.-> MainPanel

@@ -184,8 +184,14 @@ Sim3dView/
 │       │   ├── markers.rs             # RadarMarker/RadarMarkersState・マーカー(ピン)・覆域ジオメトリ生成
 │       │   ├── drawing.rs             # 作図(図形・線)のデータモデル・DrawingState(6.11節)
 │       │   ├── drawing_geometry.rs    # 作図の描画用ジオメトリ生成(純粋関数)
+│       │   ├── draw_tool.rs           # 図形の対話作成(ツール・作成中の点・作った図形の一覧/選択/保存)DrawToolState(6.11節)
 │       │   ├── tracks.rs              # 航跡(トラック)のデータモデル・TracksState・シンボル/航跡ジオメトリ(6.12節)
 │       │   ├── los.rs                 # 見通し/覆域計算
+│       │   ├── profile.rs             # 断面図用の地表プロファイル
+│       │   ├── lod.rs                 # 地形LODの計画(どのタイル/チャンクをどのレベルで出すか)
+│       │   ├── hillshade.rs           # HillshadeState(陰影のON/OFF)
+│       │   ├── origin_pick.rs         # OriginPickState(地図クリックで原点を指定)
+│       │   ├── recenter.rs            # RecenterRequestState(中心点の移動要求。原点へ/任意の地点へ)
 │       │   ├── pick.rs                # 画面クリック→緯度経度のレイキャスト
 │       │   ├── terrain.wgsl           # 頂点/フラグメントシェーダ
 │       │   └── draw.wgsl              # 作図用シェーダ(太い線の画面px幅への展開を含む)
@@ -193,8 +199,11 @@ Sim3dView/
 │           ├── mod.rs
 │           ├── terrain_view.rs         # 3D/2D地形描画canvas
 │           ├── los_view.rs             # 見通し範囲タブ(観測点一覧+極座標図)
+│           ├── cross_section_view.rs   # 断面図タブ
 │           ├── tabbed_panel.rs         # 汎用タブ付きパネル
-│           ├── floating_panel.rs       # 汎用フローティングウインドウ
+│           ├── floating_panel.rs       # 汎用フローティングウインドウ(モーダル/非モーダルのウインドウ・ドラッグ移動)
+│           ├── context_menu.rs         # 汎用の右クリックメニュー(項目は使う側が渡す)
+│           ├── drawing_editor.rs       # 作図エディタ(ツール・一覧・数値編集。DrawToolStateを操作)
 │           ├── origin_dialog.rs        # 原点設定フローティングパネル
 │           └── coverage_altitude_dialog.rs # 覆域高度設定フローティングパネル
 └── sample/                       # 「これはサンプルです」という位置づけのディレクトリ
@@ -228,10 +237,14 @@ Sim3dView/
         │   └── components/
         │       ├── main_panel.rs         # sim3dview::ui::terrain_view::TerrainViewのラッパー
         │       ├── right_panel.rs        # sim3dview::ui::{tabbed_panel,los_view}を使う
-        │       ├── menu_bar.rs           # sim3dviewのダイアログ開閉トリガー
+        │       ├── menu_bar.rs           # sim3dviewのダイアログ・作図ウインドウの開閉トリガー
         │       ├── operation_panel.rs
-        │       ├── vab.rs
-        │       └── status_panel.rs
+        │       ├── vab.rs                # ページ数はmid_pagesプロパティで指定
+        │       ├── status_panel.rs
+        │       ├── track_detail.rs       # 選択した航跡の詳細(トップステータスパネルのタブ)
+        │       ├── drawing_demo.rs       # 「作図デモ」(全種類の図形を置く例)
+        │       ├── drawing_window.rs     # 作図エディタを入れる、動かせる非モーダルのウインドウ
+        │       └── map_menu.rs           # 地図の右クリックメニューの項目(観測点の追加・原点・中心点・図形の作成…)
         └── style/
             └── app.css                    # アプリ固有(全体レイアウト・VAB・メニュー等)のみ
 ```
