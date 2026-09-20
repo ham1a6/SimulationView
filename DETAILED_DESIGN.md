@@ -760,7 +760,7 @@ graph TD
 
     MainPanel --> Loader["terrain::loader<br/>heightmap.bin/metadata.json取得"]
     MainPanel --> Mesh["terrain::mesh<br/>ENU変換・頂点/インデックス生成"]
-    MainPanel --> Renderer["terrain::renderer::TerrainRenderer<br/>wgpu Device/Queue/Pipeline(地形)+line_pipeline(観測点/覆域)"]
+    MainPanel --> Renderer["terrain::renderer::TerrainRenderer<br/>wgpu Device/Queue/Pipeline(地形)+draw系パイプライン(観測点ピン/2D覆域/作図)"]
     MainPanel --> Camera["terrain::camera::Camera<br/>view_proj行列・screen_to_ray"]
     MainPanel --> Pick["terrain::pick::pick_lat_lon<br/>右クリック→レイキャストで緯度経度取得"]
     MainPanel --> Markers["terrain::markers::build_marker_geometry<br/>観測点・覆域リングの3D頂点生成"]
@@ -1173,14 +1173,17 @@ GPU側の読み戻しは行わない)。交点が見つかり、かつ地形デ�
 連動して切り替わる)、行内の入力欄でアンテナ高・最大観測範囲をその場で編集でき、「削除」
 ボタンで一覧から取り除ける(選択中の観測点を削除すると選択状態はクリアされる)。
 
-**3D描画(メインパネル)**: マーカー本体(四角い枠)と覆域ドームは、頂点データ・
+**3D描画(メインパネル)**: マーカー(ピン)と覆域(3Dはドーム、2Dは塗り+輪郭線)は、頂点データ・
 描画パイプラインとも別々に扱う(下記)。原点変更時(メッシュ再構築後)・観測点の追加/削除/
-選択変更のたびに両方の頂点データを作り直す(`components/terrain_view.rs::rebuild_markers`)。
+選択変更のたびに作り直す(`components/terrain_view.rs::rebuild_markers`)。
 
-- マーカー本体: `terrain::markers::build_marker_geometry`が観測点一覧・選択状態から
-  LineList用の頂点列を作り、`TerrainRenderer`の`line_pipeline`(地形本体の`pipeline`とは
-  別だが、頂点レイアウト・カメラバインドグループ・シェーダーは共用)で描画する。各観測点は
-  地表にわずかに(25m)浮かせた四角い枠として描く(選択中は黄色、非選択はオレンジ)
+- マーカー: `terrain::markers::build_marker_geometry`が観測点一覧・選択状態から**画面サイズ固定のピン**
+  (縁取り+本体+中の点。選択中は黄色、非選択はオレンジ)の頂点列を作る。観測点の位置(地表+25m)をアンカーに、
+  画面のpxでずらすビルボード(`DrawVertex::billboard`、`draw.wgsl`の`params.z`)なので、拡大・縮小・回転しても
+  同じ大きさで常に正面を向く。作図(6.11節)と同じ`draw_blend_pipeline`・絶対座標のuniformで、深度テストあり
+  (アンカーの深度をクリップ空間で距離の0.2%手前へ寄せて、粗いLODの地形に埋まって消えないようにしている。
+  遠くの山の陰には隠れる)。以前は地表の一辺約8kmの四角い枠(LineList、`line_pipeline`)だったが、ズームで大きさが
+  変わって位置が分かりにくく不要との要望でピンに置き換え、`line_pipeline`は廃止した
 - 覆域ドーム: `terrain::markers::build_dome_surface_geometry`が**選択中の観測点についてのみ**
   (複数観測点の覆域を同時に重ねると見づらいため)TriangleList用の頂点列を作り、専用の
   `dome_pipeline`(アルファブレンド有効・深度書き込み無効。地形やマーカーの奥に半透明で
@@ -1188,22 +1191,29 @@ GPU側の読み戻しは行わない)。交点が見つかり、かつ地形デ�
 
 **覆域の3D表示は半球状の面(Surfaceを持つ多面体)**(「ワイヤーフレームではなくSurfaceが
 存在する多面体に」という要望により、ワイヤーフレーム表現から変更): `push_dome_surface`が、
-`terrain::los::compute_los_dome`(下記)の出力を使い、仰角0°〜80°の28段の緯度リング
-(`DOME_RING_ELEVATIONS_DEG`。0〜10°は1°刻み、10〜30°は2°刻み、以降35/40/45/50/60/70/80°。
-地形に遮蔽される低い仰角を細かくしてある。7段(0/5/10/20/35/55/80°)だった頃から増やした。
-計算自体は各6400分割=1mil刻み)を隣接するリング×隣接する方位角ごとに四角形パッチ(三角形2枚)で
-つないで球面状の面を作る。最上段リング(仰角ごとに半径が異なり単一の頂点には収束しない)は、
-その高さの平均をアペックス(頂点)として傘状の三角形群で閉じ、開いた穴のない多面体にする。
+`terrain::los::compute_los_dome`(下記)の出力を使い、仰角0°〜87°の38段の緯度リング
+(`DOME_RING_ELEVATIONS_DEG`。0〜10°は1°刻み、10〜30°は2°刻み、30〜60°は3°刻み、以降4°刻みで最上段は87°。
+地形に遮蔽される低い仰角を細かくし、上空も輪郭が多角形に見えない刻みにしてある)を隣接するリング×隣接する方位角ごとに
+四角形パッチ(三角形2枚)でつないで球面状の面を作る。最上段リング(87°)は、その半径の平均を高さとする
+アペックス(頂点)へ傘状の三角形群で閉じ、開いた穴のない多面体にする。
 色は半透明の水色固定(`terrain.wgsl`の`fs_dome`エントリポイントでアルファ0.22を出力)。
 
-リング間の四角形パッチは方位角を間引かず1mil刻みのまま三角形化する(パッチどうしは重ならない
-ので半透明合成のちらつきは起きない。地形に遮蔽される地表付近の輪郭が細かく出る)。一方、
-最上段リングを閉じる傘の部分だけは`DOME_APEX_AZIMUTH_STRIDE`(160mil=9度)で間引き、40分割にしている
-(360方位角の頃は10度刻みの36分割)。傘の部分を全方位角で三角形化すると、
+**滑らかにするための処理**(「ドーム形状をもっと滑らかに」との要望):
+(1) `compute_los_dome`の`finalize`で、上限(最大観測範囲×cos仰角)まで遮蔽されなかったリングの半径をサンプル位置に
+丸めず上限ちょうどにした。以前は水平距離をサンプル間隔(最大観測範囲/1000=50m)に丸めてからcos仰角で割っていたので、
+遮蔽のない方角でも高い仰角のリングほど半径が不揃いになり(最大数百mの凸凹)、球面にならなかった。
+(2) 半径を方位角方向(円環)に平滑化する(`smooth_circular`、`DOME_SMOOTH_*`): 前後3方位のメディアン(1〜数方位だけの
+外れ値の除去)→前後6方位の平均(段差をなだらかに)。1方位だけ遮蔽される所が観測点へ向かう細い三角形になって
+放射状の筋に見えていたのが目立たなくなる。遮蔽されない方角の半径は変わらず、地形に遮蔽される境目が
+数十〜数百mの幅でなだらかになるだけ。計算は1mil刻み(6400方位)のままで、平滑化した後の描画は
+`DOME_AZIMUTH_STRIDE`(2)で3200方位に間引く(頂点数は28段×6400→38段×3200で約2/3)。
+(3) リング数を増やし、間隔を最上部まで細かくした(上記)。
+
+最上段リングを閉じる傘の部分だけは`DOME_APEX_SEGMENTS`(48)分割に間引く。傘の部分を全方位角で三角形化すると、
 アペックスへ1点に向かって極端に細い三角形が大量に重なり、アルファブレンド(半透明合成)が
 描画順に依存するためカメラ角度が変わるたびに重なり方が変化して明るさがちらつく
-(「画面を操作するとマップがチカチカする」との報告を受けて特定・修正)。また、地形に
-遮蔽される方角ではドーム境界が定義上ちょうど地形の表面に接するため、そのままだと地形
+(「画面を操作するとマップがチカチカする」との報告を受けて特定・修正)。リング間の四角形パッチは重ならないので
+間引かない。また、地形に遮蔽される方角ではドーム境界が定義上ちょうど地形の表面に接するため、そのままだと地形
 メッシュとのZファイティングも起きる。これは`DOME_HEIGHT_BIAS_M`(20m)でドーム全体を
 一律に持ち上げて回避している。
 
@@ -1233,8 +1243,8 @@ flowchart LR
     B --> C["pick::pick_lat_lon<br/>heightmapに対してレイマーチング"]
     C --> D["RadarMarkersState::add<br/>(lat,lon)→RadarMarker追加・選択"]
     D --> E["los::compute_los(data, marker, params)"]
-    E --> F["markers::build_marker_geometry<br/>LineList頂点(枠+選択中のみ覆域リング)"]
-    F --> G["TerrainRenderer::update_markers<br/>→ line_pipelineで描画"]
+    E --> F["markers::build_marker_geometry<br/>ピン(ビルボード)の頂点"]
+    F --> G["TerrainRenderer::update_markers<br/>→ draw_blend_pipelineで描画"]
     E --> H["LosView: SVGの極座標図へ変換して描画"]
 ```
 
@@ -1311,18 +1321,18 @@ flowchart LR
 メインパネル側は`components/terrain_view.rs`のEffectでこのシグナルを購読しているだけで、
 ダイアログ側から直接ジオメトリ再構築を呼び出しているわけではない(7.7節)。
 
-3D描画(`push_dome_surface`)と同様、`terrain::markers::push_coverage_2d`が地表面に沿わせた
-(各点をその地点の地表標高+`COVERAGE_AREA_HEIGHT_BIAS_M`の高さに置く)星形(star-shaped、
-観測点を中心とした極座標の境界なので自己交差しない)のTriangleListファンを作り、既存の
-`dome_pipeline`(半透明・深度書き込み無効)で描画する。3Dドームと2D覆域表示は同じ
-`TerrainRenderer::update_dome`バッファ・パイプラインを共有し、`components/terrain_view.rs::
-rebuild_markers`がモードに応じてどちらのジオメトリを渡すか切り替えるだけ(専用パイプラインの
-追加はしていない)。塗り自体は他の覆域表示と同じ半透明アルファ0.22で地図上ではかなり
-控えめにしか見えないため(実機のピクセルサンプリングで色の混合自体は正しいことを確認済み)、
-同じ`push_coverage_2d`が同じ境界(計算結果を塗りと共有)を不透明なLineList(マーカー本体と同じ`line_pipeline`)の
-輪郭線としても作り(`build_coverage_2d_geometry`が塗りと輪郭線の頂点列をまとめて返す)、`build_marker_geometry`の結果と連結してマーカー用バッファに含める
-(2Dモードのときだけ)。実機で、地形に遮られて欠けた不整形な領域が輪郭線ではっきり見え、
-塗りつぶしの色もその内側で(ごくわずかにだが)周囲と違う色になっていることを確認済み。
+`terrain::markers::push_coverage_2d`が、`compute_coverage_area`の境界(方位角方向に平滑化。`COVERAGE_SMOOTH_*`。
+1方位だけの切れ込み・突起を除く)を持つ星形(star-shaped、観測点を中心とした極座標の境界なので自己交差しない)の
+塗り(観測点から境界上の隣接2点へのTriangleListファン、半透明・アルファ0.32)と、その外周の輪郭線(不透明・太さ2.5pxの太い線。
+6.11節の`append_line_strip`)を、**`DrawVertex`**で作る(`build_coverage_2d_geometry`)。`TerrainRenderer::update_coverage_2d`の
+専用バッファに入れ、`draw_screen_pipeline`(深度テストなし・アルファブレンド)と絶対座標のuniformで描く。3Dドームとはバッファ・
+パイプラインが別で、`components/terrain_view.rs::rebuild_markers`がモードに応じてどちらを作るか切り替える(使わない方は空)。
+
+**塗りが不均一になる問題の修正**(「2Dの覆域表示も塗りつぶしが均一ではない」との報告): 以前は塗りを`dome_pipeline`(深度テストあり)で
+描いていた。塗りの三角形は観測点から境界への長い平面(各頂点の高さは地表+20m)なので、間の地形の起伏(数百m)の中に埋まり、
+深度テストで地形に隠れて場所によって塗りが欠けていた。2Dは真上からの正射影で地形に隠れることがないので、深度テストなしで
+描くようにして、領域の内側が均一に塗られる。塗りは他の覆域表示と同じ0.22では地図上で控えめすぎるため0.32に上げた。
+実機で、海・陸とも領域全体が均一な色で塗られ、輪郭線とピンがその上に描かれることを確認済み。
 
 ### 6.11 作図(図形・線、`terrain::drawing` / `terrain::drawing_geometry` / `draw.wgsl`)
 

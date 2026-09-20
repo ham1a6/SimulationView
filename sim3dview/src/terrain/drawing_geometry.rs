@@ -32,7 +32,7 @@ pub struct DrawVertex {
 }
 
 impl DrawVertex {
-    fn surface(position: [f32; 3], color: [f32; 4], normal: Option<[f32; 3]>) -> Self {
+    pub(crate) fn surface(position: [f32; 3], color: [f32; 4], normal: Option<[f32; 3]>) -> Self {
         match normal {
             Some(aux) => Self { position, color, aux, params: [0.0, 0.0, 0.0, 1.0] },
             None => Self { position, color, aux: [0.0; 3], params: [0.0; 4] },
@@ -41,6 +41,12 @@ impl DrawVertex {
 
     fn line(position: [f32; 3], other: [f32; 3], color: [f32; 4], width_px: f32, side: f32) -> Self {
         Self { position, color, aux: other, params: [width_px, side, 0.0, 0.0] }
+    }
+
+    /// ビルボード(画面サイズ固定のマーカー)の頂点。`anchor`は3D空間の位置、`offset_px`はそこからの
+    /// 画面上のずれ(px、右・上が正)。拡大・縮小しても大きさが変わらず、常に画面の正面を向く。
+    pub(crate) fn billboard(anchor: [f32; 3], offset_px: [f32; 2], color: [f32; 4]) -> Self {
+        Self { position: anchor, color, aux: [offset_px[0], offset_px[1], 0.0], params: [0.0, 0.0, 1.0, 0.0] }
     }
 }
 
@@ -172,12 +178,22 @@ fn push_triangle(
 /// 端点側の頂点は`side`の符号で左右に振り分ける(端の頂点で符号が逆になるのは、線の向きを
 /// 「反対側→この端点」で取るため。物理的に同じ側に揃う)。
 fn push_line_strip(sink: &mut Sink, points: &[[f32; 3]], closed: bool, color: [f32; 4], width_px: f32) {
+    append_line_strip(sink.list(color[3]), points, closed, color, width_px);
+}
+
+/// `push_line_strip`の本体(出力先の頂点列を直接指定する)。観測点の覆域の輪郭線(`terrain::markers`)も使う。
+pub(crate) fn append_line_strip(
+    list: &mut Vec<DrawVertex>,
+    points: &[[f32; 3]],
+    closed: bool,
+    color: [f32; 4],
+    width_px: f32,
+) {
     let n = points.len();
     if n < 2 {
         return;
     }
     let segments = if closed { n } else { n - 1 };
-    let list = sink.list(color[3]);
     for i in 0..segments {
         let (a, b) = (points[i], points[(i + 1) % n]);
         if a == b {

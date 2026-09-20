@@ -219,12 +219,10 @@ pub struct TerrainRenderer {
     downsample_bind_group_layout: wgpu::BindGroupLayout,
     downsample_sampler: wgpu::Sampler,
     downsample_bind_group: wgpu::BindGroup,
-    // レーダー観測点マーカー(四角い枠)用(LineList)。地形本体とは別パイプラインだが、
-    // 頂点レイアウト・カメラバインドグループは共用する(terrain.wgslのシェーダーは
-    // 位置をview_projで変換して色をそのまま出すだけの汎用的な内容のため、線描画にもそのまま使える)。
-    line_pipeline: wgpu::RenderPipeline,
-    marker_vertex_buffer: Option<wgpu::Buffer>,
-    num_marker_vertices: u32,
+    // レーダー観測点のマーカー(画面サイズ固定のピン)と、2D地図モードの覆域(塗り+輪郭線)。どちらも作図と同じ
+    // `DrawVertex`・`draw.wgsl`で描く(マーカーは深度テストあり、覆域は深度テストなし。`terrain::markers`)。
+    markers: VertexBatch,
+    coverage_2d: VertexBatch,
     // 見通し範囲の覆域ドーム(半球状の面、TriangleList)用。地形・マーカーの奥に透けて見える
     // よう、アルファブレンド有効・深度書き込み無効のパイプラインにしてある(fs_dome参照)。
     dome_pipeline: wgpu::RenderPipeline,
@@ -483,51 +481,6 @@ impl TerrainRenderer {
             cache: None,
         });
 
-        let line_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("marker_line_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &[Some(vertex_layout.clone())],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::LineList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                // 反転Z(camera.rs参照)。
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: SAMPLE_COUNT,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: None,
-            cache: None,
-        });
-
         // 水域レイヤー用パイプライン。画面いっぱいの三角形(頂点バッファなし)を、地形メッシュより先に
         // 描く。深度テストはしない(常に描く)が、フラグメントシェーダーが楕円体との交点の深度
         // (`WATER_DEPTH_MARGIN_M`だけ奥へずらしたもの)を書く。続く地形メッシュは通常の深度テストで
@@ -766,9 +719,8 @@ impl TerrainRenderer {
             downsample_bind_group_layout,
             downsample_sampler,
             downsample_bind_group,
-            line_pipeline,
-            marker_vertex_buffer: None,
-            num_marker_vertices: 0,
+            markers: VertexBatch::empty(),
+            coverage_2d: VertexBatch::empty(),
             dome_pipeline,
             dome_vertex_buffer: None,
             num_dome_vertices: 0,
@@ -804,20 +756,15 @@ impl TerrainRenderer {
         (self.config.width, self.config.height)
     }
 
-    /// レーダー観測点マーカー(四角い枠)の頂点データを更新する。原点変更・マーカー追加/
+    /// レーダー観測点のマーカー(画面サイズ固定のピン)の頂点データを更新する。原点変更・マーカー追加/
     /// 削除/選択変更のたびに呼び直す想定(`terrain/markers.rs`が頂点データを作る)。
-    pub fn update_markers(&mut self, vertices: &[super::mesh::TerrainVertex]) {
-        if vertices.is_empty() {
-            self.marker_vertex_buffer = None;
-            self.num_marker_vertices = 0;
-            return;
-        }
-        self.marker_vertex_buffer = Some(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("marker_vertex_buffer"),
-            contents: bytemuck::cast_slice(vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        }));
-        self.num_marker_vertices = vertices.len() as u32;
+    pub fn update_markers(&mut self, vertices: &[DrawVertex]) {
+        self.markers.set(&self.device, "marker_vertex_buffer", vertices);
+    }
+
+    /// 2D地図モードの覆域(塗り+輪郭線)の頂点データを更新する。深度テストなしで描く(`terrain/markers.rs`)。
+    pub fn update_coverage_2d(&mut self, vertices: &[DrawVertex]) {
+        self.coverage_2d.set(&self.device, "coverage_2d_vertex_buffer", vertices);
     }
 
     /// 選択中マーカーの覆域ドーム(半球状の面、TriangleList)の頂点データを更新する。
@@ -1030,15 +977,6 @@ impl TerrainRenderer {
                 render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
             }
 
-            if let Some(marker_buffer) = self.marker_vertex_buffer.as_ref() {
-                if self.num_marker_vertices > 0 {
-                    render_pass.set_pipeline(&self.line_pipeline);
-                    render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                    render_pass.set_vertex_buffer(0, marker_buffer.slice(..));
-                    render_pass.draw(0..self.num_marker_vertices, 0..1);
-                }
-            }
-
             // 絶対座標の作図。不透明なものは覆域ドームより先に(深度を書く)、半透明なものはドームの後に描く。
             self.world_opaque.draw(&mut render_pass, &self.draw_opaque_pipeline, &self.draw_world);
 
@@ -1053,6 +991,10 @@ impl TerrainRenderer {
             }
 
             self.world_blend.draw(&mut render_pass, &self.draw_blend_pipeline, &self.draw_world);
+
+            // 2Dの覆域(塗り+輪郭線)は深度テストなしで、地形の上に重ねる。続いて観測点のマーカー(ピン)。
+            self.coverage_2d.draw(&mut render_pass, &self.draw_screen_pipeline, &self.draw_world);
+            self.markers.draw(&mut render_pass, &self.draw_blend_pipeline, &self.draw_world);
         }
 
         if has_overlay {

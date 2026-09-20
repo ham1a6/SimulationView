@@ -317,15 +317,13 @@ pub fn compute_los_dome(
         // サンプルは対象外)。
         let mut finalize = |k: usize, reach: usize| {
             let cap = horizontal_cap(k);
-            let mut j = reach.min(((cap / ray_max) * SAMPLES_PER_RAY as f64).floor() as usize);
-            while j > 0 && sample_distance(j) > cap {
-                j -= 1;
-            }
-            while j < reach && sample_distance(j + 1) <= cap {
-                j += 1;
-            }
-            if j > 0 {
-                let d = sample_distance(j);
+            // 上限(`cap`)まで遮蔽されなかったリングは、サンプル位置に丸めず上限ちょうどにする。
+            // 丸めると、仰角ごとに水平距離の刻み(最大観測範囲/サンプル数)への丸め方が違うので、
+            // 遮蔽のない方角でも高い仰角のリングほど半径が不揃いになり(cos仰角で割るので数百mの凸凹)、
+            // ドームが滑らかな球面にならない。
+            let cap_reached = reach >= SAMPLES_PER_RAY || sample_distance(reach + 1) > cap;
+            let d = if cap_reached { cap } else { sample_distance(reach) };
+            if d > 0.0 {
                 ring_slant_ranges[k][az_i] = if ring_cos[k] > 1e-6 { d / ring_cos[k] } else { d };
             }
         };

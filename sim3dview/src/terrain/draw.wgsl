@@ -17,7 +17,8 @@ struct VertexInput {
     @location(1) color: vec4<f32>,
     // 面: 法線(陰影を付けるとき)。線: 反対側の端点。
     @location(2) aux: vec3<f32>,
-    // x: 線の太さ(px。0以下なら面)、y: 線の側(-1/+1)、w: 陰影を付けるなら1(面のみ)。
+    // x: 線の太さ(px。0以下なら面)、y: 線の側(-1/+1)、z: 1ならビルボード(画面サイズ固定のマーカー)、
+    // w: 陰影を付けるなら1(面のみ)。
     @location(3) params: vec4<f32>,
 };
 
@@ -35,10 +36,23 @@ const LINE_MIN_W = 0.5;
 // クリップ空間のzの相対的な加算量(反転Zなので大きいほど手前)。線が面と同じ深度になって
 // 縞模様(Zファイティング)になるのを避ける。
 const LINE_DEPTH_BIAS = 2.0e-5;
+// ビルボード(マーカー)を手前へ寄せる、クリップ空間のzの相対的な加算量。マーカーは地表の1点に立てるので、
+// 粗いLODの地形メッシュとの高さのずれ(遠いほど大きい)で地面に埋まって消えないよう、距離に比例して
+// 大きめに寄せる(距離の0.2%: 400km先で約800m、5km先で10m)。これより手前の山には隠れる。
+const BILLBOARD_DEPTH_BIAS = 2.0e-3;
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
+    if (in.params.z > 0.5) {
+        // ビルボード: position(アンカーの位置)を射影し、aux.xy(画面のpx、右・上が正)だけずらす。
+        // 大きさが拡大・縮小・回転で変わらず、常に画面の正面を向く。
+        out.color = in.color;
+        let c = u.view_proj * vec4<f32>(in.position, 1.0);
+        let ndc = c.xy / c.w + in.aux.xy / (u.viewport.xy * 0.5);
+        out.clip_position = vec4<f32>(ndc * c.w, min(c.z * (1.0 + BILLBOARD_DEPTH_BIAS), c.w), c.w);
+        return out;
+    }
     let width_px = in.params.x;
     if (width_px <= 0.0) {
         out.clip_position = u.view_proj * vec4<f32>(in.position, 1.0);

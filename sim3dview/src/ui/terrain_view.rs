@@ -527,7 +527,7 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
     }
 }
 
-/// レーダー観測点マーカー・見通し範囲の覆域ドームのジオメトリを、現在の地形・原点・
+/// レーダー観測点マーカー(ピン)・見通し範囲の覆域(3Dはドーム、2Dは塗り+輪郭線)のジオメトリを、現在の地形・原点・
 /// マーカー一覧・選択状態から作り直してGPUバッファへ反映する。原点変更時
 /// (メッシュ再構築後)・マーカー追加/削除/選択変更時に呼ぶ。描画自体は呼び出し側で
 /// `render_now`すること。
@@ -543,28 +543,25 @@ fn rebuild_markers(state: &Rc<RefCell<ViewState>>, radar_markers: RadarMarkersSt
     };
     let marker_list = radar_markers.markers.get_untracked();
     let selected = radar_markers.selected.get_untracked();
-    let mut marker_vertices = markers::build_marker_geometry(&terrain, &mesh_origin, &marker_list, selected);
+    let marker_vertices = markers::build_marker_geometry(&terrain, &mesh_origin, &marker_list, selected);
     // 覆域表示は3D(半球ドーム)と2D(指定高度での探知可能領域)で見せ方自体が別物なので、
-    // 同じ描画パイプライン(update_dome)に対してモードに応じて別のジオメトリを渡す。
-    let coverage_vertices = match mode {
-        ViewMode::ThreeD => markers::build_dome_surface_geometry(&terrain, &mesh_origin, &marker_list, selected),
+    // モードに応じて別のジオメトリ・別のバッファ(パイプライン)に渡す(使わない方は空にする)。
+    let (dome_vertices, coverage_2d_vertices) = match mode {
+        ViewMode::ThreeD => (
+            markers::build_dome_surface_geometry(&terrain, &mesh_origin, &marker_list, selected),
+            Vec::new(),
+        ),
         ViewMode::TwoD => {
             let altitude_m = radar_markers.coverage_altitude_m.get_untracked();
-            // 塗り(半透明、アルファ0.22)だけでは地図上で見えにくいため、マーカーと同じ
-            // 不透明LineListのバッファへ輪郭線も追加する(`push_coverage_2d`参照)。
-            let (area, outline) = markers::build_coverage_2d_geometry(
-                &terrain,
-                &mesh_origin,
-                &marker_list,
-                selected,
-                altitude_m,
-            );
-            marker_vertices.extend(outline);
-            area
+            (
+                Vec::new(),
+                markers::build_coverage_2d_geometry(&terrain, &mesh_origin, &marker_list, selected, altitude_m),
+            )
         }
     };
     renderer.update_markers(&marker_vertices);
-    renderer.update_dome(&coverage_vertices);
+    renderer.update_dome(&dome_vertices);
+    renderer.update_coverage_2d(&coverage_2d_vertices);
 }
 
 /// 作図(`terrain::drawing`)の一覧から頂点列を作り直してGPUバッファへ反映する。一覧の変更・原点変更

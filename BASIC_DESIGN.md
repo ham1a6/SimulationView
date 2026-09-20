@@ -181,7 +181,7 @@ Sim3dView/
 │       │   ├── renderer.rs            # wgpu描画パイプライン
 │       │   ├── store.rs               # TerrainStore(地形データの共有キャッシュ)
 │       │   ├── origin.rs              # OriginState(現在の原点、プロトコル非依存)
-│       │   ├── markers.rs             # RadarMarker/RadarMarkersState・覆域ジオメトリ生成
+│       │   ├── markers.rs             # RadarMarker/RadarMarkersState・マーカー(ピン)・覆域ジオメトリ生成
 │       │   ├── drawing.rs             # 作図(図形・線)のデータモデル・DrawingState(6.11節)
 │       │   ├── drawing_geometry.rs    # 作図の描画用ジオメトリ生成(純粋関数)
 │       │   ├── los.rs                 # 見通し/覆域計算
