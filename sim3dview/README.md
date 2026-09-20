@@ -182,7 +182,8 @@ provide_context(pick);
 ## レーダー観測点(見通し範囲・覆域)
 
 `terrain::markers::RadarMarkersState`が観測点一覧・選択状態・(2D表示モード時の)覆域高度を
-保持します。`ui::terrain_view::TerrainView`は自身のcanvas上の右クリックで観測点を追加し、
+保持します。`ui::terrain_view::TerrainView`は自身のcanvas上の右クリックで観測点を追加し(右クリックメニューを使う場合は、
+その項目として追加します。下の「右クリックメニュー」参照)、
 `ui::los_view::LosView`はその一覧の選択・編集・削除UIと、選択中観測点の2D極座標見通し図を
 提供します。
 
@@ -337,6 +338,45 @@ move || match tracks.selected_track() {
 `Simulation::make_demo_scenario`が7つのトラックを周回させて`TrackList`(msg_type 0x07)として配信し、`sample/sim_frontend`の
 `track_bridge.rs`が受信した値を上の`Track`へ変換して`TracksState::set`へ渡します(受信〜表示までの橋渡しがこの数十行だけ)。
 左パネルの「開始」でシミュレーションを進めると動き、表示メニューの「航跡ラベル/航跡(軌跡)/高度線」で表示を切り替えられます。
+
+## 右クリックメニュー
+
+`ui::context_menu::ContextMenu`は、項目を使う側が決める汎用の右クリックメニューです(`FloatingPanel`と同じ考え方)。`ContextMenuState`を`provide_context`し、
+`<ContextMenu/>`をどこかに1つ置きます。地図の右クリックにつなぐには、さらに`ui::terrain_view::MapMenuState`に「右クリックした場所から項目を作る関数」を渡して
+`provide_context`します。`TerrainView`は右クリックで`MapMenuTarget { position: 地表の(緯度, 経度), track: 航跡のシンボル }`を求め、関数が返した項目でメニューを出します
+(両方のcontextが無ければ、従来どおり右クリックでレーダー観測点を追加します)。
+
+```rust
+use sim3dview::ui::context_menu::{copy_to_clipboard, ContextMenu, ContextMenuState, MenuItem};
+use sim3dview::ui::terrain_view::MapMenuState;
+
+provide_context(ContextMenuState::new());
+provide_context(MapMenuState::new(move |target| {
+    let mut items = Vec::new();
+    if let Some((lat, lon)) = target.position {
+        items.push(MenuItem::label(format!("緯度 {lat:.5}°  経度 {lon:.5}°"))); // 押せない見出し
+        items.push(MenuItem::action("ここにレーダー観測点を追加", move || {
+            radar_markers.add(lat, lon);
+        }));
+        items.push(MenuItem::action("ここを中心点にする", move || recenter.request_at(lat, lon)));
+        items.push(MenuItem::separator());
+        items.push(MenuItem::submenu("ここに図形を作成", vec![
+            MenuItem::action("円", move || draw_tool.start_at(ToolKind::Circle, lat, lon)),
+            MenuItem::action("矩形", move || draw_tool.start_at(ToolKind::Rect, lat, lon)),
+        ]));
+        items.push(MenuItem::action("緯度経度をコピー", move || copy_to_clipboard(&format!("{lat:.6}, {lon:.6}"))));
+    }
+    items // 空ならメニューは出ない
+}));
+
+view! { <ContextMenu/> }
+```
+
+- 項目: `MenuItem::action`(押せる。`.enabled(false)`か`MenuItem::disabled`で無効に)・`submenu`(入れ子可)・`label`(押せない見出し)・`separator`。
+  項目を選ぶとメニューを閉じてからコールバックを呼びます。メニューの外のクリック・右クリック・Escでも閉じ、画面の端では収まるようにずれます。
+- 中心点の移動は`RecenterRequestState::request_at(lat, lon)`(`request()`は原点へ戻す)、図形の作成の開始は`DrawToolState::start_at(kind, lat, lon)`(その地点を1点目にして開始)。
+- 作図ウインドウ(`DrawingEditor`)の図形一覧の行も、`ContextMenuState`があれば右クリックメニュー(名前変更・複製・表示切替・削除)が出ます。
+- `sample/sim_frontend/src/components/map_menu.rs`に、航跡のシンボルと地表の両方に対する項目の実例があります。
 
 ## 汎用UI部品の再利用
 

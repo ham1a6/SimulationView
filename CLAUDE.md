@@ -72,6 +72,8 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
   `World`(緯度経度+高度、地形と同じ深度)/`View`(カメラからの相対m)/`Screen`(画面px)。カメラ固定は地形と別の2つ目のパスで描く。
   線の太さはシェーダーで画面pxへ展開(DETAILED_DESIGN.md 6.11節、`sim3dview/README.md`に使い方)。ユーザーが地図をクリックして図形を作る機能は`terrain::draw_tool::DrawToolState`+`ui::drawing_editor::DrawingEditor`
   (作成中の図形は`DrawingState`に仮の要素として置く。作った図形はlocalStorageへ保存。サンプルは表示メニューの「作図...」で開く移動可能なウインドウ)
+- **右クリックメニュー**は`ui::context_menu`(汎用。項目は使う側が渡す)。地図の右クリックは`ui::terrain_view::MapMenuState`に項目を作るコールバックを渡す
+  (サンプルは`components/map_menu.rs`。観測点の追加もここの1項目。`MapMenuState`/`ContextMenuState`が無ければ従来どおり右クリックで観測点を追加)
 - **航跡**(航空機・艦船・車両等の現在位置)は`terrain::tracks::TracksState`(context)へアプリが`set`する(サンプルは`track_bridge.rs`が
   `TrackList`を変換)。シンボルは向きつきビルボード(画面サイズ固定、進行方向が画面上の実際の向きを指す)、ラベルはHTML要素の重ね合わせ
   (DETAILED_DESIGN.md 6.12節)。シンボルのクリックで`TracksState::selected`が変わり、詳細はアプリ側で表示(サンプルはトップパネルの「航跡情報」タブ)

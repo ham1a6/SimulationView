@@ -214,6 +214,20 @@ fn preview_shape(kind: ToolKind, pts: &[LatLon], hover: Option<LatLon>, altitude
     build_shape(ToolKind::Polyline, &all, altitude)
 }
 
+/// 図形のおおよその大きさ(メートル)。複製でずらす量の目安に使う。
+fn characteristic_size_m(shape: &Shape) -> f64 {
+    match shape {
+        Shape::Circle { radius, .. }
+        | Shape::Sphere { radius, .. }
+        | Shape::Sector { radius, .. }
+        | Shape::Cylinder { radius, .. }
+        | Shape::Cone { radius, .. } => *radius,
+        Shape::Rect { width, height, .. } => width.max(*height) / 2.0,
+        Shape::Cuboid { size_m, .. } => size_m[0].max(size_m[1]) / 2.0,
+        Shape::Polygon { .. } | Shape::Polyline { .. } => 1_000.0,
+    }
+}
+
 /// 選択中の図形を目立たせる、黄色い太線の枠。図形自身の輪郭と重なって縞にならないよう、2D図形は少し持ち上げる。
 fn highlight_shape(shape: &Shape) -> Shape {
     let mut shape = shape.clone();
@@ -357,6 +371,15 @@ impl DrawToolState {
         self.refresh_draft();
     }
 
+    /// ツールを選び、地図の(緯度, 経度)を1点目として置く(右クリックメニューの「ここに図形を作成」用)。
+    /// 作成中の図形があれば捨てる。`start`と違い、すでに同じツールを選んでいても解除しない。
+    pub fn start_at(&self, kind: ToolKind, lat_deg: f64, lon_deg: f64) {
+        self.points.set(Vec::new());
+        self.hover.set(None);
+        self.tool.set(Some(kind));
+        self.click(lat_deg, lon_deg);
+    }
+
     /// ツールを解除して、作成中の図形を捨てる。
     pub fn cancel(&self) {
         self.tool.set(None);
@@ -478,6 +501,29 @@ impl DrawToolState {
         if self.selected.get_untracked() == Some(id) {
             self.refresh_highlight();
         }
+    }
+
+    /// 図形を複製して、複製を選択する(重なって見分けが付かないよう、東北へ図形の大きさの半分ほどずらす)。
+    /// 一覧に無い図形なら何もしない。
+    pub fn duplicate(&self, id: DrawingId) {
+        let Some(name) = self.shapes.with_untracked(|l| l.iter().find(|u| u.id == id).map(|u| u.name.clone())) else {
+            return;
+        };
+        let Some((mut shape, style)) = self
+            .drawings
+            .items
+            .with_untracked(|items| items.iter().find(|d| d.id == id).map(|d| (d.shape.clone(), d.style)))
+        else {
+            return;
+        };
+        let shift = characteristic_size_m(&shape) * 0.5;
+        for p in shape.positions_mut() {
+            if let Position::World { lat_deg, lon_deg, .. } = p {
+                (*lat_deg, *lon_deg) = offset((*lat_deg, *lon_deg), shift, shift);
+            }
+        }
+        let new_id = self.add_user_shape(format!("{name} のコピー"), shape, style);
+        self.select(Some(new_id));
     }
 
     pub fn rename(&self, id: DrawingId, name: String) {

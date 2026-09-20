@@ -1,6 +1,6 @@
 //! レーダー観測点(見通し範囲)の一覧・選択・削除・パラメータ(アンテナ高/最大観測範囲)編集と、
 //! 選択中のレーダーの見通し範囲(2D極座標図)の表示を行うタブコンポーネント。観測点自体は
-//! ここでは追加せず、`ui::terrain_view::TerrainView`上での右クリックで追加する想定。
+//! ここでは追加せず、`ui::terrain_view::TerrainView`上での右クリック(右クリックメニューがあればその項目)で追加する想定。
 
 use leptos::prelude::*;
 
@@ -44,7 +44,7 @@ pub fn LosView() -> impl IntoView {
         if list.is_empty() {
             return view! {
                 <p class="placeholder los-status">
-                    "メインパネル(中央の地図)上で右クリックしてレーダーを追加してください"
+                    "メインパネル(中央の地図)を右クリックして、レーダー観測点を追加してください"
                 </p>
             }
             .into_any();

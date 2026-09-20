@@ -10,6 +10,7 @@ use leptos::prelude::*;
 
 use crate::terrain::draw_tool::{DrawToolState, ToolKind, UserShape};
 use crate::terrain::drawing::{Altitude, Color, DrawingId, Position, Shape, Style};
+use crate::ui::context_menu::{ContextMenuState, MenuItem};
 
 // ---------------------------------------------------------------------------------------------
 // 入力欄の部品
@@ -455,10 +456,47 @@ pub fn DrawingEditor() -> impl IntoView {
     let visible_of = move |id: DrawingId| {
         tool.drawings.items.with(|items| items.iter().find(|d| d.id == id).is_none_or(|d| d.visible))
     };
+    // 一覧の行の右クリックメニュー(`ContextMenuState`が提供されていれば)。
+    let context_menu = use_context::<ContextMenuState>();
     let rows = move |u: UserShape| {
         let id = u.id;
+        let on_context_menu = move |ev: leptos::ev::MouseEvent| {
+            let Some(menu) = context_menu else { return };
+            ev.prevent_default();
+            tool.select(Some(id));
+            let visible = visible_of(id);
+            menu.show(
+                f64::from(ev.client_x()),
+                f64::from(ev.client_y()),
+                vec![
+                    MenuItem::action("名前を変更", move || {
+                        // 編集フォームは選択の変更のあとに作られるので、次のフレームで名前欄へフォーカスする。
+                        tool.select(Some(id));
+                        request_animation_frame(|| {
+                            let input = web_sys::window()
+                                .and_then(|w| w.document())
+                                .and_then(|d| d.query_selector(".drawing-form .drawing-name input").ok().flatten())
+                                .and_then(|el| wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlElement>(el).ok());
+                            if let Some(input) = input {
+                                let _ = input.focus();
+                            }
+                        });
+                    }),
+                    MenuItem::action("複製", move || tool.duplicate(id)),
+                    MenuItem::action(if visible { "非表示にする" } else { "表示する" }, move || {
+                        tool.update_shape(id, |d| d.visible = !visible);
+                    }),
+                    MenuItem::separator(),
+                    MenuItem::action("削除", move || tool.remove(id)),
+                ],
+            );
+        };
         view! {
-            <div class="drawing-row-item" class:selected=move || tool.selected.get() == Some(id)>
+            <div
+                class="drawing-row-item"
+                class:selected=move || tool.selected.get() == Some(id)
+                on:contextmenu=on_context_menu
+            >
                 <input
                     type="checkbox"
                     title="表示/非表示"

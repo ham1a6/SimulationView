@@ -773,3 +773,81 @@
     font-size: 0.8rem;
     cursor: pointer;
 }
+
+/* 右クリックメニュー(ui::context_menu::ContextMenu)。背景は画面全体を覆う透明な層で、
+   メニューの外のクリックで閉じる。サブメニューは親の項目の右(収まらなければ左、`.flip`)に開く。 */
+.context-menu-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+}
+
+.context-menu {
+    position: fixed;
+    min-width: 160px;
+    padding: 0.25rem 0;
+    background: var(--bg-panel);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
+    font-size: 0.82rem;
+}
+
+.context-menu-sub {
+    position: absolute;
+    top: -0.25rem;
+    left: 100%;
+}
+
+.context-menu-sub.flip {
+    left: auto;
+    right: 100%;
+}
+
+.context-menu-parent {
+    position: relative;
+}
+
+.context-menu-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1.5rem;
+    width: 100%;
+    padding: 0.35rem 0.9rem;
+    background: transparent;
+    color: var(--fg);
+    border: none;
+    text-align: left;
+    font-size: inherit;
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.context-menu-item:hover:not(:disabled) {
+    background: rgba(120, 180, 255, 0.22);
+}
+
+.context-menu-item:disabled {
+    color: #666;
+    cursor: default;
+}
+
+.context-menu-arrow {
+    font-size: 0.6rem;
+    color: #999;
+}
+
+.context-menu-label {
+    padding: 0.3rem 0.9rem;
+    color: #9aa;
+    font-size: 0.75rem;
+    white-space: nowrap;
+}
+
+.context-menu-separator {
+    height: 1px;
+    margin: 0.25rem 0;
+    background: var(--border);
+}

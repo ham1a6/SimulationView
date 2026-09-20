@@ -38,5 +38,6 @@ features = [
     "HtmlElement",
     "CssStyleDeclaration",
     "Storage",
+    "Navigator",
     "KeyboardEvent",
 ]

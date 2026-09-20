@@ -13,11 +13,13 @@ use sim3dview::terrain::origin_pick::OriginPickState;
 use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::terrain::store::TerrainStore;
 use sim3dview::terrain::tracks::TracksState;
+use sim3dview::ui::context_menu::{ContextMenu, ContextMenuState};
 use sim3dview::ui::coverage_altitude_dialog::{CoverageAltitudeDialog, CoverageAltitudeDialogState};
 use sim3dview::ui::origin_dialog::{OriginDialog, OriginDialogState};
 
 use crate::components::drawing_window::{DrawingWindow, DrawingWindowState};
 use crate::components::main_panel::MainPanel;
+use crate::components::map_menu::provide_map_menu;
 use crate::components::menu_bar::MenuBar;
 use crate::components::operation_panel::SimulationStatusPanel;
 use crate::components::right_panel::{BottomStatusPanel, TopStatusPanel};
@@ -46,7 +48,7 @@ pub fn App() -> impl IntoView {
     // サーバーのホスト名・ポートを知らない。terrain::loader参照)。
     provide_context(TerrainStore::new(default_terrain_base_url()));
     // 見通し範囲(レーダー観測点)の一覧・選択状態(sim3dviewライブラリの型)。メインパネル上の
-    // 右クリックで追加し、ボトムステータスパネルの「見通し範囲」タブで一覧表示・編集・削除する。
+    // 右クリックメニュー「ここにレーダー観測点を追加」で追加し、ボトムステータスパネルの「見通し範囲」タブで一覧表示・編集・削除する。
     provide_context(RadarMarkersState::new());
     // 表示メニューの「中心点を原点に戻す」ボタンからTerrainViewへの通知チャンネル
     // (sim3dviewライブラリの型)。
@@ -82,6 +84,11 @@ pub fn App() -> impl IntoView {
         let conn = conn.clone();
         move |(lat, lon)| conn.send_command(&ClientCommand::set_origin(lat, lon))
     })));
+
+    // 右クリックメニュー(sim3dviewライブラリの型)。本体(`<ContextMenu/>`)は下で1つだけ置き、
+    // 地図の右クリックの項目(`provide_map_menu`)は、上で提供した各Stateを使うので、それらのあとに提供する。
+    provide_context(ContextMenuState::new());
+    provide_map_menu();
 
     // protocol::OriginState(サーバーから配信される生の値)→sim3dview::terrain::origin::OriginState
     // (ライブラリが読む値)への橋渡し。
@@ -177,6 +184,7 @@ pub fn App() -> impl IntoView {
             />
             <CoverageAltitudeDialog/>
             <DrawingWindow/>
+            <ContextMenu/>
         </div>
     }
 }

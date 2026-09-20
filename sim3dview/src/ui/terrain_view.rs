@@ -10,6 +10,8 @@
 //! `terrain::draw_tool::DrawToolState` contextが提供されていてツールを選んでいる間は、地図の
 //! 左クリックで図形の点を置く(カーソル移動で仮の図形が追従、ダブルクリック/Enterで多角形・折れ線を確定、
 //! 右クリック/Backspaceで1つ戻す、Escで終了)。
+//! 地図の右クリックは、`MapMenuState`(と`ui::context_menu::ContextMenuState`)が提供されていれば、
+//! アプリが決めた項目の右クリックメニューを出す(提供されていなければ、その地点にレーダー観測点を追加する)。
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -35,6 +37,28 @@ use crate::terrain::recenter::RecenterRequestState;
 use crate::terrain::renderer::TerrainRenderer;
 use crate::terrain::store::TerrainStore;
 use crate::terrain::tracks::{self, TrackId, TrackLabel, TrackOptions, TracksState};
+use crate::ui::context_menu::{ContextMenuState, MenuItem};
+
+/// 地図を右クリックした場所にあるもの(右クリックメニューの項目を決める材料)。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MapMenuTarget {
+    /// 地表の(緯度, 経度)。地形データの範囲外・空ならNone。
+    pub position: Option<(f64, f64)>,
+    /// 右クリックした航跡のシンボル。あればTerrainViewが先にそのトラックを選択する。
+    pub track: Option<TrackId>,
+}
+
+/// 地図の右クリックメニューの項目を作るコールバック(`provide_context`する。`ContextMenuState`も必要)。
+/// 右クリックのたびに、その場所(`MapMenuTarget`)から項目を作って返す。空を返せばメニューは出ない。
+/// レーダー観測点の追加・原点の指定・作図の開始など、何を並べるかはアプリが決める。
+#[derive(Clone, Copy)]
+pub struct MapMenuState(pub Callback<MapMenuTarget, Vec<MenuItem>>);
+
+impl MapMenuState {
+    pub fn new(build: impl Fn(MapMenuTarget) -> Vec<MenuItem> + Send + Sync + 'static) -> Self {
+        Self(Callback::new(build))
+    }
+}
 
 struct ViewState {
     renderer: Option<TerrainRenderer>,
@@ -793,6 +817,9 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let draw_tool = use_context::<DrawToolState>();
     // 未提供なら航跡表示なしで動作する(同上)。
     let tracks = use_context::<TracksState>().unwrap_or_default();
+    // 両方が提供されていれば、地図の右クリックで右クリックメニューを出す(未提供なら従来どおり観測点の追加)。
+    let context_menu = use_context::<ContextMenuState>();
+    let map_menu = use_context::<MapMenuState>();
     let labels_ref: NodeRef<leptos::html::Div> = NodeRef::new();
 
     terrain_store.ensure_loaded();
@@ -1072,7 +1099,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         });
     }
 
-    // --- Effect 6: 表示メニュー「中心点を原点に戻す」ボタンの通知を受けて注視点をリセットする ---
+    // --- Effect 6: 表示メニュー「中心点を原点に戻す」・右クリックメニュー「ここを中心点にする」の通知を受けて注視点を動かす ---
     // 中心点(camera.target)はShift+ドラッグ(3D)・通常ドラッグ(2D)で動かせるが、これは
     // カメラのローカル状態のみを動かす操作でシミュレーション原点(OriginState)には
     // 触れていない。ここでのリセットも同様にOriginStateへは一切触れず、camera.targetを
@@ -1080,17 +1107,34 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     {
         let state = state.clone();
         Effect::new(move |_| {
-            let count = recenter_request.0.get();
+            let count = recenter_request.count.get();
             if count == 0 {
                 return; // 初期値0はボタン未クリックの状態なので無視する。
             }
+            let target = recenter_request.target();
             let mut s = state.borrow_mut();
             if s.renderer.is_none() {
                 return;
             }
-            s.camera.target.x = 0.0;
-            s.camera.target.y = 0.0;
-            s.camera.target.z = s.target_up;
+            match (target, s.terrain.clone(), s.mesh_origin) {
+                // 右クリックメニュー等で指定した地点へ。高さはその地点の実際の地表(ENU上座標)にする
+                // (Shift+ドラッグでの移動と同じ。古い高さのままだとズームインしたときカメラが地面に埋まる)。
+                (Some((lat, lon)), Some(terrain), Some(mesh_origin)) => {
+                    let transform = mesh::EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
+                    let (east, north, up) = mesh::ground_at_geodetic(&terrain, &transform, lat, lon);
+                    s.camera.target.x = east;
+                    s.camera.target.y = north;
+                    s.camera.target.z = up;
+                }
+                // 地形が未取得の間は動かさない。
+                (Some(_), _, _) => return,
+                // 原点へ戻す。
+                (None, _, _) => {
+                    s.camera.target.x = 0.0;
+                    s.camera.target.y = 0.0;
+                    s.camera.target.z = s.target_up;
+                }
+            }
             drop(s);
             render_now(&state);
         });
@@ -1276,8 +1320,10 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         render_now(&state_wheel);
     };
 
-    // 地図上への右クリックでレーダー観測点(見通し範囲)を追加する。ブラウザ既定の
-    // コンテキストメニューは出さない。
+    // 地図上への右クリック。ブラウザ既定のコンテキストメニューは出さない。
+    // - 図形の作成中: 置いた点を1つ戻す
+    // - 右クリックメニュー(`MapMenuState`)があれば、その地点・シンボルに対するメニューを出す
+    // - なければ、その地点にレーダー観測点(見通し範囲)を追加する
     let state_ctx = state.clone();
     let on_context_menu = move |ev: leptos::ev::MouseEvent| {
         ev.prevent_default();
@@ -1292,6 +1338,18 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         let Ok(canvas) = target.dyn_into::<web_sys::HtmlCanvasElement>() else {
             return;
         };
+        if let (Some(menu), Some(map_menu)) = (context_menu, map_menu) {
+            let (x, y) = (ev.client_x() as f64, ev.client_y() as f64);
+            let position = pick_at_client(&state_ctx, &canvas, x, y);
+            let track = pick_track_at_client(&state_ctx, &canvas, x, y);
+            if track.is_some() {
+                tracks.select(track);
+            }
+            if position.is_some() || track.is_some() {
+                menu.show(x, y, map_menu.0.run(MapMenuTarget { position, track }));
+            }
+            return;
+        }
         if let Some((lat, lon)) =
             pick_at_client(&state_ctx, &canvas, ev.client_x() as f64, ev.client_y() as f64)
         {

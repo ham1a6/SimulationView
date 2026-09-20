@@ -34,7 +34,7 @@ struct Drag {
     dy_range: (f64, f64),
 }
 
-fn viewport_size() -> (f64, f64) {
+pub(crate) fn viewport_size() -> (f64, f64) {
     let Some(window) = web_sys::window() else { return (1024.0, 768.0) };
     let px = |v: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>, fallback: f64| v.ok().and_then(|v| v.as_f64()).unwrap_or(fallback);
     (px(window.inner_width(), 1024.0), px(window.inner_height(), 768.0))
