@@ -8,7 +8,8 @@ use std::rc::Rc;
 
 use leptos::prelude::*;
 
-use super::loader::{self, TerrainData};
+use super::fetch;
+use super::loader::TerrainData;
 
 // Rc<TerrainData>はSend/Syncではないため、既定のSyncStorageではなくLocalStorageを使う
 // (wasm32-unknown-unknownはシングルスレッドなので安全。ws.rsのWsConnectionと同じ理由)。
@@ -51,7 +52,7 @@ impl TerrainStore {
         let this = *self;
         let base_url = self.base_url.get_untracked();
         wasm_bindgen_futures::spawn_local(async move {
-            match loader::load_terrain(&base_url).await {
+            match fetch::load_terrain(&base_url).await {
                 Ok(data) => this.data.set(Some(Rc::new(data))),
                 Err(e) => {
                     log::error!("[terrain] {e}");

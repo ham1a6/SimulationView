@@ -19,7 +19,9 @@ use std::collections::HashMap;
 use leptos::prelude::*;
 
 use super::drawing::{Altitude, Color};
-use super::drawing_geometry::{append_line_strip, triangulate, BuildContext, DrawVertex};
+use super::drawing_geometry::{append_line_strip, height_of, triangulate, BuildContext};
+use super::vertex::DrawVertex;
+use super::render_bias::TRACK_M;
 
 pub type TrackId = u64;
 
@@ -224,8 +226,6 @@ const SYMBOL_SIZE_PX: f32 = 30.0;
 /// 縁取り(暗色)の大きさの倍率。
 const SYMBOL_OUTLINE_SCALE: f32 = 1.3;
 const SYMBOL_OUTLINE_COLOR: [f32; 4] = [0.04, 0.04, 0.07, 0.9];
-/// 地表基準のトラックを、地表から持ち上げる高さ(メートル。地形メッシュに埋まらないように)。
-const GROUND_BIAS_M: f64 = 25.0;
 /// 高度線を出す、地表からの最小の高さ(メートル)。これより低いトラックは線を出さない。
 const ALTITUDE_LINE_MIN_M: f64 = 30.0;
 const ALTITUDE_LINE_WIDTH_PX: f32 = 1.0;
@@ -382,13 +382,6 @@ pub fn pick_track(
     best.map(|(id, _)| id)
 }
 
-fn height_of(ctx: &BuildContext, lat_deg: f64, lon_deg: f64, altitude: Altitude) -> f64 {
-    match altitude {
-        Altitude::Msl(h) => h,
-        Altitude::AboveGround(offset) => (ctx.ground)(lat_deg, lon_deg) + offset + GROUND_BIAS_M,
-    }
-}
-
 fn label_detail(track: &Track) -> String {
     let (prefix, meters) = match track.altitude {
         Altitude::Msl(h) => ("", h),
@@ -408,7 +401,7 @@ pub fn build_track_geometry(ctx: &BuildContext, entries: &[TrackEntry], options:
         let track = &entry.track;
         let base = track.affiliation.color();
         let color = base.to_array();
-        let height = height_of(ctx, track.lat_deg, track.lon_deg, track.altitude);
+        let height = height_of(ctx, track.lat_deg, track.lon_deg, track.altitude, TRACK_M);
         let anchor = ctx.mesh_transform.transform(track.lat_deg, track.lon_deg, height);
 
         // 航跡: 過去の位置→現在位置。
@@ -417,7 +410,7 @@ pub fn build_track_geometry(ctx: &BuildContext, entries: &[TrackEntry], options:
                 .trail
                 .iter()
                 .map(|&(lat, lon, altitude)| {
-                    ctx.mesh_transform.transform(lat, lon, height_of(ctx, lat, lon, altitude))
+                    ctx.mesh_transform.transform(lat, lon, height_of(ctx, lat, lon, altitude, TRACK_M))
                 })
                 .collect();
             points.push(anchor);
@@ -428,7 +421,7 @@ pub fn build_track_geometry(ctx: &BuildContext, entries: &[TrackEntry], options:
         if options.altitude_lines {
             let ground = (ctx.ground)(track.lat_deg, track.lon_deg);
             if height - ground > ALTITUDE_LINE_MIN_M {
-                let foot = ctx.mesh_transform.transform(track.lat_deg, track.lon_deg, ground + GROUND_BIAS_M);
+                let foot = ctx.mesh_transform.transform(track.lat_deg, track.lon_deg, ground + TRACK_M);
                 append_line_strip(out, &[anchor, foot], false, base.with_alpha(LINE_ALPHA).to_array(), ALTITUDE_LINE_WIDTH_PX);
             }
         }

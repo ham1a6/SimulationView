@@ -10,7 +10,8 @@
 use leptos::prelude::*;
 
 use super::floating_panel::FloatingPanel;
-use crate::terrain::loader::{self, GeodeticBounds};
+use crate::terrain::fetch;
+use crate::terrain::loader::GeodeticBounds;
 use crate::terrain::origin::OriginState;
 
 /// 原点設定フローティングパネルの開閉状態。トリガー(メニュー等)と本体で共有する。
@@ -41,7 +42,7 @@ pub fn OriginDialog(
         }
         let base_url = base_url.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            match loader::fetch_metadata(&base_url).await {
+            match fetch::fetch_metadata(&base_url).await {
                 Ok(meta) => bounds.set(Some(meta.geodetic_bounds)),
                 Err(e) => log::error!("[origin_dialog] failed to fetch metadata.json: {e}"),
             }

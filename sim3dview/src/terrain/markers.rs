@@ -11,8 +11,10 @@
 
 use leptos::prelude::*;
 
-use super::drawing_geometry::{append_line_strip, DrawVertex};
+use super::drawing_geometry::append_line_strip;
+use super::vertex::DrawVertex;
 use super::loader::TerrainData;
+use super::render_bias::{COVERAGE_AREA_M, DOME_M, MARKER_M};
 use super::los::{compute_coverage_area, compute_los_dome, LosParams};
 use super::mesh::TerrainVertex;
 use super::geodesy::EnuTransform;
@@ -81,9 +83,6 @@ impl Default for RadarMarkersState {
     }
 }
 
-/// マーカー(ピン)の先端(=観測点の位置)を、地表からわずかに持ち上げる高さ(メートル)。
-const MARKER_HEIGHT_BIAS_M: f64 = 25.0;
-
 const SELECTED_MARKER_COLOR: [f32; 4] = [1.0, 0.92, 0.25, 1.0];
 const MARKER_COLOR: [f32; 4] = [1.0, 0.55, 0.15, 1.0];
 /// ピンの縁取りと中の点の色。
@@ -109,12 +108,6 @@ const DOME_RING_ELEVATIONS_DEG: [f64; 38] = [
     33.0, 36.0, 39.0, 42.0, 45.0, 48.0, 51.0, 54.0, 57.0, 60.0, // 3度刻み
     64.0, 68.0, 72.0, 76.0, 80.0, 84.0, 87.0, // 4度刻み(最上段は87度)
 ];
-/// 覆域ドームの面を地表からわずかに持ち上げて描く高さ(メートル)。地形に遮蔽される方角
-/// では、ドーム境界が定義上ちょうど地形の表面に接する(遮蔽され始める点の高さ=地形の
-/// 高さになる)ため、そのままだと地形メッシュとほぼ同じ深度になりZファイティング
-/// (カメラ操作中にチカチカする現象の一因)を起こす。マーカー本体と同じ考え方で、
-/// ドーム全体を一律に少し持ち上げることで回避する。
-const DOME_HEIGHT_BIAS_M: f64 = 20.0;
 /// ドームの方位角の間引き(計算は1mil刻み・6400方位のまま、なめらかにした後で描くときだけ間引く)。
 /// 2なら3200方位(50km先で約98m間隔)で、平滑化後の形は間引いても変わらない。
 const DOME_AZIMUTH_STRIDE: usize = 2;
@@ -138,9 +131,6 @@ const COVERAGE_AREA_ALPHA: f32 = 0.32;
 /// 領域の輪郭が一目で分かるようにする(`los_view.rs`の2D極座標図が塗り+輪郭線の両方を持つのと同じ考え方)。
 const COVERAGE_OUTLINE_COLOR: [f32; 4] = [0.75, 1.0, 0.4, 1.0];
 const COVERAGE_OUTLINE_WIDTH_PX: f32 = 2.5;
-/// 覆域表示(2D)を地表からわずかに持ち上げる高さ(メートル)。深度テストはしないが、2D(真上からの正射影)の
-/// 奥行きの範囲に収めるため地表の高さに置く。
-const COVERAGE_AREA_HEIGHT_BIAS_M: f64 = 20.0;
 /// 2Dの覆域の境界の平滑化(前後この方位ずつ。ドームより弱く、境界の形が残る程度)。
 const COVERAGE_SMOOTH_MEDIAN_HALF: usize = 2;
 const COVERAGE_SMOOTH_MEAN_HALF: usize = 3;
@@ -205,7 +195,7 @@ fn push_marker_pin(
     let anchor = mesh_transform.transform(
         marker.lat_deg,
         marker.lon_deg,
-        ground_elevation + MARKER_HEIGHT_BIAS_M,
+        ground_elevation + MARKER_M,
     );
     push_pin_shape(
         out,
@@ -276,7 +266,7 @@ fn push_dome_surface(
                     let local_east = horizontal * az_rad.sin();
                     let local_north = horizontal * az_rad.cos();
                     let (lat, lon) = local_transform.inverse(local_east, local_north);
-                    let absolute_height = observer_height + range_m * el_rad.sin() + DOME_HEIGHT_BIAS_M;
+                    let absolute_height = observer_height + range_m * el_rad.sin() + DOME_M;
                     let pos = mesh_transform.transform(lat, lon, absolute_height);
                     TerrainVertex::unlit(pos, DOME_SURFACE_COLOR)
                 })
@@ -308,7 +298,7 @@ fn push_dome_surface(
     let apex_pos = mesh_transform.transform(
         marker.lat_deg,
         marker.lon_deg,
-        observer_height + avg_range + DOME_HEIGHT_BIAS_M,
+        observer_height + avg_range + DOME_M,
     );
     let apex = TerrainVertex::unlit(apex_pos, DOME_SURFACE_COLOR);
     let steps: Vec<usize> = (0..num_azimuths).step_by((num_azimuths / DOME_APEX_SEGMENTS).max(1)).collect();
@@ -356,7 +346,7 @@ fn push_coverage_2d(
     // ではないため)。
     let position_at = |lat: f64, lon: f64| -> [f32; 3] {
         let ground = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
-        mesh_transform.transform(lat, lon, ground + COVERAGE_AREA_HEIGHT_BIAS_M)
+        mesh_transform.transform(lat, lon, ground + COVERAGE_AREA_M)
     };
     let boundary: Vec<[f32; 3]> = points
         .iter()

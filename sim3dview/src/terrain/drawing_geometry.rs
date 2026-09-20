@@ -19,56 +19,8 @@ use super::drawing::{Altitude, Corner, Drawing, Position, Shape, Space, Style};
 use super::geodesy::Ellipsoid;
 use super::geodesy::EnuTransform;
 use super::origin::Origin;
-/// 描画用の頂点。面と線(太さ付き)を同じ頂点形式・同じパイプラインで描く(`draw.wgsl`)。
-#[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct DrawVertex {
-    pub position: [f32; 3],
-    pub color: [f32; 4],
-    /// 面: 単位法線(陰影を付けるとき)。線: 反対側の端点。
-    pub aux: [f32; 3],
-    /// x: 線の太さ(px。0なら面)。y: 線の側(-1/+1)。z: ビルボードの種類(0=面・線、1=画面サイズ固定のマーカー、
-    /// 2=向きつきシンボル。`draw.wgsl`の`vs_main`が見る)。w: 陰影を付けるなら1(面のみ)。
-    pub params: [f32; 4],
-}
-
-impl DrawVertex {
-    pub(crate) fn surface(position: [f32; 3], color: [f32; 4], normal: Option<[f32; 3]>) -> Self {
-        match normal {
-            Some(aux) => Self { position, color, aux, params: [0.0, 0.0, 0.0, 1.0] },
-            None => Self { position, color, aux: [0.0; 3], params: [0.0; 4] },
-        }
-    }
-
-    fn line(position: [f32; 3], other: [f32; 3], color: [f32; 4], width_px: f32, side: f32) -> Self {
-        Self { position, color, aux: other, params: [width_px, side, 0.0, 0.0] }
-    }
-
-    /// ビルボード(画面サイズ固定のマーカー)の頂点。`anchor`は3D空間の位置、`offset_px`はそこからの
-    /// 画面上のずれ(px、右・上が正)。拡大・縮小しても大きさが変わらず、常に画面の正面を向く。
-    pub(crate) fn billboard(anchor: [f32; 3], offset_px: [f32; 2], color: [f32; 4]) -> Self {
-        Self { position: anchor, color, aux: [offset_px[0], offset_px[1], 0.0], params: [0.0, 0.0, 1.0, 0.0] }
-    }
-
-    /// 向きつきビルボード(`billboard`と同じだが、`offset_px`を「進行方向が画面のどちらを向くか」に合わせて回す)。
-    /// `offset_px`は進行方向が上(+y)・その右が+xの座標で、`heading_rad`は北から時計回りの進行方向(ENU座標の水平)。
-    /// 画面上の向きは、シェーダーがアンカーとアンカーから進行方向へ少し進んだ点を射影して求める
-    /// (3Dでカメラを回しても、2Dの地図でも、シンボルの向きが実際の進行方向を指す)。
-    pub(crate) fn oriented_billboard(
-        anchor: [f32; 3],
-        offset_px: [f32; 2],
-        heading_rad: f32,
-        color: [f32; 4],
-    ) -> Self {
-        Self {
-            position: anchor,
-            color,
-            aux: [offset_px[0], offset_px[1], 0.0],
-            params: [heading_rad, 0.0, 2.0, 0.0],
-        }
-    }
-}
-
+use super::render_bias::DRAWING_M;
+use super::vertex::DrawVertex;
 /// 座標の種類ごとの頂点列。アルファがこの値以上の色は不透明として`opaque`に入れる。
 const OPAQUE_ALPHA: f32 = 0.999;
 
@@ -259,15 +211,18 @@ pub(crate) fn to_local(ref_lat_deg: f64, ref_lon_deg: f64, lat_deg: f64, lon_deg
     [dist * bearing.sin(), dist * bearing.cos()]
 }
 
-/// 地表に貼り付ける図形・線を、地表よりわずかに持ち上げる高さ(メートル)。地形メッシュ(粗いLODを含む)と
-/// 同じ深度になって縞模様(Zファイティング)になるのを避ける(マーカー・覆域と同じ考え方)。
-const GROUND_BIAS_M: f64 = 15.0;
-
-/// 高度を楕円体高(メートル)にする。`AboveGround`は地表より`GROUND_BIAS_M`だけ持ち上げる。
-fn height_of(ctx: &BuildContext, lat_deg: f64, lon_deg: f64, altitude: Altitude) -> f64 {
+/// 高度を楕円体高(メートル)にする。`AboveGround`は、地表より`ground_bias_m`(`render_bias`)だけ
+/// 持ち上げる(地形メッシュと同じ深度になって縞模様になるのを避ける)。作図と航跡で共通。
+pub(crate) fn height_of(
+    ctx: &BuildContext,
+    lat_deg: f64,
+    lon_deg: f64,
+    altitude: Altitude,
+    ground_bias_m: f64,
+) -> f64 {
     match altitude {
         Altitude::Msl(h) => h,
-        Altitude::AboveGround(offset) => (ctx.ground)(lat_deg, lon_deg) + offset + GROUND_BIAS_M,
+        Altitude::AboveGround(offset) => (ctx.ground)(lat_deg, lon_deg) + offset + ground_bias_m,
     }
 }
 
@@ -565,7 +520,7 @@ impl Frame2d {
         match self {
             Self::World { lat_deg, lon_deg, radius_m, altitude } => {
                 let (lat, lon) = destination(*lat_deg, *lon_deg, p[0].atan2(p[1]), p[0].hypot(p[1]), *radius_m);
-                ctx.mesh_transform.transform(lat, lon, height_of(ctx, lat, lon, *altitude))
+                ctx.mesh_transform.transform(lat, lon, height_of(ctx, lat, lon, *altitude, DRAWING_M))
             }
             Self::View { right, up, forward } => [(right + p[0]) as f32, (up + p[1]) as f32, -*forward as f32],
             Self::Screen { x, y } => [(x + p[0]) as f32, (y - p[1]) as f32, 0.0],
@@ -651,12 +606,12 @@ fn world_polyline(ctx: &BuildContext, points: &[Position]) -> Vec<[f32; 3]> {
             Altitude::AboveGround(o) => o,
         };
         let (off0, off1) = (offset(lat0, lon0, alt0), offset(lat1, lon1, alt1));
-        let (h0, h1) = (height_of(ctx, lat0, lon0, alt0), height_of(ctx, lat1, lon1, alt1));
+        let (h0, h1) = (height_of(ctx, lat0, lon0, alt0, DRAWING_M), height_of(ctx, lat1, lon1, alt1, DRAWING_M));
         for k in 0..parts {
             let t = k as f64 / parts as f64;
             let (lat, lon) = destination(lat0, lon0, bearing, length * t, radius);
             let h = if grounded {
-                (ctx.ground)(lat, lon) + off0 + (off1 - off0) * t + GROUND_BIAS_M
+                (ctx.ground)(lat, lon) + off0 + (off1 - off0) * t + DRAWING_M
             } else {
                 h0 + (h1 - h0) * t
             };
@@ -664,7 +619,7 @@ fn world_polyline(ctx: &BuildContext, points: &[Position]) -> Vec<[f32; 3]> {
         }
     }
     if let Some(&(lat, lon, alt)) = geodetic.last() {
-        out.push(ctx.mesh_transform.transform(lat, lon, height_of(ctx, lat, lon, alt)));
+        out.push(ctx.mesh_transform.transform(lat, lon, height_of(ctx, lat, lon, alt, DRAWING_M)));
     }
     out
 }
@@ -856,6 +811,8 @@ impl Frame3d {
     fn at(ctx: &BuildContext, pos: &Position) -> Option<Self> {
         match *pos {
             Position::World { lat_deg, lon_deg, altitude } => {
+                // 3D図形は位置の真下の地表に置く(図形自体は変形しない)ので、`height_of`のような
+                // 地表からの持ち上げ(`render_bias`)は付けない。
                 let base_height = match altitude {
                     Altitude::Msl(h) => h,
                     Altitude::AboveGround(offset) => (ctx.ground)(lat_deg, lon_deg) + offset,

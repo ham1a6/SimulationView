@@ -10,7 +10,8 @@ use std::cell::Cell;
 use std::collections::HashMap;
 
 use super::camera::Camera;
-use super::drawing_geometry::{DrawVertex, DrawingBatches};
+use super::drawing_geometry::DrawingBatches;
+use super::vertex::DrawVertex;
 use super::loader::MeshKey;
 use super::mesh::{TerrainMesh, TerrainVertex};
 

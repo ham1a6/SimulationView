@@ -25,6 +25,7 @@ use crate::terrain::camera::{CameraPreset, OrbitCamera, ViewMode};
 use crate::terrain::draw_tool::DrawToolState;
 use crate::terrain::drawing::DrawingState;
 use crate::terrain::drawing_geometry;
+use crate::terrain::fetch;
 use crate::terrain::loader::{self, MeshKey, TerrainData, TileKey, WHOLE_TILE};
 use crate::terrain::lod::{self, TileLayout};
 use crate::terrain::markers::{self, RadarMarkersState};
@@ -518,7 +519,7 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
         wasm_bindgen_futures::spawn_local(async move {
             let (key, level, chunk) = fetch_key;
             let result = match chunk {
-                None => loader::fetch_tile_level(
+                None => fetch::fetch_tile_level(
                     &terrain.base_url,
                     key,
                     level,
@@ -527,7 +528,7 @@ fn update_lod(state: &Rc<RefCell<ViewState>>) {
                 )
                 .await
                 .map(|all| terrain.insert_tile_level(key, level, &all)),
-                Some(c) => loader::fetch_chunk_grid(
+                Some(c) => fetch::fetch_chunk_grid(
                     &terrain.base_url,
                     key,
                     level,
