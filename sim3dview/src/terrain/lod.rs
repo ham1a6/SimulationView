@@ -3,13 +3,15 @@
 //! メッシュ差し替えは`ui::terrain_view`が行う。
 //!
 //! 構成:
-//! - 全タイルは、離れているうちは**タイル全体を1枚のメッシュ(レベル0、約1.85km/セル)**で描く
-//!   (`loader::load_terrain`が起動時に全部取得して常駐する)。
-//! - カメラに近づいて、レベル0では粗すぎる(画面上で1セルが`TARGET_CELL_PX`ピクセルを超える)
-//!   タイルは、**1度タイルを分割した6x6のチャンク**に切り替え、チャンクごとに独立して解像度
-//!   レベル(1〜最細=元データの30m)を選ぶ。カメラのすぐ近くのチャンクだけが最細になる。
+//! - 全タイルを、**1度タイルを分割した6x6のチャンク**で描く。チャンクごとに独立して解像度
+//!   レベルを選ぶ。最も粗くてもレベル1(約620m/セル)で、遠くのタイルもこれより粗くはしない。
+//!   カメラに近いチャンクほど細かく(最細=元データの30m)なる。
+//! - 起動直後は、全タイルを**タイル全体を1枚のメッシュ(レベル0、約1.85km/セル)**で描く
+//!   (`loader::load_terrain`が起動時に全部取得して常駐する)。レベル1のグリッドが取得できた
+//!   タイルから、近い順にチャンク表示に切り替わる。予算が足りないタイルはレベル0のまま残る。
 //! - チャンクの頂点の合計は`DETAIL_VERTEX_BUDGET`以下に抑える(GPUメモリ・描画負荷の上限)。
-//!   予算は「見えていて近いチャンク」から順に配る。
+//!   まず全タイルのレベル1の分(下限)を確保し、残りを「見えていて近いチャンク」から順に配って
+//!   細かくする。
 //! - 視野の外は、予算が余っている間は現状のレベルを保つ(カメラを戻したときにすぐ細かく見える
 //!   ように)が、予算は見えているものより後回しにする。
 //! - 理想より1レベル細かいだけなら下げない(距離の境目でレベルが行き来しないヒステリシス)。
@@ -22,28 +24,17 @@ use super::camera::{Camera, Projection};
 use super::loader::{TerrainData, TileKey};
 use super::mesh::{tile_vertex_count, EnuTransform};
 
-/// チャンクの頂点数の合計の上限。全タイル分のレベル0(約155万頂点)に、この分を足したものが
-/// 常駐する頂点の総数になる(従来の単一メッシュは約420万頂点)。最細(30m)のチャンクは
-/// 1個で約36万頂点なので、最細のチャンクは同時に16個程度まで。300万から倍にしたのは、
-/// チャンクのレベル選択を細かくした(`CHUNK_TARGET_CELL_PX`)ぶん、細かいレベルが必要な
-/// 範囲が広がるため。
-pub const DETAIL_VERTEX_BUDGET: usize = 6_000_000;
+/// チャンクの頂点数の合計の上限(全タイルの下限=レベル1の分を含む)。全タイルのレベル1は
+/// 約1520万頂点(390タイル x 36チャンク x 1チャンク1085頂点)で、残りの約980万頂点を細かくする
+/// のに使う。最細(30m)のチャンクは1個で約36万頂点なので、下限から最細へ上げられるチャンクは
+/// 同時に約27個まで。GPUメモリは頂点(28バイト)とインデックスで合計約1.2GBになる。
+/// 以前は600万頂点(下限は近いタイルだけ)だった。
+pub const DETAIL_VERTEX_BUDGET: usize = 25_000_000;
 
-/// タイル全体(レベル0)で足りるかの判定に使う: 画面(CSSピクセル)上で1セルがこのピクセル数以下に
-/// なるなら、タイルはチャンクにせず全体1枚で描く。描画は2倍スーパーサンプリングなので、
-/// 2ピクセルなら描画解像度では約4ピクセル分。
-const TARGET_CELL_PX: f32 = 2.0;
-
-/// チャンクのレベル選択に使う: 画面上で1セルがこのピクセル数以下になる最も粗いレベルを選ぶ。
-/// `TARGET_CELL_PX`より小さくして、チャンクは細かめのレベルを選ぶ(最細の30mは、1ピクセルが
-/// 約62m未満、canvas高さ700pxで視点から約46km以内で使われる)。全体→チャンクの切り替え
-/// (`TARGET_CELL_PX`)まで小さくすると、遠くの多数のタイルが一斉にチャンク化して予算を
-/// 食い、近くの細かさに回らなくなるので、別の定数にしてある。
+/// チャンクのレベル選択に使う: 画面(CSSピクセル)上で1セルがこのピクセル数以下になる最も粗い
+/// レベルを選ぶ。描画は2倍スーパーサンプリングなので、1ピクセルなら描画解像度では約2ピクセル分。
+/// 最細の30mは、1ピクセルが約62m未満、canvas高さ700pxで視点から約46km以内で使われる。
 const CHUNK_TARGET_CELL_PX: f32 = 1.0;
-
-/// タイル全体(レベル0)からチャンクへ切り替える/戻すときのヒステリシス。チャンクにしている
-/// タイルは、レベル0で足りるとみなせる距離の`REVERT_MARGIN`倍まで近づけないと全体表示へ戻さない。
-const REVERT_MARGIN: f32 = 0.7;
 
 /// 緯度1度の長さ(メートル)。セルの大きさの見積もりに使う。
 const METERS_PER_DEGREE: f32 = 111_000.0;
@@ -199,8 +190,7 @@ pub fn plan_levels(
         key: TileKey,
         distance: f32,
         visible: bool,
-        wants_chunks: bool,
-        /// wants_chunksのとき: チャンクごとの(距離, 視野内か, 目標レベル)。
+        /// チャンクごとの(距離, 視野内か, 目標レベル)。
         chunks: Vec<(f32, bool, usize)>,
     }
     let mut infos: Vec<TileInfo> = Vec::with_capacity(data.tiles().len());
@@ -208,28 +198,30 @@ pub fn plan_levels(
         let (lat0, lon0) = (tile.key.0 as f64, tile.key.1 as f64);
         let mid_h = 0.5 * (tile.elevation_min + tile.elevation_max) as f64;
         let (distance, visible) = view.rect(lat0, lon0, lat0 + 1.0, lon0 + 1.0, mid_h);
-        let pixel_m = view.pixel_m(distance);
-        let current = resident.get(&tile.key);
-        let chunked_now = matches!(current, Some(Resident::Chunks(_)));
-
-        // チャンクに切り替えるか: 視野の外は現状維持。見えているタイルは、全体(レベル0)では
-        // 粗すぎるならチャンクにする。すでにチャンクなら、余裕を持って足りるようになるまで戻さない。
-        let coarse_ok = cell_size_m(data, 0) <= TARGET_CELL_PX * pixel_m;
-        let coarse_ok_with_margin = cell_size_m(data, 0) <= REVERT_MARGIN * TARGET_CELL_PX * pixel_m;
-        let wants_chunks = if !visible {
-            chunked_now
-        } else if chunked_now {
-            !coarse_ok_with_margin
-        } else {
-            !coarse_ok
+        let cur_levels: Option<&Vec<u8>> = match resident.get(&tile.key) {
+            Some(Resident::Chunks(v)) => Some(v),
+            _ => None,
         };
 
-        let mut chunks = Vec::new();
-        if wants_chunks {
-            let cur_levels: Option<&Vec<u8>> = match current {
-                Some(Resident::Chunks(v)) => Some(v),
-                _ => None,
-            };
+        let mut chunks = Vec::with_capacity(chunk_count);
+        // タイルの一番近い点でも下限のレベル1で足りるなら、どのチャンクも目標はレベル1になる
+        // (チャンクは遠いほど1ピクセルが大きく、理想のレベルは粗くなるため)。視野に入るかも
+        // タイルと同じ扱いにして、チャンクごとの距離・視錐台の計算を省く(全タイルがチャンクなので、
+        // 遠くの多数のタイルで毎回計算すると重い)。
+        let tile_ideal = ideal_level(data, view.pixel_m(distance), 1);
+        if !visible || tile_ideal == 1 {
+            for c in 0..chunk_count {
+                let have = cur_levels.map_or(0, |v| v[c] as usize);
+                let target = if !visible {
+                    have.max(1) // 視野の外は現状維持(下限は1)。
+                } else if have > 1 {
+                    2.min(have) // 理想より1つだけ細かいなら保つ(下のヒステリシスと同じ)。
+                } else {
+                    1
+                };
+                chunks.push((distance, visible, target.clamp(1, max_level)));
+            }
+        } else {
             let step = 1.0 / k as f64;
             for c in 0..chunk_count {
                 let (cx, cy) = (c % k, c / k);
@@ -248,7 +240,7 @@ pub fn plan_levels(
                 chunks.push((cdist, cvisible, target.clamp(1, max_level)));
             }
         }
-        infos.push(TileInfo { key: tile.key, distance, visible, wants_chunks, chunks });
+        infos.push(TileInfo { key: tile.key, distance, visible, chunks });
     }
 
     // 見えているタイルを近い順に、その後に視野の外のタイルを近い順に並べる。
@@ -258,12 +250,12 @@ pub fn plan_levels(
             .then(a.distance.partial_cmp(&b.distance).unwrap_or(std::cmp::Ordering::Equal))
     });
 
-    // 予算の配分。まず、チャンクにしたいタイルに、全チャンクをレベル1で載せる最低限の分を確保する
-    // (足りなければそのタイルは全体表示のまま)。
+    // 予算の配分。まず、全タイルに、全チャンクをレベル1で載せる下限の分を、近い(見えている)タイル
+    // から順に確保する(足りなければそのタイルは全体表示のまま)。
     let mut remaining = DETAIL_VERTEX_BUDGET;
     let base_cost = chunk_count * chunk_vertex_cost(data, 1);
     let mut levels: HashMap<TileKey, Vec<u8>> = HashMap::new();
-    for info in infos.iter().filter(|i| i.wants_chunks) {
+    for info in &infos {
         if remaining >= base_cost {
             remaining -= base_cost;
             levels.insert(info.key, vec![1; chunk_count]);

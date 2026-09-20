@@ -67,10 +67,12 @@ type FetchKey = (TileKey, usize, Option<usize>);
 const LOD_DEBOUNCE_MS: u32 = 150;
 /// 1回のLOD更新でメッシュを作ってGPUへ上げる頂点数の上限(最細レベルのチャンク1個で約36万
 /// 頂点。メッシュ生成は頂点数に比例して時間がかかるため、一度に大量に処理して画面が固まらない
-/// よう、この数を超えたら残りは次の更新に回す)。
-const MAX_UPLOAD_VERTICES_PER_ROUND: usize = 1_000_000;
-/// 同時に取得するタイル数の上限。
-const MAX_CONCURRENT_TILE_FETCHES: usize = 6;
+/// よう、この数を超えたら残りは次の更新に回す)。以前の100万頂点から下げたのは、陰影の法線の計算で
+/// 頂点あたりの生成が重くなり、全タイルをチャンクにして更新量も増えたため(1回の停止を短くする)。
+const MAX_UPLOAD_VERTICES_PER_ROUND: usize = 600_000;
+/// 同時に取得するタイル数の上限。全タイルのレベル1(約69KBのファイルが390個)を起動後に
+/// 取得していくので、6件だと1分ほどかかった(1回のLOD更新で始められる取得数がこの上限で決まる)。
+const MAX_CONCURRENT_TILE_FETCHES: usize = 16;
 /// 取得済みタイルグリッド(細かいレベル)をメモリに残す上限。超えたら、いま使っていないものから
 /// 古い順に捨てる。
 const DETAIL_CACHE_LIMIT_BYTES: usize = 300 * 1024 * 1024;
