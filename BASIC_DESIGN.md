@@ -175,10 +175,15 @@ Sim3dView/
 │       ├── lib.rs
 │       ├── terrain/                # データ取得・座標変換・カメラ・wgpu描画・覆域/見通し計算
 │       │   ├── mod.rs
-│       │   ├── loader.rs             # metadata/タイル索引/タイルグリッド取得(base_urlは呼び出し側が指定)
-│       │   ├── mesh.rs                # ENU変換・メッシュ生成
+│       │   ├── fetch.rs              # metadata/タイル索引/タイルグリッドのHTTP取得(base_urlは呼び出し側が指定)
+│       │   ├── loader.rs             # 取得した地形データの保持(TerrainData)・双線形サンプリング・キャッシュ
+│       │   ├── geodesy.rs            # 楕円体(Ellipsoid)・ENU変換(EnuTransform)
+│       │   ├── heightmap.rs          # 標高サンプリング・地表点のENU座標(ground_at_enu等)
+│       │   ├── mesh.rs                # メッシュ生成(頂点・インデックス・法線・スカート・配色)
+│       │   ├── vertex.rs             # 作図・航跡・マーカー共通の頂点(DrawVertex)
+│       │   ├── render_bias.rs        # 地表に貼り付くものを持ち上げる高さ(Zファイティング対策)の一覧
 │       │   ├── camera.rs              # カメラ(ビュー・射影行列、2D/3D)
-│       │   ├── renderer.rs            # wgpu描画パイプライン
+│       │   ├── renderer/              # wgpu描画(TerrainRenderer)。pipelines/targets/uniforms/overlay/frustum
 │       │   ├── store.rs               # TerrainStore(地形データの共有キャッシュ)
 │       │   ├── origin.rs              # OriginState(現在の原点、プロトコル非依存)
 │       │   ├── markers.rs             # RadarMarker/RadarMarkersState・マーカー(ピン)・覆域ジオメトリ生成
@@ -197,7 +202,8 @@ Sim3dView/
 │       │   └── draw.wgsl              # 作図用シェーダ(太い線の画面px幅への展開を含む)
 │       └── ui/                       # 上記を使うLeptosコンポーネント一式
 │           ├── mod.rs
-│           ├── terrain_view.rs         # 3D/2D地形描画canvas
+│           ├── terrain_view/           # 3D/2D地形描画canvas(mod.rsがコンポーネント。state/frame/lod_driver/overlay/labels/picking)
+│           ├── util.rs                 # 小さな共通部品(copy_to_clipboard)
 │           ├── los_view.rs             # 見通し範囲タブ(観測点一覧+極座標図)
 │           ├── cross_section_view.rs   # 断面図タブ
 │           ├── tabbed_panel.rs         # 汎用タブ付きパネル

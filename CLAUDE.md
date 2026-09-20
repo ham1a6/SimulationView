@@ -52,7 +52,7 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
 - 地形は**1度タイル単位のLOD+近いタイルは6x6チャンク**: 全タイルをチャンクで常駐し(最も粗くても
   レベル1=約620m/セル。起動直後だけレベル0=約1.85km/セルのタイル全体1枚)、近いチャンクほど細かいレベル
   (185m/62m/最細31m=元データの30m)をサーバーから取得して差し替える(`terrain/lod.rs`が計画、
-  `ui/terrain_view.rs`が適用。チャンクの頂点は全タイルの下限を含めて合計2500万まで。画面外のメッシュは
+  `ui/terrain_view/lod_driver.rs`が適用。チャンクの頂点は全タイルの下限を含めて合計2500万まで。画面外のメッシュは
   視錐台カリングで描かない)。大きいレベルはHTTP Rangeでチャンク1個分だけ取得する。標高サンプリングは各チャンクの
   「いま画面に出しているレベル」で引く。標高グラデーション着色+陰影(ヒルシェード、表示メニューでON/OFF、既定ON)。詳細はDETAILED_DESIGN.md 6.8節・6.10節
 - 海域はheightmapのNaN(`*_MSK.tif`の海+欠損タイル)で表し、フロントはNaN頂点を含む三角形を描画しない。
@@ -62,7 +62,7 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
   海面の下の地形は隠れ(水面越しに透けない)、標高0m以下の地形は余裕の範囲で水域より手前になり隠れない。
   視線が楕円体に当たらない画素(空)は黒(DETAILED_DESIGN.md 6.7節)。以前(メッシュ方式)は撤去した経緯あり
 - 地形は楕円体(WGS84相当)をENUへ変換した曲面で、遠方ほど丸みで下がる(原点から1,000kmで約80km)。
-  遠方の地表の高さ・クリック判定は標高ではなく`mesh.rs`の`ground_at_enu`(丸み込みのENU上座標)を使うこと。
+  遠方の地表の高さ・クリック判定は標高ではなく`heightmap.rs`の`ground_at_enu`(丸み込みのENU上座標)を使うこと。
   `EnuTransform::inverse`は原点近傍の接平面近似なので遠方には使わない。2Dモードの奥行き範囲
   (`camera.rs`の`ORTHO_DEPTH_RANGE_M`)も丸みを含めて決めてある
 - サーバーの原点受理範囲は起動時に`assets/terrain/metadata.json`の`geodetic_bounds`から読む
@@ -73,7 +73,7 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
   `World`(緯度経度+高度、地形と同じ深度)/`View`(カメラからの相対m)/`Screen`(画面px)。カメラ固定は地形と別の2つ目のパスで描く。
   線の太さはシェーダーで画面pxへ展開(DETAILED_DESIGN.md 6.11節、`sim3dview/README.md`に使い方)。ユーザーが地図をクリックして図形を作る機能は`terrain::draw_tool::DrawToolState`+`ui::drawing_editor::DrawingEditor`
   (作成中の図形は`DrawingState`に仮の要素として置く。作った図形はlocalStorageへ保存。サンプルは表示メニューの「作図...」で開く移動可能なウインドウ)
-- **右クリックメニュー**は`ui::context_menu`(汎用。項目は使う側が渡す)。地図の右クリックは`ui::terrain_view::MapMenuState`に項目を作るコールバックを渡す
+- **右クリックメニュー**は`ui::context_menu`(汎用。項目は使う側が渡す)。地図の右クリックは`ui::context_menu::MapMenuState`に項目を作るコールバックを渡す
   (サンプルは`components/map_menu.rs`。観測点の追加もここの1項目。`MapMenuState`/`ContextMenuState`が無ければ従来どおり右クリックで観測点を追加)
 - **航跡**(航空機・艦船・車両等の現在位置)は`terrain::tracks::TracksState`(context)へアプリが`set`する(サンプルは`track_bridge.rs`が
   `TrackList`を変換)。シンボルは向きつきビルボード(画面サイズ固定、進行方向が画面上の実際の向きを指す)、ラベルはHTML要素の重ね合わせ
@@ -87,6 +87,7 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
 ```
 cargo check -p sim3dview --target wasm32-unknown-unknown      # ライブラリ単体
 cargo check -p sim_frontend --target wasm32-unknown-unknown   # サンプルアプリ統合
+cargo test -p sim3dview                                        # 単体テスト(ネイティブで動く。合成地形`TerrainData::synthetic`を使う)
 cd sample/sim_frontend && trunk serve                          # 開発サーバー(ポート8081、Trunk.toml参照)
 ```
 
@@ -128,8 +129,9 @@ cd sample/sim_frontend && trunk serve                          # 開発サーバ
 
 ## 既知の技術的負債(未修正。着手前に方針確認を推奨)
 
-- `sim3dview/src/terrain/renderer.rs`のパイプラインが`cull_mode: None`(裏面カリング無効)のまま。
-  描画結果は正しいがGPU時間を余分に使う。コメント(巻き順を確認して有効化する)と実装が食い違っている
+- `sim3dview/src/terrain/renderer/pipelines.rs`のパイプラインが`cull_mode: None`(裏面カリング無効)のまま。
+  地形は高さ場で裏面はほとんど映らないため、有効化しても効果は小さい見込み(要計測)。有効化するなら、先にスカート
+  (縁の壁、`mesh.rs`の`grid_indices`)の巻き順が4辺で揃っているか確認すること(揃っていないとクラックが出うる)
 - VABの中段・下段はフロント側だけのダミーボタン(`vab_dummy_*`)で、C++は存在を知らない(`VabConfig`は先頭行のみ)。
   カテゴリごとに本当に別の操作をさせるには、サーバー側にカテゴリの概念を持たせ、別の`VabConfig`(または拡張プロトコル)を
   配信する設計変更が必要

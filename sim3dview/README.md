@@ -19,6 +19,10 @@ ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し(Line of 
   作図エディタ、右クリックメニュー)
 - `style/sim3dview.css`: 上記コンポーネントのスタイル
 
+公開しているのは、アプリが使う`terrain::{camera, draw_tool, drawing, hillshade, markers, origin, origin_pick, recenter, store, tracks}`と
+`ui`の各部品だけで、それ以外の`terrain`のモジュール(座標変換・LOD・描画・見通し計算など)はライブラリの内部(`pub(crate)`)です。
+モジュール構成は[DETAILED_DESIGN.md](../DETAILED_DESIGN.md) 6.0節を参照してください。
+
 ## 依存関係への追加
 
 モノレポ内(このリポジトリの`sample/sim_frontend`のように)ならpath依存で:

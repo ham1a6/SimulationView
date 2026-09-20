@@ -310,7 +310,7 @@ sim_z = Up
   実用上の影響は小さい)
 - 地球の曲率は上式に自然に反映される(遠方の地点ほど`Up`が減少していく)。550km規模の広域では
   原点から離れるほど地表が「下に沈んで」見える効果が正しく表現される
-- Rust実装は `sim_frontend/src/terrain/mesh.rs` の `EnuTransform` 構造体。C++側(サーバー)は
+- Rust実装は `sim3dview/src/terrain/geodesy.rs` の `EnuTransform` 構造体。C++側(サーバー)は
   座標変換自体を行わず、緯度経度のみを状態として保持する(5.3節参照)。
 
 ### 3.3 計算をどこで行うか
@@ -759,9 +759,37 @@ classDiagram
 >
 > 旧`WsSignals.origin`への依存は、ライブラリ側では`terrain::origin::OriginState`
 > (プロトコル非依存の`RwSignal<Option<Origin>>`)に置き換わっており、`app.rs`が
-> protocol⇔ライブラリの橋渡しEffectを持つ。`terrain::loader`/`terrain::store::TerrainStore`が
+> protocol⇔ライブラリの橋渡しEffectを持つ。`terrain::fetch`(取得)・`terrain::loader`(保持)/`terrain::store::TerrainStore`が
 > 参照するURLも、旧実装のようにポート9001をハードコードせず、呼び出し側(`app.rs`)が
 > `base_url`として明示的に渡す形に変わっている。
+
+### 6.0 ライブラリ(`sim3dview`)のモジュール構成
+
+以下の節が`terrain/xxx.rs`・`ui/xxx.rs`と書くものの、現在の置き場所(2026年9月のリファクタリングで分割した。
+経緯と見送った置き換えは[DEVELOPMENT_HISTORY.md](DEVELOPMENT_HISTORY.md)の「ライブラリのリファクタリング」)。
+公開(`pub mod`)は、アプリが使う`camera`・`draw_tool`・`drawing`・`hillshade`・`markers`・`origin`・`origin_pick`・
+`recenter`・`store`・`tracks`と`ui`だけで、それ以外は`pub(crate)`(ライブラリの内部)。
+
+| 領域 | モジュール | 役割 |
+|---|---|---|
+| データ | `terrain::fetch` | metadata.json・tile_index.json・base.bin・タイルのHTTP取得(Range含む) |
+| | `terrain::loader` | `TerrainData`(取得済みグリッドの保持・双線形サンプリング・キャッシュの追い出し)・メタデータ型 |
+| 測地 | `terrain::geodesy` | `Ellipsoid`(`WGS84`)・`EnuTransform`(緯度経度⇔ENU。回転は`DMat3`) |
+| | `terrain::heightmap` | 標高サンプリング(`sample_heightmap`)・地表点のENU座標(`ground_at_enu`/`ground_at_geodetic`) |
+| | `terrain::origin` | `Origin`・`OriginState` |
+| メッシュ・LOD | `terrain::mesh` | 頂点・インデックス・法線・スカート・配色 |
+| | `terrain::lod` | LOD計画(`plan_levels` = `evaluate_tile` → 並べ替え → `allocate_levels`)。`TileLayout` |
+| 描画 | `terrain::renderer` | `TerrainRenderer`(状態と3つの描画パス)。`pipelines`(パイプライン生成)・`targets`(深度/MSAA/縮小)・`uniforms`・`overlay`(頂点バッチ)・`frustum` |
+| | `terrain::vertex`・`terrain::render_bias` | 作図・航跡・マーカー共通の頂点`DrawVertex`(種類`KIND_*`)・Zバイアスの一覧 |
+| 図形・航跡 | `terrain::drawing`・`drawing_geometry`・`draw_tool`・`tracks`・`markers` | 6.9・6.11・6.12節 |
+| 計算 | `terrain::los`・`profile`・`pick`・`camera` | 見通し(`RayContext`)・断面・ピッキング・カメラ |
+| UI | `ui::terrain_view`(`mod.rs`=コンポーネント、`state`・`frame`・`lod_driver`・`overlay`・`labels`・`picking`) | 地図canvas |
+| | `ui::context_menu`(`MapMenuState`を含む)・`floating_panel`・`tabbed_panel`・`origin_dialog`・`drawing_editor`・`util` ほか | 汎用部品・ダイアログ |
+
+単体テストは`cargo test -p sim3dview`(ネイティブ)。`TerrainData::synthetic`(`cfg(test)`)で合成地形を作り、
+標高サンプリング・丸み込みの`ground_at_enu`・LODの予算配分・反転Z・`screen_to_ray`・電波の地平線(見通し)・視錐台カリングなどを
+検証する。WGSL(`terrain.wgsl`・`draw.wgsl`)は`naga`で構文・型を検証し、uniform・頂点のレイアウトがRust側の構造体と
+一致することを確かめる。
 
 ### 6.1 コンポーネント構成図
 
@@ -783,7 +811,7 @@ graph TD
     App -.provide_context.-> MenuStates["ContextMenuState / MapMenuState<br/>(右クリックメニューの状態と、地図の項目を作る関数)"]
     App -.propとして渡す.-> WsConnection["WsConnection<br/>(Rc<RefCell<...>>、Send/Sync境界回避のためcontext不使用)"]
 
-    MainPanel --> Loader["terrain::loader<br/>heightmap.bin/metadata.json取得"]
+    MainPanel --> Loader["terrain::fetch / terrain::loader<br/>metadata.json・base.bin・タイル取得"]
     MainPanel --> Mesh["terrain::mesh<br/>ENU変換・頂点/インデックス生成"]
     MainPanel --> Renderer["terrain::renderer::TerrainRenderer<br/>wgpu Device/Queue/Pipeline(地形)+draw系パイプライン(観測点ピン/2D覆域/作図)"]
     MainPanel --> Camera["terrain::camera::Camera<br/>view_proj行列・screen_to_ray"]
@@ -863,7 +891,7 @@ stateDiagram-v2
 
 ```mermaid
 flowchart LR
-    A["loader::load_terrain()<br/>metadata.json + tile_index.json + base.bin をfetch"] --> B["mesh::build_whole_tile_mesh()<br/>全タイルをレベル0でENU変換"]
+    A["fetch::load_terrain()<br/>metadata.json + tile_index.json + base.bin をfetch"] --> B["mesh::build_whole_tile_mesh()<br/>全タイルをレベル0でENU変換"]
     B --> C["TerrainVertex配列 + インデックス配列(タイルごと)"]
     C --> D["TerrainRenderer::new()<br/>wgpu Instance/Adapter/Device/Surface初期化"]
     D --> E["set_mesh()でメッシュごとに頂点/インデックスバッファへアップロード"]
@@ -900,13 +928,13 @@ classDiagram
     class EnuTransform {
         -f64 origin_lat_rad
         -f64 origin_lon_rad
-        -f64 origin_x
-        -f64 origin_y
-        -f64 origin_z
+        -DVec3 origin_ecef
+        -DMat3 enu_from_ecef
         -f64 a
         -f64 e2
         +new(origin, ellipsoid) EnuTransform
         +transform(lat_deg, lon_deg, h) [f32; 3]
+        +enu_to_geodetic(east, north, up) (lat, lon, h)
     }
     class TerrainVertex {
         +[f32; 3] position
@@ -931,13 +959,14 @@ classDiagram
         -Device device
         -Queue queue
         -SurfaceConfiguration config
-        -RenderPipeline pipeline
-        -Buffer vertex_buffer
-        -Buffer index_buffer
+        -Pipelines pipelines
+        -RenderTargets targets
+        -Downsample downsample
+        -HashMap~MeshKey, MeshGpu~ meshes
         -Buffer camera_buffer
         -BindGroup camera_bind_group
-        -TextureView depth_view
-        +new(canvas, mesh) TerrainRenderer
+        +new(canvas) TerrainRenderer
+        +set_mesh(key, mesh)
         +render(camera) Result
         +resize(width, height)
         +aspect_ratio() f32
@@ -945,7 +974,7 @@ classDiagram
 
     TerrainData *-- TerrainMetadata
     TerrainMesh *-- TerrainVertex
-    TerrainRenderer ..> TerrainMesh : 構築時に頂点バッファへコピー
+    TerrainRenderer ..> TerrainMesh : set_meshで頂点・インデックスバッファへコピー
     TerrainRenderer ..> Camera : renderで受け取る
     EnuTransform ..> TerrainVertex : transform()の結果をpositionへ
 ```
@@ -965,7 +994,7 @@ ENU座標系(東=X, 北=Y, 上=Z)は右手系(East×North=Up)。wgpu/glamの一�
 **カメラが地面の下にもぐらない制限**(3Dモード。「カメラが地平面より下にもぐらないようにして」との要望):
 `OrbitCamera::keep_above_ground`が、視点(カメラ位置)を、その真下の地面の高さ+`MIN_EYE_CLEARANCE_M`(30m。
 最細の地形のセルと同程度)以上に保つ。地面の高さは、呼び出し側(`ui::terrain_view::keep_camera_above_ground`)が
-いま画面に出している地形から`mesh::ground_at_enu`で引く(地球の丸み込み、海・データ範囲外は海抜0m)。
+いま画面に出している地形から`heightmap::ground_at_enu`で引く(地球の丸み込み、海・データ範囲外は海抜0m)。
 カメラ操作・原点変更・LOD切り替えのあとの描画(`render_frame`)の前に必ず通る。
 - まず**距離を保ったまま仰角を上げる**(ドラッグで下へ回したとき、地面の高さで止まる操作感)。仰角は視点の水平位置と
   一緒に変わって真下の地面の高さも変わるので、数回繰り返して収束させる
@@ -989,12 +1018,12 @@ ENU座標系(東=X, 北=Y, 上=Z)は右手系(East×North=Up)。wgpu/glamの一�
 
 **海(データなし)の扱い**: `heightmap`の値が`NaN`の格子点(1.4節: 存在しないタイル +
 各タイル内のNODATA画素 + マスクファイルが海と示す画素)は描画しない。頂点position自体は
-NaNだと破綻するため標高0mで配置するが、`terrain/mesh.rs::build_mesh`はこの頂点を1つでも含む
+NaNだと破綻するため標高0mで配置するが、`terrain/mesh.rs::grid_indices`はこの頂点を1つでも含む
 三角形をインデックスに加えない(海岸線は最大1グリッドセル分陸側に退く)。海と実データ範囲の
 外側には、地形メッシュより先に描く水域レイヤー(下記)が水色で見える(視線が楕円体に当たらない空は
 `TerrainRenderer::render()`のクリア色の黒 `wgpu::Color{0,0,0,1}`のまま)。
 三角形の有無はheightmapだけで決まり原点に依存しないため、原点変更で再構築してもインデックス数は
-変わらない(`update_vertices`は頂点バッファだけを書き換える)。`terrain::mesh::sample_heightmap`
+変わらない(`update_vertices`は頂点バッファだけを書き換える)。`terrain::heightmap::sample_heightmap`
 (カメラ注視点の高さ・見通し範囲・クリック位置の判定で共用)は、双線形補間の結果がNaNなら
 標高0mへ丸める。
 
@@ -1014,7 +1043,7 @@ NaNだと破綻するため標高0mで配置するが、`terrain/mesh.rs::build_
   `base.bin`から作って全体1枚で描き、レベル1のグリッド(1タイル約69KB、390個)が取得できたタイルから、近い順に
   チャンク表示へ切り替える(取得は約20秒、メッシュ生成を含めた全タイルの切り替えは約40秒かかる。その間は
   レベル0のタイルが混じる)。予算が足りないタイルはレベル0のまま残る
-  (`terrain::lod::Resident`が状態を表す: `Whole` / `Chunks(チャンクごとのレベル)`)
+  (`terrain::lod::TileLayout`が状態を表す: `Whole` / `Chunks(チャンクごとのレベル)`)
 - **計画**(`terrain::lod::plan_levels`。GPU・ネットワークに触れない純粋関数):
   - タイルごとに、視点(2Dでは注視点)から**そのタイル内の最も近い点まで**の距離と、視錐台に入るか
     (4隅+中心のクリップ座標判定)を求める。チャンクも同様
@@ -1201,7 +1230,7 @@ GPU側の読み戻しは行わない)。交点が見つかり、かつ地形デ�
 
 **3D描画(メインパネル)**: マーカー(ピン)と覆域(3Dはドーム、2Dは塗り+輪郭線)は、頂点データ・
 描画パイプラインとも別々に扱う(下記)。原点変更時(メッシュ再構築後)・観測点の追加/削除/
-選択変更のたびに作り直す(`components/terrain_view.rs::rebuild_markers`)。
+選択変更のたびに作り直す(`ui/terrain_view/overlay.rs::rebuild_markers`)。
 
 - マーカー: `terrain::markers::build_marker_geometry`が観測点一覧・選択状態から**画面サイズ固定のピン**
   (縁取り+本体+中の点。選択中は黄色、非選択はオレンジ)の頂点列を作る。観測点の位置(地表+25m)をアンカーに、
@@ -1344,7 +1373,7 @@ flowchart LR
 (`components/coverage_altitude_dialog.rs`、既定1000m、7.7節)で指定し、
 `ui_state::RadarMarkersState::coverage_altitude_m`(全パネル共有だが今のところ
 メインパネルの2Dモードのみが参照する、単一のグローバル設定)として持つ。
-メインパネル側は`components/terrain_view.rs`のEffectでこのシグナルを購読しているだけで、
+メインパネル側は`ui/terrain_view/mod.rs`のEffectでこのシグナルを購読しているだけで、
 ダイアログ側から直接ジオメトリ再構築を呼び出しているわけではない(7.7節)。
 
 `terrain::markers::push_coverage_2d`が、`compute_coverage_area`の境界(方位角方向に平滑化。`COVERAGE_SMOOTH_*`。
@@ -1352,7 +1381,7 @@ flowchart LR
 塗り(観測点から境界上の隣接2点へのTriangleListファン、半透明・アルファ0.32)と、その外周の輪郭線(不透明・太さ2.5pxの太い線。
 6.11節の`append_line_strip`)を、**`DrawVertex`**で作る(`build_coverage_2d_geometry`)。`TerrainRenderer::update_coverage_2d`の
 専用バッファに入れ、`draw_screen_pipeline`(深度テストなし・アルファブレンド)と絶対座標のuniformで描く。3Dドームとはバッファ・
-パイプラインが別で、`components/terrain_view.rs::rebuild_markers`がモードに応じてどちらを作るか切り替える(使わない方は空)。
+パイプラインが別で、`ui/terrain_view/overlay.rs::rebuild_markers`がモードに応じてどちらを作るか切り替える(使わない方は空)。
 
 **塗りが不均一になる問題の修正**(「2Dの覆域表示も塗りつぶしが均一ではない」との報告): 以前は塗りを`dome_pipeline`(深度テストあり)で
 描いていた。塗りの三角形は観測点から境界への長い平面(各頂点の高さは地表+20m)なので、間の地形の起伏(数百m)の中に埋まり、
@@ -1403,7 +1432,7 @@ flowchart LR
 - 3D図形は位置における局所ENU(位置を通る鉛直線が+z)で作り、`enu_to_geodetic`→`EnuTransform::transform`で厳密に変換する
   (遠方でも地球の丸みで傾いた上向きが正しい)。`View`では(東,北,上)→(右,前方=-z,上)。
 - `World`の折れ線は点の間を大円に沿って分割し(海抜どうしは2km、地表基準が絡めば250m)、地表基準は「地表からの高さ」を補間する。
-- 頂点の`ground`(標高)は`ctx.ground`クロージャで受ける(`ui::terrain_view`は`mesh::sample_heightmap`を渡す)ので、
+- 頂点の`ground`(標高)は`ctx.ground`クロージャで受ける(`ui::terrain_view`は`heightmap::sample_heightmap`を渡す)ので、
   地形なしで単体テストできる(`drawing_geometry`の`#[cfg(test)]`14件)。
 
 **太い線**(`terrain/draw.wgsl`)
@@ -1416,7 +1445,7 @@ WebGPUの線プリミティブは太さ1pxしかないため、線分1本を四�
 3D図形の面は法線からLambert風の陰影(絶対座標は地形の陰影と同じ北西・仰角45度、視点空間はカメラの左上手前)を掛ける。
 半透明の線は、折れ線のつなぎ目の重なり部分だけアルファが二重に掛かって濃く見える(不透明な線なら出ない)。
 
-**描画パス**(`terrain/renderer.rs`)
+**描画パス**(`terrain/renderer/mod.rs`の`encode_main_pass`・`encode_overlay_pass`・`encode_downsample_pass`)
 
 - 1つ目のパス(地形): 地形→マーカー→`World`不透明→覆域ドーム→`World`半透明。`World`のuniformは地形と同じ`view_proj`。
 - カメラ固定(`View`/`Screen`)が1つでもあるとき、**2つ目のパス**で描く: 1つ目のMSAAカラーを`Load`で引き継ぎ(そのため1つ目は
@@ -1425,7 +1454,7 @@ WebGPUの線プリミティブは太さ1pxしかないため、線分1本を四�
   (`screen_matrix`、深度一定・深度テストなし)を`view_proj`にする。2Dモード(正射影)でも同じ。
 - パイプラインは不透明(深度書き込みあり)・半透明(なし)・画面(深度テストなし)の3本、シェーダー・bind groupは地形とは別。
 
-**再構築のタイミング**(`ui/terrain_view.rs::rebuild_drawings`): 一覧の変更(Effect 5)・原点変更・canvasのリサイズ
+**再構築のタイミング**(`ui/terrain_view/overlay.rs::rebuild_drawings`): 一覧の変更(Effect 5)・原点変更・canvasのリサイズ
 (`Screen`の角の位置が変わる)、および地表基準(`depends_on_terrain`)の図形があるときの地形LOD切替。実機(サンプルアプリの
 「表示」→「作図デモ」、`sample/sim_frontend/src/components/drawing_demo.rs`)で、3D/2D両モードの絶対座標・カメラ固定
 (視点空間・画面座標)の描画、カメラを回しても`View`/`Screen`が動かないことを確認済み。
@@ -1509,7 +1538,7 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
   針路(16方位)・速度(m/s・km/h・kt)・原点からの距離と方位(大円距離)と「選択を解除」ボタンを出す。`TabbedPanel`の`active`(任意のprop)を
   渡して、航跡が選択されたら自動でこのタブへ移る(選択が外れてもタブはそのまま)。
 
-**描画・再構築**: `TerrainRenderer::update_tracks`(専用バッファ、`draw_blend_pipeline`・絶対座標のuniform)。再構築(`ui/terrain_view.rs::rebuild_tracks`)は、
+**描画・再構築**: `TerrainRenderer::update_tracks`(専用バッファ、`draw_blend_pipeline`・絶対座標のuniform)。再構築(`ui/terrain_view/overlay.rs::rebuild_tracks`)は、
 トラックの受信・表示設定の変更・原点変更・2D/3D切替・地形LOD切替(地表基準・高度線があるとき)。トラックは高頻度で更新されるので、
 受信のたびに`render_frame`だけ呼び、LODの更新(`render_now`)は予約しない。
 
@@ -1763,7 +1792,7 @@ stateDiagram-v2
   は`WsConnection`を持たずRwSignalのみで完結するため、この問題自体が発生しない)
 - 覆域高度の変更をメインパネルの3D描画へ反映する経路: `coverage_altitude_dialog.rs`は
   `coverage_altitude_m`シグナルを更新するだけで、実際のジオメトリ再構築・再描画は
-  `components/terrain_view.rs`のEffect(レーダー観測点の一覧・選択状態を購読していた
+  `ui/terrain_view/mod.rs`のEffect(レーダー観測点の一覧・選択状態を購読していた
   ものに`coverage_altitude_m`も加えた)が担う。ダイアログ側とメインパネル側が
   別コンポーネントであっても、共有シグナル経由のリアクティブな購読だけで完結し、
   互いを直接呼び出す必要がない

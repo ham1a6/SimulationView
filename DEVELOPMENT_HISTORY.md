@@ -1584,3 +1584,51 @@ C++/Rust全ソースを通読し、`cargo check`(警告ゼロ化)・CMakeビル�
 - **検証**: 実機で、地表の右クリックで項目が出る/観測点の追加(ピンと覆域)/中心点の移動(右クリックした地点が画面中央へ)/「ここに図形を作成 ▶ 円」で1点目から作成開始/
   Esc・背景クリックで閉じる/右下の隅で右クリックしても画面内に収まりサブメニューが左へ開く/航跡のシンボルの右クリック(見出し・選択・詳細タブの切替)/
   図形一覧の行の右クリック(名前変更のフォーカス・複製・非表示/表示・削除)を確認。コンソールに新規のエラーなし
+
+### ライブラリ(`sim3dview`)のリファクタリングとOSS置換(2026年9月)
+
+- **要望**: 「本ライブラリをリファクタリングしたい。OSSで代替可能なものはそちらを使うようにしたい(商用利用可のもの)」。
+  範囲は、安全網とバグ修正・大きな構造分割・OSS置換(重複の解消だけの小さな整理は、構造分割の途中で自然に消えるものだけ)に絞り、
+  OSSは「堅実」(新規クレートは最小限)、公開APIの破壊的変更は許容(サンプルは同時に直す)と決めた
+- **調査**(3方向を並列で): 数学・データ層 / 描画層 / UI層とサンプル。結論は「OSSに置き換えて得が大きいものは限定的」。
+  ENU変換・カメラ・ピッキング・水域シェーダーの係数・LOD・線の画面px展開は、地球の丸み・原点非依存・反転Zに密結合していて、
+  汎用クレート(`map_3d`・`parry3d`・`lyon`のストローク等)では置き換えられない。`leptos-use`・`geographiclib-rs`・UIキット・
+  チャート/テキスト描画クレートも、`Send`境界・WASMサイズ・CSSテーマ契約との衝突で入れなかった
+- **段階1(安全網とバグ修正)**: 単体テストを37件→104件にした。`SurfaceTarget::Canvas`がwasm32にしか無くネイティブで`cargo test`が
+  ビルドできなかったのを、surface生成の切り出しで解消。合成地形`TerrainData::synthetic`で標高・LOD・カメラ・見通し等を検証。
+  WGSLを`naga`で検証し、uniform/頂点のレイアウトとRust側の構造体の一致を確認(手書きだった頂点属性のオフセットは`vertex_attr_array!`に)。
+  バグ: `window_event_listener`のハンドルを破棄しておらずリスナーが残った/ResizeObserverとvisibilitychangeのクロージャを`forget`していた/
+  `resize`が同じ大きさでも大きなテクスチャを作り直していた/surface取得のTimeout・Occluded・Outdatedをエラーにしていたこと/
+  `formats[0]`のパニック/`insert_chunk_grid`の長さ未検証/全図形削除の確認が`unwrap_or(true)`/コメントと実装の食い違い(z_far等)
+- **段階2(OSS・標準機能への置換)**: 多角形の三角形分割を自前の耳切り法から`earcutr`(ISC)へ。公開コールバックを`Callback`から
+  `UnsyncCallback`(Leptos標準)へ、サンプルの`unsafe impl Send/Sync for WsConnection`を`StoredValue::new_local`のハンドル`WsHandle`にして、
+  リポジトリからunsafeをなくした。`OriginDialog`の`metadata.json`の二重取得を`TerrainStore`の共有に
+- **見送った置き換え(理由つき)**:
+  - downsampleパスの`wgpu::util::TextureBlitter`化: blitterのサンプラーは縮小側(`min_filter`)がNearest固定で、2倍縮小で2x2を平均する
+    現状(スーパーサンプリングの要)より画質が落ちる。ソースを読んで判明したので、実装前に見送った
+  - `decode_i16_le`の`bytemuck::pod_collect_to_vec`化: データはリトルエンディアン固定で、bytemuckはネイティブエンディアン依存になり、
+    3行に対して得るものが小さい
+  - `gloo-net`の0.6/0.7の二重版(Cargo.lock): 0.6はleptosの`server_fn`経由で、揃えるにはダウングレードが要るので触らない
+- **段階3(構造分割)**: `mesh.rs`→`geodesy`(`Ellipsoid::WGS84`・`EnuTransform`。ECEF差分→ENUの回転を`DMat3`に集約)・`heightmap`・`mesh`。
+  `loader.rs`→`loader`+`fetch`。`plan_levels`(145行)を`evaluate_tile`・`target_level`・`allocate_levels`に、`Resident`/`TilePlan`を`TileLayout`に統合。
+  `los.rs`の5関数の共通前処理を`RayContext`に。`render_bias`(Zバイアスの一覧)・`vertex`(`DrawVertex`と`KIND_*`)。
+  `renderer.rs`(1163行)→`renderer/`(`pipelines`の`PipelineSpec`でパイプライン生成の5重コピーを1つに、`targets`・`uniforms`・`overlay`・`frustum`。
+  `Cell`を`&mut self`に)。`ui/terrain_view.rs`(1470行)→`terrain_view/`(`state`・`frame`・`lod_driver`・`overlay`・`labels`・`picking`)。
+  内部モジュールを`pub(crate)`に。詳細な構成はDETAILED_DESIGN.md 6.0節
+- **今回やらなかったもの(効果に対して変更が大きい・挙動が変わる)**:
+  `ViewState`のフィールドを入力/LOD/描画/ラベルに4分割すること、`on_pointer_up`の`MapClickMode`化、ポインタキャプチャ+ドラッグの3重実装(`floating_panel`・
+  `terrain_view`・サンプル`app.rs`)の共通化、`terrain_view/mod.rs`のコンポーネント本体(約650行)の分割。
+  挙動が変わるもの: `pick`の刻み幅が距離に対して一定(約1.3km)で細い尾根を見逃しうる、`profile`の上限が1,000kmで打ち切り、`los`/`profile`の
+  接平面近似`transform.inverse`、`cull_mode`の有効化(効果は小さい見込み。スカートの巻き順の確認が先)、取得に失敗したグリッドが再試行されない、
+  線のjoin・インスタンス化、`opt-level = 3`の検討
+- **つまずいた点**:
+  - bashのヒアドキュメントで長いPython/Rustを流すと解釈に失敗することがある(過去の記録と同じ)ので、スクリプトはファイルに書いて実行した
+  - 分割コミットの途中で、サンプルの`Origin`のパスを直し忘れてビルドできない状態のコミットが1つ入った(確認コマンドの出力を見ずにコミットまで一続きで実行したため。
+    直後の修正コミットで直した)。以後は、確認コマンドが成功したときだけコミットするようにした
+  - `terrain_view/`の分割では、汎用の`use`ヘッダーを各ファイルに付けたので、未使用importの警告が139件出た。`cargo fix --lib`で除いた
+  - trunkはライブラリとサンプルのファイルを順に編集している途中でもビルドを走らせるので、ブラウザのコンソールに、その途中のビルド失敗の記録
+    (`Build failed: ... exit code: 101`)が残ることがある。最新のビルドが成功しているかは、`cargo build --target=wasm32-unknown-unknown --manifest-path sample/sim_frontend/Cargo.toml`
+    (trunkが実行するのと同じコマンド)と、配信物のwasmのタイムスタンプで確かめる
+- **検証**: 各段階で、単体テスト・wasm32でのビルドに加えて、実機(sim_server+trunk)で、3D/2D切替・リサイズ追従・右クリックメニューのEsc・
+  凹形(L字)の多角形の塗り・画面座標の矩形と視点空間の直方体(カメラ固定のオーバーレイパス)・ズームによるLODの取得と差し替え・
+  航跡のシンボルのクリック選択と詳細表示・原点の変更(確認後に元へ戻した)・原点設定ダイアログの範囲チェックを確認。コンソールにアプリ起因のエラーなし

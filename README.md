@@ -97,7 +97,12 @@ cargo install trunk --locked
 ```powershell
 cargo check -p sim3dview --target wasm32-unknown-unknown      # ライブラリ単体のコンパイル確認
 cargo check -p sim_frontend --target wasm32-unknown-unknown   # サンプルアプリの統合コンパイル確認
+cargo test -p sim3dview                                        # ライブラリの単体テスト(ネイティブで動く。ブラウザ不要)
 ```
+
+単体テストは、合成した地形(`TerrainData::synthetic`)で標高サンプリング・LOD計画・カメラ(反転Z)・見通し計算・
+視錐台カリングなどを検証し、WGSLシェーダーの構文とuniform/頂点のレイアウトも`naga`で確認する
+(描画そのもの(GPU)は含まないので、画面の確認は下の「動作確認のポイント」の手順で行う)。
 
 ### 3. C++側のビルド(sim_server と 前処理ツール)
 
