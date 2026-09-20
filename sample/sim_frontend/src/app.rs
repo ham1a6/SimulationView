@@ -4,6 +4,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
+use sim3dview::terrain::draw_tool::DrawToolState;
 use sim3dview::terrain::drawing::DrawingState;
 use sim3dview::terrain::hillshade::HillshadeState;
 use sim3dview::terrain::markers::RadarMarkersState;
@@ -50,7 +51,11 @@ pub fn App() -> impl IntoView {
     // 表示メニューの「陰影表示」のON/OFF(sim3dviewライブラリの型。既定はON)。
     provide_context(HillshadeState::default());
     // 作図(図形・線)の一覧(sim3dviewライブラリの型)。表示メニューの「作図デモ」が図形を出し入れする。
-    provide_context(DrawingState::new());
+    let drawings = DrawingState::new();
+    provide_context(drawings);
+    // 図形の対話作成(右パネルの「作図」タブ+地図のクリック)。作った図形はブラウザ(localStorage)に保存して、
+    // 次回の起動時に復元する(sim3dviewライブラリの型)。
+    provide_context(DrawToolState::new(drawings).persist("sim3dview.user_drawings"));
     // 航跡(航空機・艦船・車両等)の一覧と表示設定(sim3dviewライブラリの型)。サーバーから届く`TrackList`を
     // 下の`bridge_tracks`が反映し、表示メニューの「ラベル/航跡/高度線」が表示設定を切り替える。
     let tracks_state = TracksState::new();

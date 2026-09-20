@@ -397,6 +397,8 @@
     position: absolute;
     top: 8px;
     left: 8px;
+    max-width: calc(100% - 150px); /* 右上の2D/3D切り替えボタンと重ならないように */
+    flex-wrap: wrap;
     z-index: 2;
     display: flex;
     align-items: center;
@@ -421,6 +423,12 @@
 
 .origin-pick-hint button:hover {
     border-color: var(--accent);
+}
+
+.origin-pick-hint button:disabled {
+    color: #666;
+    cursor: not-allowed;
+    border-color: var(--border);
 }
 
 .terrain-view-controls {
@@ -567,4 +575,170 @@
     margin: 0.4rem 0 0;
     font-size: 0.78rem;
     color: #fca;
+}
+
+/* 図形の作成・編集パネル(ui::drawing_editor::DrawingEditor)。タブの中に置く前提の縦並び。 */
+.drawing-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    width: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    font-size: 0.78rem;
+}
+
+.drawing-help {
+    margin: 0;
+    color: #999;
+}
+
+.drawing-tool-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(4.5rem, 1fr));
+    gap: 0.3rem;
+}
+
+.drawing-tool-button {
+    background: #1d1d1d;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.35rem 0.4rem;
+    font-size: 0.8rem;
+    cursor: pointer;
+}
+
+.drawing-tool-button:hover {
+    border-color: var(--accent);
+}
+
+/* 選択中のツール(次の地図クリックで図形の点になる)。 */
+.drawing-tool-button.active {
+    background: #234;
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+.drawing-section > summary {
+    cursor: pointer;
+    color: #bbb;
+    margin-bottom: 0.3rem;
+}
+
+.drawing-style,
+.drawing-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.drawing-form {
+    padding: 0.5rem;
+    border: 1px solid var(--accent);
+    border-radius: 4px;
+    background: rgba(255, 200, 60, 0.05);
+}
+
+.drawing-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.4rem;
+}
+
+.drawing-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    color: #999;
+}
+
+.drawing-field input[type="number"],
+.drawing-field input[type="text"],
+.drawing-field select {
+    width: 13ch;
+    background: #0d0d0d;
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 0.25rem 0.35rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+}
+
+.drawing-field select {
+    width: auto;
+}
+
+.drawing-name input {
+    width: 100%;
+}
+
+.drawing-name {
+    width: 100%;
+}
+
+.drawing-point-label {
+    align-self: center;
+    min-width: 3ch;
+    color: #bbb;
+}
+
+.drawing-check,
+.drawing-inline {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    color: #bbb;
+}
+
+.drawing-row input[type="color"] {
+    width: 2rem;
+    height: 1.6rem;
+    padding: 0;
+    border: 1px solid var(--border);
+    background: none;
+}
+
+.drawing-list-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    color: #bbb;
+}
+
+.drawing-list-header .los-delete-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+
+.drawing-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+
+.drawing-row-item {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.2rem 0.3rem;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+}
+
+.drawing-row-item.selected {
+    border-color: var(--accent);
+    background: rgba(255, 200, 60, 0.08);
+}
+
+.drawing-row-name {
+    flex: 1 1 auto;
+    text-align: left;
+    background: transparent;
+    color: var(--fg);
+    border: none;
+    padding: 0.2rem;
+    font-size: 0.8rem;
+    cursor: pointer;
 }

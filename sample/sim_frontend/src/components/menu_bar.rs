@@ -17,7 +17,7 @@
 
 use leptos::prelude::*;
 
-use sim3dview::terrain::drawing::DrawingState;
+use sim3dview::terrain::drawing::{DrawingId, DrawingState};
 use sim3dview::terrain::hillshade::HillshadeState;
 use sim3dview::terrain::origin::OriginState;
 use sim3dview::terrain::origin_pick::OriginPickState;
@@ -51,8 +51,9 @@ pub fn MenuBar() -> impl IntoView {
     let drawings = use_context::<DrawingState>().expect("DrawingState context not found");
     let origin = use_context::<OriginState>().expect("OriginState context not found");
     let tracks = use_context::<TracksState>().expect("TracksState context not found");
-    // 「作図デモ」の表示中か(ライブラリの作図一覧を出し入れするだけ。ライブラリ側にこの状態はない)。
-    let drawing_demo_on = RwSignal::new(false);
+    // 「作図デモ」で追加した図形のID(表示中なら空でない。ライブラリの作図一覧を出し入れするだけで、
+    // ライブラリ側にこの状態はない。消すときはこのIDだけを消し、ユーザーが作った図形は残す)。
+    let drawing_demo_ids = RwSignal::new(Vec::<DrawingId>::new());
 
     let menu_entry = move |id: MenuId, label: &'static str| {
         let dropdown = move || {
@@ -140,21 +141,23 @@ pub fn MenuBar() -> impl IntoView {
                             class="menu-dropdown-item"
                             on:click=move |_| {
                                 open_menu.set(None);
-                                if drawing_demo_on.get_untracked() {
-                                    drawings.clear();
-                                    drawing_demo_on.set(false);
+                                let shown = drawing_demo_ids.get_untracked();
+                                if !shown.is_empty() {
+                                    for id in shown {
+                                        drawings.remove(id);
+                                    }
+                                    drawing_demo_ids.set(Vec::new());
                                 } else {
                                     let (lat, lon) = origin
                                         .0
                                         .get_untracked()
                                         .map(|o| (o.lat_deg, o.lon_deg))
                                         .unwrap_or((35.355556, 138.859722));
-                                    drawing_demo::add_demo(drawings, lat, lon);
-                                    drawing_demo_on.set(true);
+                                    drawing_demo_ids.set(drawing_demo::add_demo(drawings, lat, lon));
                                 }
                             }
                         >
-                            {move || if drawing_demo_on.get() { "✓ 作図デモ" } else { "　 作図デモ" }}
+                            {move || if !drawing_demo_ids.with(|ids| ids.is_empty()) { "✓ 作図デモ" } else { "　 作図デモ" }}
                         </button>
                     </div>
                 }

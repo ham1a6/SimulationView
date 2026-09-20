@@ -2,7 +2,8 @@
 //! どちらもsim3dviewライブラリの`TabbedPanel`(ui::tabbed_panel)で実装し、後から同じ枠に
 //! 別内容のタブを追加できるようにしてある。現状のタブ構成:
 //! トップ=「各種情報」(StatusPanelConfig駆動の数値一覧、このアプリ固有)+「航跡情報」(地図上でクリックして
-//! 選択した航跡の詳細。`components/track_detail.rs`。航跡を選択すると自動でこのタブへ移る)、
+//! 選択した航跡の詳細。`components/track_detail.rs`。航跡を選択すると自動でこのタブへ移る)+「作図」(sim3dviewライブラリの
+//! `ui::drawing_editor::DrawingEditor`。図形を選んで地図をクリックして置き、一覧から数値編集・削除する)、
 //! ボトム=「断面図」(sim3dviewライブラリの`ui::cross_section_view::CrossSectionView`。
 //! マップ原点を起点に方位角スライダーで指定した方向の地表断面と、レーダー覆域の
 //! オーバーレイ)+「見通し範囲」(同ライブラリの`ui::los_view::LosView`。メインパネル上で
@@ -12,6 +13,7 @@
 use leptos::prelude::*;
 
 use sim3dview::ui::cross_section_view::CrossSectionView;
+use sim3dview::ui::drawing_editor::DrawingEditor;
 use sim3dview::ui::los_view::LosView;
 use sim3dview::ui::tabbed_panel::{tab, TabbedPanel};
 
@@ -41,6 +43,7 @@ pub fn TopStatusPanel() -> impl IntoView {
             tabs=vec![
                 tab("各種情報", view! { <StatusPanel/> }),
                 tab("航跡情報", view! { <TrackDetail/> }),
+                tab("作図", view! { <DrawingEditor/> }),
             ]
         />
     }

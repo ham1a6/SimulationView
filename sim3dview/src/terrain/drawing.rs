@@ -18,11 +18,12 @@
 //! `radius`・`width`等の大きさは、`World`と`View`ではメートル、`Screen`ではピクセル。
 
 use leptos::prelude::*;
+use serde::{Deserialize, Serialize};
 
 pub type DrawingId = u64;
 
 /// 色(各成分0〜1、アルファは非乗算)。
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Color {
     pub r: f32,
     pub g: f32,
@@ -62,7 +63,7 @@ impl Color {
 /// - 折れ線: `stroke`が線の色。`fill`は使わない。
 ///
 /// どちらも`None`なら何も描かない。アルファが1未満の色は半透明で描く。
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Style {
     pub fill: Option<Color>,
     pub stroke: Option<Color>,
@@ -94,7 +95,7 @@ impl Default for Style {
 }
 
 /// 高度の基準。
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Altitude {
     /// 海抜(地形データの標高と同じ基準)のメートル。2D図形は**この高さの水平な面**になる
     /// (地球の丸みには沿うが、地形の起伏には沿わない)。
@@ -105,7 +106,7 @@ pub enum Altitude {
 }
 
 /// `Position::Screen`の基準になる画面の角。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Corner {
     TopLeft,
     TopRight,
@@ -115,7 +116,7 @@ pub enum Corner {
 }
 
 /// 図形を置く位置。種類ごとの意味はモジュールの説明を参照。
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Position {
     World { lat_deg: f64, lon_deg: f64, altitude: Altitude },
     /// `corner`から見て右へ`x_px`・下へ`y_px`(画面の向き。右下の角なら負の値で内側へ寄る)。
@@ -154,7 +155,7 @@ pub enum Space {
 }
 
 /// 図形。回転角は時計回りの度数で、0度は上(`World`では北)向き。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Shape {
     // ---- 2D図形(平面) ----
     /// 円。
@@ -216,6 +217,20 @@ impl Shape {
             Self::Cuboid { base_center, .. }
             | Self::Cylinder { base_center, .. }
             | Self::Cone { base_center, .. } => std::slice::from_ref(base_center),
+            Self::Polygon { points } | Self::Polyline { points } => points,
+        }
+    }
+
+    /// `positions`の書き換え版(高度をまとめて変えるときなどに使う)。
+    pub fn positions_mut(&mut self) -> &mut [Position] {
+        match self {
+            Self::Circle { center, .. }
+            | Self::Rect { center, .. }
+            | Self::Sector { center, .. }
+            | Self::Sphere { center, .. } => std::slice::from_mut(center),
+            Self::Cuboid { base_center, .. }
+            | Self::Cylinder { base_center, .. }
+            | Self::Cone { base_center, .. } => std::slice::from_mut(base_center),
             Self::Polygon { points } | Self::Polyline { points } => points,
         }
     }

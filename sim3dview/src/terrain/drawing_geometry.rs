@@ -230,7 +230,7 @@ pub(crate) fn append_line_strip(
 // ---------------------------------------------------------------------------------------------
 
 /// 緯度`lat_deg`での平均曲率半径(子午線と卯酉線の曲率半径の幾何平均、メートル)。
-fn mean_radius(ellipsoid: &Ellipsoid, lat_deg: f64) -> f64 {
+pub(crate) fn mean_radius(ellipsoid: &Ellipsoid, lat_deg: f64) -> f64 {
     let f = 1.0 / ellipsoid.inv_f;
     let e2 = f * (2.0 - f);
     let s = lat_deg.to_radians().sin();
@@ -238,7 +238,7 @@ fn mean_radius(ellipsoid: &Ellipsoid, lat_deg: f64) -> f64 {
 }
 
 /// 基準点から方位`bearing_rad`(北から時計回り)へ距離`dist_m`進んだ点の(緯度, 経度)(度)。
-fn destination(lat_deg: f64, lon_deg: f64, bearing_rad: f64, dist_m: f64, radius_m: f64) -> (f64, f64) {
+pub(crate) fn destination(lat_deg: f64, lon_deg: f64, bearing_rad: f64, dist_m: f64, radius_m: f64) -> (f64, f64) {
     let (lat1, lon1) = (lat_deg.to_radians(), lon_deg.to_radians());
     let delta = dist_m / radius_m;
     let lat2 = (lat1.sin() * delta.cos() + lat1.cos() * delta.sin() * bearing_rad.cos()).asin();
@@ -248,7 +248,7 @@ fn destination(lat_deg: f64, lon_deg: f64, bearing_rad: f64, dist_m: f64, radius
 }
 
 /// `destination`の逆: 基準点から見た(緯度, 経度)の位置を、ローカル座標[東, 北](メートル)で返す。
-fn to_local(ref_lat_deg: f64, ref_lon_deg: f64, lat_deg: f64, lon_deg: f64, radius_m: f64) -> [f64; 2] {
+pub(crate) fn to_local(ref_lat_deg: f64, ref_lon_deg: f64, lat_deg: f64, lon_deg: f64, radius_m: f64) -> [f64; 2] {
     let (lat1, lat2) = (ref_lat_deg.to_radians(), lat_deg.to_radians());
     let mut dlon = (lon_deg - ref_lon_deg).to_radians();
     dlon = (dlon + PI).rem_euclid(TAU) - PI;

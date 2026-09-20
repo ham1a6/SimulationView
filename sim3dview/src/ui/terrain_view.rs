@@ -7,6 +7,9 @@
 //! contextの通知(表示メニューの「中心点を原点に戻す」ボタン)で中心点を原点へ戻す。
 //! `terrain::origin_pick::OriginPickState` contextが提供されていて`active`の間は、地図の
 //! 左クリック(ドラッグではない単発クリック)の地点を原点として`on_pick`へ渡す。
+//! `terrain::draw_tool::DrawToolState` contextが提供されていてツールを選んでいる間は、地図の
+//! 左クリックで図形の点を置く(カーソル移動で仮の図形が追従、ダブルクリック/Enterで多角形・折れ線を確定、
+//! 右クリック/Backspaceで1つ戻す、Escで終了)。
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -17,6 +20,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 use crate::terrain::camera::{CameraPreset, OrbitCamera, ViewMode};
+use crate::terrain::draw_tool::DrawToolState;
 use crate::terrain::drawing::DrawingState;
 use crate::terrain::drawing_geometry;
 use crate::terrain::loader::{self, MeshKey, TerrainData, TileKey, WHOLE_TILE};
@@ -785,6 +789,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let origin_pick = use_context::<OriginPickState>();
     // 未提供なら作図なしで動作する(上と同じく後付けのオプション機能)。
     let drawings = use_context::<DrawingState>().unwrap_or_default();
+    // 未提供なら図形の対話作成なしで動作する(同上)。
+    let draw_tool = use_context::<DrawToolState>();
     // 未提供なら航跡表示なしで動作する(同上)。
     let tracks = use_context::<TracksState>().unwrap_or_default();
     let labels_ref: NodeRef<leptos::html::Div> = NodeRef::new();
@@ -1127,7 +1133,31 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     };
 
     let state_pm = state.clone();
+    // 次のフレームで反映する予定のカーソル位置(canvasとclient座標)。
+    let hover_pending: Rc<RefCell<Option<(web_sys::HtmlCanvasElement, (f64, f64))>>> = Rc::new(RefCell::new(None));
     let on_pointer_move = move |ev: leptos::ev::PointerEvent| {
+        // 図形の作成中は、カーソルの指す地点へ仮の図形の先端を追従させる(ドラッグ中は動かさない)。
+        // 仮の図形を更新するたびに作図全体の再構築+描画が走るので、マウス移動は1フレームに1回へまとめる。
+        if let Some(tool) = draw_tool.filter(|t| t.wants_hover()) {
+            if !state_pm.borrow().dragging {
+                if let Some(canvas) = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlCanvasElement>().ok()) {
+                    let pos = (ev.client_x() as f64, ev.client_y() as f64);
+                    let already_scheduled = hover_pending.borrow_mut().replace((canvas, pos)).is_some();
+                    if !already_scheduled {
+                        let hover_pending = hover_pending.clone();
+                        let state = state_pm.clone();
+                        request_animation_frame(move || {
+                            let pending = hover_pending.borrow_mut().take();
+                            if let Some((canvas, (x, y))) = pending {
+                                if let Some((lat, lon)) = pick_at_client(&state, &canvas, x, y) {
+                                    tool.set_hover(lat, lon);
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+        }
         let should_render = {
             let mut s = state_pm.borrow_mut();
             if !s.dragging {
@@ -1192,6 +1222,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
 
     // ドラッグではない左クリックが離されたとき:
     // - 「クリックで原点指定」モード中なら、その地点を原点として`on_pick`へ渡してモードを解除する
+    // - 図形の作成ツールを選んでいれば、その地点を図形の点として置く(`terrain::draw_tool`)
     // - そうでなければ、クリックしたシンボルの航跡(`terrain::tracks`)を選択する(何もない所なら選択解除)
     // (通常のドラッグ=回転・パンは従来通り動く)
     let state_pu = state.clone();
@@ -1224,6 +1255,15 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             }
             return;
         }
+        if let Some(tool) = draw_tool.filter(|t| t.tool.get_untracked().is_some()) {
+            // 図形の作成中。地形データ範囲外のクリックは無視する(点を置き直せる)。
+            if let Some((lat, lon)) =
+                pick_at_client(&state_pu, &canvas, ev.client_x() as f64, ev.client_y() as f64)
+            {
+                tool.click(lat, lon);
+            }
+            return;
+        }
         let picked = pick_track_at_client(&state_pu, &canvas, ev.client_x() as f64, ev.client_y() as f64);
         tracks.select(picked);
     };
@@ -1241,6 +1281,11 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let state_ctx = state.clone();
     let on_context_menu = move |ev: leptos::ev::MouseEvent| {
         ev.prevent_default();
+        // 図形の作成中は、観測点の追加ではなく「置いた点を1つ戻す」に使う。
+        if let Some(tool) = draw_tool.filter(|t| t.tool.get_untracked().is_some()) {
+            tool.undo();
+            return;
+        }
         let Some(target) = ev.target() else {
             return;
         };
@@ -1271,7 +1316,42 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         render_now(&state_toggle);
     };
 
-    let pick_active = move || origin_pick.is_some_and(|p| p.active.get());
+    // ダブルクリックで多角形・折れ線を確定する(1回目・2回目のクリックは`on_pointer_up`が点として置いたあと。
+    // 2回目は直前の点とほぼ同じ位置なので`DrawToolState::click`が無視する)。
+    let on_dbl_click = move |_ev: leptos::ev::MouseEvent| {
+        if let Some(tool) = draw_tool {
+            tool.finish();
+        }
+    };
+
+    // 図形の作成中のキー操作(Esc=終了、Enter=確定、Backspace=1つ戻す)。入力欄への入力は邪魔しない。
+    if let Some(tool) = draw_tool {
+        window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
+            if tool.tool.get_untracked().is_none() {
+                return;
+            }
+            let in_form = ev
+                .target()
+                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                .is_some_and(|el| matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT"));
+            if in_form {
+                return;
+            }
+            match ev.key().as_str() {
+                "Escape" => tool.cancel(),
+                "Enter" => tool.finish(),
+                "Backspace" => {
+                    ev.prevent_default();
+                    tool.undo();
+                }
+                _ => {}
+            }
+        });
+    }
+
+    let pick_active = move || {
+        origin_pick.is_some_and(|p| p.active.get()) || draw_tool.is_some_and(|t| t.is_active())
+    };
 
     view! {
         <div class="terrain-view">
@@ -1285,6 +1365,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 on:pointercancel=on_pointer_cancel
                 on:wheel=on_wheel
                 on:contextmenu=on_context_menu
+                on:dblclick=on_dbl_click
             ></canvas>
             {move || {
                 origin_pick.filter(|p| p.active.get()).map(|p| {
@@ -1292,6 +1373,18 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                         <div class="origin-pick-hint">
                             <span>"原点にする地点をクリックしてください"</span>
                             <button on:click=move |_| p.active.set(false)>"キャンセル"</button>
+                        </div>
+                    }
+                })
+            }}
+            {move || {
+                draw_tool.filter(|t| t.is_active()).map(|t| {
+                    view! {
+                        <div class="origin-pick-hint">
+                            <span>{move || t.hint()}</span>
+                            <button on:click=move |_| t.finish() disabled=move || !t.can_finish()>"確定"</button>
+                            <button on:click=move |_| t.undo()>"1つ戻す"</button>
+                            <button on:click=move |_| t.cancel()>"終了"</button>
                         </div>
                     }
                 })

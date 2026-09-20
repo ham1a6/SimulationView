@@ -1,4 +1,5 @@
 pub mod camera;
+pub mod draw_tool;
 pub mod drawing;
 pub mod drawing_geometry;
 pub mod hillshade;

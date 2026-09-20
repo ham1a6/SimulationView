@@ -1,5 +1,6 @@
 pub mod coverage_altitude_dialog;
 pub mod cross_section_view;
+pub mod drawing_editor;
 pub mod floating_panel;
 pub mod los_view;
 pub mod origin_dialog;

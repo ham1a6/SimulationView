@@ -247,8 +247,31 @@ drawings.update(id, |d| d.style.fill = Some(Color::rgba(1.0, 0.0, 0.0, 0.5)));
 drawings.remove(id);
 ```
 
+### UIから図形を作る(図形の対話作成)
+
+ユーザーが地図をクリックして図形を作り、数値で編集できるようにするには、`terrain::draw_tool::DrawToolState`を`provide_context`し、
+`ui::drawing_editor::DrawingEditor`をどこかに置きます(`DrawingState`が先に必要。`TerrainView`が地図のクリックを受けます)。
+円・矩形・多角形・扇形・折れ線・球・直方体・円柱・円錐を、ツールを選んで地図をクリックして置きます(点の置き方は画面に案内が出ます。
+多角形・折れ線はダブルクリック/Enterで確定、右クリック/Backspaceで1つ戻す、Escで終了)。作った図形は一覧から選ぶと地図上で黄色く縁取られ、
+位置・大きさ・高度・色などを数値で編集できます。
+
+```rust
+use sim3dview::terrain::draw_tool::DrawToolState;
+use sim3dview::terrain::drawing::DrawingState;
+use sim3dview::ui::drawing_editor::DrawingEditor;
+
+let drawings = DrawingState::new();
+provide_context(drawings);
+// persist(key)を付けると、作った図形をlocalStorageへ保存して次回の起動時に復元する(付けなければ保存しない)。
+provide_context(DrawToolState::new(drawings).persist("my_app.user_drawings"));
+
+view! { <DrawingEditor/> } // 地図(TerrainView)をクリックできるよう、モーダルではなくパネルやタブの中に置く
+```
+
+このエディタで作った図形だけが一覧・保存の対象です(アプリが`drawings.add`で足した図形は別扱いで、`DrawToolState`の操作では消えません)。
+
 `sample/sim_frontend`の「表示」→「作図デモ」(`components/drawing_demo.rs`)に、全種類の図形を絶対座標・視点空間・画面座標で
-置く実例があります。
+置く実例があります(右パネル上段の「作図」タブが、上の対話作成の実例です)。
 
 ## 航跡(航空機・艦船・車両等の現在位置とシンボル)
 
