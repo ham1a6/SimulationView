@@ -48,7 +48,7 @@ impl Camera {
         // directx::perspective/orthographic(DirectX/WebGPU互換、深度[0,1])を使う。
         //
         // **反転Z(reversed-Z)を採用**(near→深度1, far→深度0。renderer.rsのdepth_compareも
-        // Greaterに揃えてある): z_near=1m・z_far=1,500,000mという非常に広いレンジを
+        // Greaterに揃えてある): z_near=1m・z_far=8,000,000m(`Z_FAR`)という非常に広いレンジを
         // 通常の(near→0, far→1の)深度バッファで扱うと、遠方(見た目上はほとんどの地形が
         // 該当)でdepth値の実効精度がほぼ失われ、地形の行ごとにデプステストの勝敗が
         // 不安定になる(カメラ操作のたびに結果が変わる) z-fighting(「地表面で所々透けている
@@ -58,14 +58,14 @@ impl Camera {
         //
         // 透視投影は当初`perspective_infinite_reverse`(far=無限遠)を使っていたが、
         // 「原点から遠いところで地表面の描画が省略される(zoomに依存せず、原点から遠い
-        // ほど発生)」という不具合が報告された。無限遠板影はclip.z成分が(view座標のzに
+        // ほど発生)」という不具合が報告された。無限遠射影はclip.z成分が(view座標のzに
         // 依存しない)定数near値になる特殊な行列形状になり(実際に手計算で確認済み)、
         // これ自体は数学的には正しいが、通常のクリップ行列とは異なる不慣れな形であるため、
         // 環境によってはGPU/ドライバのクリッピング処理が想定外の挙動をする可能性を排除
         // できなかった。より保守的な、near/farとも有限の反転Z(`directx::perspective`に
         // near/farを入れ替えて渡すだけで反転Zになる。正射影と同じトリックが透視投影でも
-        // 成り立つことを手計算で確認済み)に変更し、z_farには従来通り
-        // 1,500,000m(実データの最大想定距離に対して十分な余裕を持たせた値)を使う。
+        // 成り立つことを手計算で確認済み)に変更した。z_farは3Dでは`Z_FAR`(最大ズームアウトの
+        // 距離+データ範囲の対角線に余裕を持たせた値)、2Dでは`ORTHO_EYE_HEIGHT_M`+`ORTHO_DEPTH_RANGE_M`。
         match self.projection {
             Projection::Perspective { fov_y_radians } => {
                 directx::perspective(fov_y_radians, self.aspect, self.z_far, self.z_near)
@@ -217,8 +217,9 @@ impl OrbitCamera {
         match preset {
             CameraPreset::Overview => Self {
                 target: Vec3::new(0.0, 0.0, target_up),
-                // データが存在する領域(5°四方、対角線で約785km)全体が画面内に収まる距離
-                // (実機で確認して調整した値。ここからさらにMAX_DISTANCE=2,000,000mまで縮小できる)。
+                // 原点まわり(5°四方ほど、対角線で約785km)が画面内に収まる距離(実機で確認して
+                // 調整した値。地形データ全体は30°四方でこれより広く、ここからさらに
+                // MAX_DISTANCE=2,000,000mまでズームアウトできる)。
                 distance: 400_000.0,
                 yaw: -std::f32::consts::FRAC_PI_4,
                 pitch: 0.6,
@@ -340,5 +341,173 @@ impl OrbitCamera {
                 z_far: ORTHO_EYE_HEIGHT_M + ORTHO_DEPTH_RANGE_M,
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cam(mode: ViewMode, distance: f32) -> Camera {
+        let mut o = OrbitCamera::preset(CameraPreset::Overview, 0.0);
+        o.mode = mode;
+        o.distance = distance;
+        o.to_camera(1.0)
+    }
+
+    /// 視点から視線方向へ`dist`進んだ点の、クリップ空間での深度(z/w)。
+    fn depth_at(c: &Camera, dist: f32) -> f32 {
+        let forward = (c.target - c.eye).normalize();
+        let clip = c.view_proj_matrix() * (c.eye + forward * dist).extend(1.0);
+        clip.z / clip.w
+    }
+
+    // 反転Z: 近い面が深度1、遠い面が深度0(`renderer.rs`の`depth_compare: Greater`・クリア値0.0の前提)。
+    #[test]
+    fn depth_is_reversed_for_perspective() {
+        let c = cam(ViewMode::ThreeD, 400_000.0);
+        assert!((depth_at(&c, c.z_near) - 1.0).abs() < 1e-3);
+        assert!(depth_at(&c, c.z_far).abs() < 1e-3);
+        // 遠いほど小さく、遠方でも(f32の)値が潰れず単調に減る。
+        let depths: Vec<f32> = [10.0, 100.0, 1e4, 1e5, 1e6, 4e6].iter().map(|&d| depth_at(&c, d)).collect();
+        assert!(depths.windows(2).all(|w| w[0] > w[1]), "{depths:?}");
+    }
+
+    #[test]
+    fn depth_is_reversed_for_orthographic() {
+        let c = cam(ViewMode::TwoD, 100_000.0);
+        assert!((depth_at(&c, c.z_near) - 1.0).abs() < 1e-4);
+        assert!(depth_at(&c, c.z_far).abs() < 1e-4);
+        // 正射影は深度が距離に対して線形。
+        let mid = depth_at(&c, 0.5 * (c.z_near + c.z_far));
+        assert!((mid - 0.5).abs() < 1e-3, "{mid}");
+    }
+
+    // `screen_to_ray`のレイ上の点を`view_proj_matrix`で射影し直すと、元の画面座標(NDC)に戻る。
+    // ピッキング(`pick.rs`)と描画の座標系がずれていないことの確認。
+    #[test]
+    fn screen_to_ray_is_consistent_with_the_projection() {
+        let pixels = [(0.0, 0.0), (350.0, 350.0), (700.0, 700.0), (123.0, 456.0), (600.0, 50.0)];
+        for c in [
+            cam(ViewMode::ThreeD, 30_000.0),
+            cam(ViewMode::ThreeD, 400_000.0),
+            cam(ViewMode::ThreeD, 2_000_000.0),
+            cam(ViewMode::TwoD, 100_000.0),
+        ] {
+            let vp = c.view_proj_matrix();
+            for &(x, y) in &pixels {
+                let (origin, dir) = c.screen_to_ray(x, y, 700.0, 700.0);
+                let clip = vp * (origin + dir * 1000.0).extend(1.0);
+                let (ndc_x, ndc_y) = (clip.x / clip.w, clip.y / clip.w);
+                let (want_x, want_y) = (x / 700.0 * 2.0 - 1.0, 1.0 - y / 700.0 * 2.0);
+                assert!((ndc_x - want_x).abs() < 2e-3, "({x},{y}): {ndc_x} vs {want_x}");
+                assert!((ndc_y - want_y).abs() < 2e-3, "({x},{y}): {ndc_y} vs {want_y}");
+            }
+            // 画面中央のレイは視線方向(正射影なら視点が中心から動かない)。
+            let (origin, dir) = c.screen_to_ray(350.0, 350.0, 700.0, 700.0);
+            let forward = (c.target - c.eye).normalize();
+            assert!(dir.normalize().dot(forward) > 0.9999);
+            assert!((origin - c.eye).length() < 1e-2 * c.eye.length().max(1.0));
+        }
+    }
+
+    #[test]
+    fn water_ray_basis_matches_screen_to_ray() {
+        for c in [cam(ViewMode::ThreeD, 400_000.0), cam(ViewMode::TwoD, 100_000.0)] {
+            let [eye, forward, right, up] = c.water_ray_basis();
+            let (eye, forward, right, up) = (
+                Vec3::from_slice(&eye[..3]),
+                Vec3::from_slice(&forward[..3]),
+                Vec3::from_slice(&right[..3]),
+                Vec3::from_slice(&up[..3]),
+            );
+            let perspective = c.water_ray_basis()[0][3] > 0.5;
+            let (ndc_x, ndc_y) = (0.5_f32, -0.25_f32);
+            let (origin, dir) = c.screen_to_ray(
+                (ndc_x + 1.0) * 0.5 * 700.0,
+                (1.0 - ndc_y) * 0.5 * 700.0,
+                700.0,
+                700.0,
+            );
+            let (rebuilt_origin, rebuilt_dir) = if perspective {
+                (eye, forward + right * ndc_x + up * ndc_y)
+            } else {
+                (eye + right * ndc_x + up * ndc_y, forward)
+            };
+            assert!((dir - rebuilt_dir).length() < 1e-4 * dir.length().max(1.0), "{dir} vs {rebuilt_dir}");
+            assert!((origin - rebuilt_origin).length() < 1e-3 * origin.length().max(1.0));
+        }
+    }
+
+    #[test]
+    fn orbit_zoom_and_pan_clamp_and_move_as_documented() {
+        let mut o = OrbitCamera::preset(CameraPreset::Overview, 12.0);
+        assert_eq!(o.target, Vec3::new(0.0, 0.0, 12.0));
+        assert_eq!(o.mode, ViewMode::ThreeD);
+
+        o.orbit(0.1, 100.0);
+        assert!((o.yaw - (-std::f32::consts::FRAC_PI_4 - 0.1)).abs() < 1e-6);
+        assert_eq!(o.pitch, MAX_PITCH);
+        o.orbit(0.0, -100.0);
+        assert_eq!(o.pitch, MIN_PITCH);
+
+        o.zoom(1e-9);
+        assert_eq!(o.distance, MIN_DISTANCE);
+        o.zoom(1e12);
+        assert_eq!(o.distance, MAX_DISTANCE);
+
+        // 2Dのpanは、掴んで動かす向き(注視点は移動量と反対)。
+        o.pan(100.0, -50.0);
+        assert_eq!((o.target.x, o.target.y), (-100.0, 50.0 + 0.0));
+    }
+
+    #[test]
+    fn pan_orbit_target_moves_along_the_screen_axes() {
+        let mut o = OrbitCamera::preset(CameraPreset::Overview, 0.0);
+        o.yaw = -std::f32::consts::FRAC_PI_2; // 視点は南側にあり、画面の右=東
+        o.distance = 10_000.0;
+        let per_px = 2.0 * o.distance * (o.fov_y_radians * 0.5).tan() / 1000.0;
+        o.pan_orbit_target(10.0, 0.0, 1000.0);
+        // 右へ掴んで動かす→注視点は西へ。
+        assert!((o.target.x + 10.0 * per_px).abs() < 1e-2, "{:?}", o.target);
+        assert!(o.target.y.abs() < 1e-2);
+    }
+
+    #[test]
+    fn eye_is_kept_above_the_ground() {
+        // 平らな地面(z=0)。仰角が負(視点が地面の下)でも、30m上まで持ち上げる。
+        let mut o = OrbitCamera::preset(CameraPreset::Overview, 0.0);
+        o.distance = 1000.0;
+        o.pitch = -1.0;
+        o.keep_above_ground(|_, _| 0.0);
+        assert!(o.eye().z >= MIN_EYE_CLEARANCE_M - 1e-2, "{}", o.eye().z);
+        // 距離は保ったまま仰角を上げる(ドラッグで下へ回したとき、地面の高さで止まる操作感)。
+        assert!((o.distance - 1000.0).abs() < 1.0);
+
+        // 地面が十分高い所(注視点の周りが高地)では、仰角を最大にしても届かないので視点を持ち上げる。
+        let mut o = OrbitCamera::preset(CameraPreset::Overview, 0.0);
+        o.distance = 300.0;
+        o.pitch = 0.5;
+        o.keep_above_ground(|_, _| 500.0);
+        assert!(o.eye().z >= 500.0 + MIN_EYE_CLEARANCE_M - 1e-1, "{}", o.eye().z);
+        assert!(o.pitch <= MAX_PITCH);
+
+        // すでに十分上にあれば何も変えない。2Dモードは視点の高さが無関係なので何もしない。
+        let before = OrbitCamera::preset(CameraPreset::Overview, 0.0);
+        let mut o = before;
+        o.keep_above_ground(|_, _| 0.0);
+        assert_eq!((o.pitch, o.distance), (before.pitch, before.distance));
+        let mut o2d = OrbitCamera { mode: ViewMode::TwoD, pitch: -1.0, ..before };
+        o2d.keep_above_ground(|_, _| 1e9);
+        assert_eq!(o2d.pitch, -1.0);
+    }
+
+    #[test]
+    fn two_d_camera_looks_straight_down_with_north_up() {
+        let c = cam(ViewMode::TwoD, 50_000.0);
+        assert_eq!(c.up, Vec3::Y);
+        assert!(matches!(c.projection, Projection::Orthographic { view_height_m } if view_height_m == 50_000.0));
+        assert!((c.target - c.eye).normalize().dot(-Vec3::Z) > 0.9999);
+        assert_eq!(c.z_far, ORTHO_EYE_HEIGHT_M + ORTHO_DEPTH_RANGE_M);
     }
 }

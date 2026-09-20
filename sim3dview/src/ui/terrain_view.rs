@@ -246,8 +246,10 @@ fn try_init(
                 s.terrain = Some(data);
                 s.mesh_origin = Some(origin);
                 s.initializing = false;
-                status.set(String::new());
+                // signalの更新で購読しているEffectが同期的に走っても`state`を借用し直せるよう、
+                // 借用を手放してから更新する。
                 drop(s);
+                status.set(String::new());
                 rebuild_markers(&state, radar_markers);
                 rebuild_drawings(&state);
                 rebuild_tracks(&state);
@@ -949,10 +951,22 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 );
             }
 
-            // クロージャ・observerともにこのパネルの生存期間ずっと必要なのでforgetする。
-            closure.forget();
-            visibility_closure.forget();
-            std::mem::forget(observer);
+            // クロージャ・observerはこのパネルの生存期間ずっと必要。パネルが破棄されるとき(このEffectの
+            // オーナーの後始末)に、observerとdocumentのリスナーを外してからクロージャごと解放する
+            // (`forget`すると、クロージャが握る`state`=GPUデバイスまでずっと解放されない)。
+            // `on_cleanup`は`Send`を要求するので、JSオブジェクトはローカル専用の`StoredValue`に入れて渡す。
+            let resources = StoredValue::new_local((closure, visibility_closure, observer));
+            on_cleanup(move || {
+                resources.with_value(|(_, visibility_closure, observer)| {
+                    observer.disconnect();
+                    if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+                        let _ = document.remove_event_listener_with_callback(
+                            "visibilitychange",
+                            visibility_closure.as_ref().unchecked_ref(),
+                        );
+                    }
+                });
+            });
         });
     }
 
@@ -1019,7 +1033,9 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             }
             // 常駐している全メッシュ(タイル全体・各チャンク、各自の解像度レベル)の頂点位置を、新しい原点のENU座標で
             // 作り直してアップロードする(頂点数・並びは原点に依存しない)。
-            let renderer = s.renderer.as_ref().expect("checked is_some above");
+            let Some(renderer) = s.renderer.as_ref() else {
+                return;
+            };
             // 水域レイヤー(楕円体の海抜0mの面)も新しい原点基準にする。
             renderer.set_ellipsoid_origin(&new_transform);
             for (&key, resident) in s.resident.iter() {
@@ -1384,7 +1400,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
 
     // 図形の作成中のキー操作(Esc=終了、Enter=確定、Backspace=1つ戻す)。入力欄への入力は邪魔しない。
     if let Some(tool) = draw_tool {
-        window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
+        let keydown_handle = window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
             if tool.tool.get_untracked().is_none() {
                 return;
             }
@@ -1405,6 +1421,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 _ => {}
             }
         });
+        // このコンポーネントが破棄されたらリスナーを外す(外さないとwindowに残り続ける)。
+        on_cleanup(move || keydown_handle.remove());
     }
 
     let pick_active = move || {

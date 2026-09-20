@@ -532,7 +532,8 @@ pub fn DrawingEditor() -> impl IntoView {
     let on_remove_all = move |_| {
         let confirmed = web_sys::window()
             .and_then(|w| w.confirm_with_message("作った図形をすべて削除しますか?").ok())
-            .unwrap_or(true);
+            // 確認ダイアログを出せない環境では、確認なしに全削除しない。
+            .unwrap_or(false);
         if confirmed {
             tool.remove_all();
         }

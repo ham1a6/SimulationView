@@ -208,21 +208,24 @@ impl TerrainData {
         &self.base[tile.base_offset..tile.base_offset + n * n]
     }
 
-    fn slot(&self, level: usize, chunk: usize) -> usize {
-        (level - 1) * self.chunk_count() + chunk
+    /// `detail`の添字。レベル0(タイル全体。チャンクを持たない)や範囲外のチャンクにはNone。
+    fn slot(&self, level: usize, chunk: usize) -> Option<usize> {
+        (level >= 1 && chunk < self.chunk_count()).then(|| (level - 1) * self.chunk_count() + chunk)
     }
 
     /// 指定レベル(1以上)・チャンクのグリッド。未取得ならNone。
     pub fn chunk_grid(&self, tile: &TileEntry, level: usize, chunk: usize) -> Option<Rc<Vec<i16>>> {
         let detail = tile.detail.borrow();
-        let cached = detail.get(self.slot(level, chunk))?.as_ref()?;
+        let cached = detail.get(self.slot(level, chunk)?)?.as_ref()?;
         self.stamp.set(self.stamp.get() + 1);
         cached.last_used.set(self.stamp.get());
         Some(cached.data.clone())
     }
 
     pub fn has_chunk_grid(&self, tile: &TileEntry, level: usize, chunk: usize) -> bool {
-        tile.detail.borrow().get(self.slot(level, chunk)).is_some_and(|g| g.is_some())
+        self.slot(level, chunk)
+            .and_then(|slot| tile.detail.borrow().get(slot).map(|g| g.is_some()))
+            .unwrap_or(false)
     }
 
     /// このチャンクについて、取得済みで`max_level`以下の最も細かいレベル(1以上)。無ければ0。
@@ -233,16 +236,22 @@ impl TerrainData {
             .unwrap_or(0)
     }
 
-    /// 取得したチャンクグリッド(レベル1以上)を登録する。
+    /// 取得したチャンクグリッド(レベル1以上)を登録する。タイル・レベル・チャンクが範囲外か、
+    /// 長さが`(チャンク1辺のセル数+1)^2`でなければ無視する(標高サンプリングが範囲外を引かないように)。
     pub fn insert_chunk_grid(&self, key: TileKey, level: usize, chunk: usize, data: Vec<i16>) {
         let Some(tile) = self.tile(key) else { return };
-        if level == 0 || level >= self.num_levels() || chunk >= self.chunk_count() {
+        if level >= self.num_levels() {
+            return;
+        }
+        let Some(slot) = self.slot(level, chunk) else { return };
+        let nodes = self.chunk_cells(level) + 1;
+        if data.len() != nodes * nodes {
             return;
         }
         self.stamp.set(self.stamp.get() + 1);
         let bytes = data.len() * std::mem::size_of::<i16>();
         let mut detail = tile.detail.borrow_mut();
-        let slot = &mut detail[self.slot(level, chunk)];
+        let slot = &mut detail[slot];
         if slot.is_none() {
             self.cached_bytes.set(self.cached_bytes.get() + bytes);
         }
@@ -308,7 +317,7 @@ impl TerrainData {
 
         if level > 0 {
             let detail = tile.detail.borrow();
-            if let Some(Some(cached)) = detail.get(self.slot(level, cy * k + cx)) {
+            if let Some(Some(cached)) = self.slot(level, cy * k + cx).and_then(|slot| detail.get(slot)) {
                 let n_level = self.level_cells(level) as f64;
                 let cells = self.chunk_cells(level);
                 return bilinear(
@@ -353,8 +362,9 @@ impl TerrainData {
             }
             let mut detail = self.tiles[ti].detail.borrow_mut();
             if let Some(g) = detail[si].take() {
-                self.cached_bytes
-                    .set(self.cached_bytes.get().saturating_sub(g.data.len() * 2));
+                self.cached_bytes.set(
+                    self.cached_bytes.get().saturating_sub(g.data.len() * std::mem::size_of::<i16>()),
+                );
             }
         }
     }
@@ -485,4 +495,213 @@ pub async fn fetch_chunk_grid(
         ));
     }
     Ok(decode_i16_le(&bytes))
+}
+
+#[cfg(test)]
+impl TerrainData {
+    /// 単体テスト用の合成地形。`min_lat`/`min_lon`から`rows`x`cols`枚の1度タイルを並べ、
+    /// レベル0をすべて`height(緯度, 経度)`(メートル)で埋める。既定のレベルは6・12・24セル/度
+    /// (チャンク分割は2x2)で、細かいレベル(1以上)は空。必要なら`insert_chunk_grid`で足す。
+    pub(crate) fn synthetic(
+        min_lat: i32,
+        min_lon: i32,
+        rows: i32,
+        cols: i32,
+        height: impl Fn(f64, f64) -> i16,
+    ) -> Self {
+        Self::synthetic_with_levels(min_lat, min_lon, rows, cols, vec![6, 12, 24], 2, height)
+    }
+
+    /// `synthetic`のレベル定義を指定できる版。レベル0のグリッドだけを作るので、LODの計画
+    /// (`terrain::lod`)のように実際のレベルの値(実データは`[60, 180, 600, 1800, 3600]`・6分割)を
+    /// 使いたいテストでも軽い。
+    pub(crate) fn synthetic_with_levels(
+        min_lat: i32,
+        min_lon: i32,
+        rows: i32,
+        cols: i32,
+        tile_levels: Vec<u32>,
+        chunks_per_tile: u32,
+        height: impl Fn(f64, f64) -> i16,
+    ) -> Self {
+        let metadata = TerrainMetadata {
+            tile_levels,
+            chunks_per_tile,
+            elevation_min: -100.0,
+            elevation_max: 4000.0,
+            geodetic_bounds: GeodeticBounds {
+                min_lat: min_lat as f64,
+                max_lat: (min_lat + rows) as f64,
+                min_lon: min_lon as f64,
+                max_lon: (min_lon + cols) as f64,
+            },
+            ellipsoid: Ellipsoid { a_m: 6_378_137.0, inv_f: 298.257_222_101 },
+            has_texture: false,
+            default_origin: DefaultOrigin { lat_deg: min_lat as f64 + 0.5, lon_deg: min_lon as f64 + 0.5 },
+        };
+        let cells0 = metadata.tile_levels[0] as usize;
+        let mut entries = Vec::new();
+        let mut base = Vec::new();
+        for lat in min_lat..min_lat + rows {
+            for lon in min_lon..min_lon + cols {
+                let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+                for j in 0..=cells0 {
+                    for i in 0..=cells0 {
+                        let h = height(
+                            lat as f64 + j as f64 / cells0 as f64,
+                            lon as f64 + i as f64 / cells0 as f64,
+                        );
+                        if h != NO_DATA {
+                            lo = lo.min(h as f32);
+                            hi = hi.max(h as f32);
+                        }
+                        base.push(h);
+                    }
+                }
+                entries.push(TileIndexEntry { lat, lon, elevation_min: lo, elevation_max: hi });
+            }
+        }
+        Self::new(metadata, "http://test".to_string(), TileIndex { tiles: entries }, base)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY: TileKey = (30, 120);
+
+    /// タイル(30,120)内で、東へ1度で600m・北へ1度で60m上がる斜面(ノード間隔が1/6度なので整数)。
+    fn slope(lat: f64, lon: f64) -> i16 {
+        (600.0 * (lon - 120.0) + 60.0 * (lat - 30.0)).round() as i16
+    }
+
+    fn one_tile(height: impl Fn(f64, f64) -> i16) -> TerrainData {
+        TerrainData::synthetic(30, 120, 1, 1, height)
+    }
+
+    #[test]
+    fn tile_name_uses_hemisphere_letters() {
+        assert_eq!(tile_name((35, 138)), "N035E138");
+        assert_eq!(tile_name((-1, -5)), "S001W005");
+        assert_eq!(tile_name((0, 0)), "N000E000");
+    }
+
+    #[test]
+    fn decode_reads_little_endian_i16() {
+        assert_eq!(decode_i16_le(&[0x34, 0x12, 0xff, 0xff, 0x00, 0x80]), vec![0x1234, -1, i16::MIN]);
+        // 端数のバイトは捨てる。
+        assert_eq!(decode_i16_le(&[1, 0, 9]), vec![1]);
+    }
+
+    #[test]
+    fn tile_lookup_uses_bounds() {
+        let data = TerrainData::synthetic(30, 120, 2, 3, |_, _| 0);
+        assert_eq!(data.tiles().len(), 6);
+        assert!(data.tile((31, 122)).is_some());
+        assert!(data.tile((32, 120)).is_none());
+        assert!(data.tile((29, 120)).is_none());
+        assert!(data.tile((30, 123)).is_none());
+    }
+
+    #[test]
+    fn bilinear_reproduces_a_linear_slope_on_the_base_grid() {
+        let data = one_tile(slope);
+        let tile = data.tile(KEY).unwrap();
+        assert!((data.sample_bilinear(tile, 0.25, 0.5) - 180.0).abs() < 1e-3);
+        assert!((data.sample_bilinear(tile, 0.0, 0.0)).abs() < 1e-3);
+        // 東端・北端(u,v=1)でも範囲外を引かずに端の値を返す。
+        assert!((data.sample_bilinear(tile, 1.0, 1.0) - 660.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn bilinear_treats_no_data_neighbours_as_sea_level() {
+        let data = one_tile(|lat, lon| if lon > 120.5 { NO_DATA } else { slope(lat, lon) });
+        let tile = data.tile(KEY).unwrap();
+        assert!(data.sample_bilinear(tile, 0.2, 0.5) > 0.0);
+        assert_eq!(data.sample_bilinear(tile, 0.9, 0.5), 0.0);
+    }
+
+    #[test]
+    fn detail_grid_is_used_only_after_the_chunk_level_is_set() {
+        let data = one_tile(|_, _| 100);
+        let tile = data.tile(KEY).unwrap();
+        let nodes = data.chunk_cells(1) + 1;
+        data.insert_chunk_grid(KEY, 1, 0, vec![500; nodes * nodes]);
+        assert!(data.has_chunk_grid(tile, 1, 0));
+        // 登録しただけでは、まだ画面に出していないレベルなのでサンプリングは変わらない。
+        assert_eq!(data.sample_bilinear(tile, 0.1, 0.1), 100.0);
+        data.set_chunk_level(KEY, 0, 1);
+        assert_eq!(data.sample_bilinear(tile, 0.1, 0.1), 500.0);
+        // 別のチャンク(東側)はレベル0のまま。
+        assert_eq!(data.sample_bilinear(tile, 0.9, 0.1), 100.0);
+        data.set_whole_tile(KEY);
+        assert_eq!(data.sample_bilinear(tile, 0.1, 0.1), 100.0);
+    }
+
+    #[test]
+    fn insert_chunk_grid_ignores_bad_arguments() {
+        let data = one_tile(|_, _| 0);
+        let tile = data.tile(KEY).unwrap();
+        let nodes = data.chunk_cells(1) + 1;
+        data.insert_chunk_grid(KEY, 1, 0, vec![0; nodes * nodes - 1]); // 長さ不一致
+        data.insert_chunk_grid(KEY, 0, 0, vec![0; nodes * nodes]); // レベル0はチャンクを持たない
+        data.insert_chunk_grid(KEY, 1, data.chunk_count(), vec![0; nodes * nodes]); // チャンク範囲外
+        data.insert_chunk_grid(KEY, data.num_levels(), 0, vec![0; nodes * nodes]); // レベル範囲外
+        data.insert_chunk_grid((0, 0), 1, 0, vec![0; nodes * nodes]); // タイル無し
+        assert_eq!(data.cached_bytes(), 0);
+        assert!(!data.has_chunk_grid(tile, 1, 0));
+        // レベル0やチャンク範囲外の問い合わせでもパニックしない。
+        assert!(data.chunk_grid(tile, 0, 0).is_none());
+        assert!(!data.has_chunk_grid(tile, 0, 0));
+        assert!(!data.has_chunk_grid(tile, 1, data.chunk_count()));
+    }
+
+    #[test]
+    fn insert_tile_level_splits_records_per_chunk() {
+        let data = one_tile(|_, _| 0);
+        let tile = data.tile(KEY).unwrap();
+        let nodes = data.chunk_cells(1) + 1;
+        let record = nodes * nodes;
+        let mut all = Vec::new();
+        for chunk in 0..data.chunk_count() {
+            all.extend(std::iter::repeat(chunk as i16 + 1).take(record));
+        }
+        data.insert_tile_level(KEY, 1, &all);
+        for chunk in 0..data.chunk_count() {
+            assert_eq!(data.chunk_grid(tile, 1, chunk).unwrap()[0], chunk as i16 + 1);
+        }
+        assert_eq!(data.cached_bytes(), data.chunk_count() * record * 2);
+        assert_eq!(data.best_cached_level(tile, 0, 2), 1);
+        assert_eq!(data.best_cached_level(tile, 0, 0), 0);
+    }
+
+    #[test]
+    fn evict_unused_drops_oldest_first_and_respects_keep() {
+        let data = one_tile(|_, _| 0);
+        let tile = data.tile(KEY).unwrap();
+        let nodes = data.chunk_cells(1) + 1;
+        let one = nodes * nodes * 2;
+        for chunk in 0..3 {
+            data.insert_chunk_grid(KEY, 1, chunk, vec![0; nodes * nodes]);
+        }
+        assert_eq!(data.cached_bytes(), 3 * one);
+        // チャンク0を使い直して、最後に使われたのを新しくする。
+        data.chunk_grid(tile, 1, 0);
+
+        // 上限内なら何もしない。
+        data.evict_unused(|_, _, _| false, 3 * one);
+        assert_eq!(data.cached_bytes(), 3 * one);
+
+        // チャンク1(いちばん古い)だけが消える。
+        data.evict_unused(|_, _, _| false, 2 * one);
+        assert!(!data.has_chunk_grid(tile, 1, 1));
+        assert!(data.has_chunk_grid(tile, 1, 0) && data.has_chunk_grid(tile, 1, 2));
+
+        // keepが真のものは、上限を超えていても残す。
+        data.evict_unused(|_, chunk, _| chunk == 2, 0);
+        assert!(data.has_chunk_grid(tile, 1, 2));
+        assert!(!data.has_chunk_grid(tile, 1, 0));
+        assert_eq!(data.cached_bytes(), one);
+    }
 }

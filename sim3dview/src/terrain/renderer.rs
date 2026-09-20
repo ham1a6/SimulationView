@@ -1,6 +1,7 @@
-//! wgpuによる地形メッシュの描画。DETAILED_DESIGN.md 6節。
-//! フェーズ8時点では単一メッシュ・単一カメラでの描画確認が目的
-//! (自由視点カメラはフェーズ10、側面図パネルへの適用もフェーズ10でカメラ機構と合わせて行う)。
+//! wgpuによる描画(地形メッシュ・水域・作図・航跡・覆域)。DETAILED_DESIGN.md 6節。
+//! 描画は3つのパスで、いずれも内部解像度はcanvasの2倍(スーパーサンプリング)+4倍MSAA:
+//! (1) 水域→地形→絶対座標の作図・マーカー・航跡、(2) カメラ固定の作図(あれば。深度を作り直して手前に重ねる)、
+//! (3) canvasの解像度へ縮小(`downsample_pipeline`)。深度は反転Z(`camera.rs`)。
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
@@ -254,6 +255,15 @@ pub struct TerrainRenderer {
     screen_batch: VertexBatch,
 }
 
+/// 地形の頂点(`TerrainVertex`)のシェーダー入力(`terrain.wgsl`の`VertexInput`)。位置・色・法線xy(snorm16x2)。
+/// オフセットは`vertex_attr_array!`が並びから求める(構造体のレイアウトと一致することは単体テストで確認)。
+const TERRAIN_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
+    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Snorm16x2];
+
+/// 作図の頂点(`DrawVertex`)のシェーダー入力(`draw.wgsl`の`VertexInput`)。位置・色・aux・params。
+const DRAW_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 4] =
+    wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x4, 2 => Float32x3, 3 => Float32x4];
+
 /// 作図のパイプライン1本を作る。`depth_write`/`depth_compare`で不透明・半透明・画面座標を作り分ける。
 fn create_draw_pipeline(
     device: &wgpu::Device,
@@ -267,12 +277,7 @@ fn create_draw_pipeline(
     let vertex_layout = wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<DrawVertex>() as wgpu::BufferAddress,
         step_mode: wgpu::VertexStepMode::Vertex,
-        attributes: &[
-            wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
-            wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x4 },
-            wgpu::VertexAttribute { offset: 28, shader_location: 2, format: wgpu::VertexFormat::Float32x3 },
-            wgpu::VertexAttribute { offset: 40, shader_location: 3, format: wgpu::VertexFormat::Float32x4 },
-        ],
+        attributes: &DRAW_VERTEX_ATTRIBUTES,
     };
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(label),
@@ -317,15 +322,33 @@ fn create_draw_pipeline(
     })
 }
 
+/// canvasからsurfaceを作る。`SurfaceTarget::Canvas`はwasm32にしか無いため、ネイティブ(単体テスト)では
+/// 描画自体が成り立たないものとしてエラーを返す(これでライブラリ全体が`cargo test`でビルドできる)。
+#[cfg(target_arch = "wasm32")]
+fn create_canvas_surface(
+    instance: &wgpu::Instance,
+    canvas: web_sys::HtmlCanvasElement,
+) -> Result<wgpu::Surface<'static>, String> {
+    instance
+        .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
+        .map_err(|e| format!("create_surface failed: {e}"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn create_canvas_surface(
+    _instance: &wgpu::Instance,
+    _canvas: web_sys::HtmlCanvasElement,
+) -> Result<wgpu::Surface<'static>, String> {
+    Err("canvasへの描画はwasm32でのみ利用できます".to_string())
+}
+
 impl TerrainRenderer {
     pub async fn new(canvas: web_sys::HtmlCanvasElement) -> Result<Self, String> {
         let width = canvas.width().max(1);
         let height = canvas.height().max(1);
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let surface = instance
-            .create_surface(wgpu::SurfaceTarget::Canvas(canvas))
-            .map_err(|e| format!("create_surface failed: {e}"))?;
+        let surface = create_canvas_surface(&instance, canvas)?;
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -343,17 +366,13 @@ impl TerrainRenderer {
             .map_err(|e| format!("request_device failed: {e}"))?;
 
         let surface_caps = surface.get_capabilities(&adapter);
-        let format = surface_caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| f.is_srgb())
-            .unwrap_or(surface_caps.formats[0]);
-
         let mut config = surface
             .get_default_config(&adapter, width, height)
             .ok_or_else(|| "surface is not supported by adapter".to_string())?;
-        config.format = format;
+        // sRGB形式があればそれを使う。無ければ`get_default_config`が選んだ形式のまま。
+        if let Some(srgb) = surface_caps.formats.iter().copied().find(|f| f.is_srgb()) {
+            config.format = srgb;
+        }
         config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
         config.present_mode = wgpu::PresentMode::Fifo;
         surface.configure(&device, &config);
@@ -415,23 +434,7 @@ impl TerrainRenderer {
         let vertex_layout = wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<super::mesh::TerrainVertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
-                },
-                wgpu::VertexAttribute {
-                    offset: 2 * std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Snorm16x2,
-                },
-            ],
+            attributes: &TERRAIN_VERTEX_ATTRIBUTES,
         };
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -457,9 +460,9 @@ impl TerrainRenderer {
                 topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                // フェーズ8時点では巻き順(ワインディング)の検証よりも描画確認を優先し、
-                // カリングを無効化しておく(誤った巻き順でも常に地形が見える)。
-                // 自由視点カメラ実装(フェーズ10)時に正しい巻き順を確認して有効化する。
+                // 裏面カリングは使っていない。地形は高さ場で、上から見る限り裏面はほとんど映らないので
+                // 効果は小さい。有効化するなら、スカート(縁の壁)の巻き順が4辺で揃っているかを先に
+                // 確認する必要がある(揃っていないとクラックが出る。CLAUDE.mdの既知の技術的負債)。
                 cull_mode: None,
                 unclipped_depth: false,
                 polygon_mode: wgpu::PolygonMode::Fill,
@@ -841,7 +844,9 @@ impl TerrainRenderer {
     }
 
     pub fn resize(&mut self, width: u32, height: u32) {
-        if width == 0 || height == 0 {
+        // 大きさが変わっていなければ何もしない(ResizeObserverやタブの再表示で同じ大きさが何度も
+        // 通知されるが、そのたびにsurfaceの再設定と大きなテクスチャ3枚の作り直しをするのは無駄)。
+        if width == 0 || height == 0 || (width == self.config.width && height == self.config.height) {
             return;
         }
         self.config.width = width;
@@ -920,8 +925,18 @@ impl TerrainRenderer {
         // 深度バッファを作り直す必要があるので、地形のパスとは別のパスにする。
         let has_overlay = !(self.view_opaque.is_empty() && self.view_blend.is_empty() && self.screen_batch.is_empty());
 
-        let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+        let (frame, suboptimal) = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) => (t, false),
+            // 描画はできるが、surfaceの設定が現状に合っていない。描いたあとに設定し直す。
+            wgpu::CurrentSurfaceTexture::Suboptimal(t) => (t, true),
+            // 一時的に表示できない状態(タブやウインドウが隠れている等)。このフレームは描かず、
+            // 次のフレームでやり直す(エラーではない)。
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
+            // 設定が古くなった。設定し直して、次のフレームで復帰する。
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.surface.configure(&self.device, &self.config);
+                return Ok(());
+            }
             other => return Err(format!("get_current_texture failed: {other:?}")),
         };
         let view = frame
@@ -1062,6 +1077,9 @@ impl TerrainRenderer {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         self.queue.present(frame);
+        if suboptimal {
+            self.surface.configure(&self.device, &self.config);
+        }
         Ok(())
     }
 }
@@ -1160,4 +1178,231 @@ fn create_downsample_bind_group(
             },
         ],
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terrain::camera::{CameraPreset, OrbitCamera, ViewMode};
+    use glam::{Mat4, Vec3, Vec4};
+    use std::mem::{offset_of, size_of};
+
+    const TERRAIN_WGSL: &str = include_str!("terrain.wgsl");
+    const DRAW_WGSL: &str = include_str!("draw.wgsl");
+
+    // ---- 純関数 ----
+
+    #[test]
+    fn supersample_size_doubles_and_clamps_each_side() {
+        assert_eq!(supersample_size(700, 500), (1400, 1000));
+        assert_eq!(supersample_size(0, 0), (2, 2)); // 0は1として扱う
+        // 幅と高さを独立に上限(4096)へ丸める。
+        assert_eq!(supersample_size(3000, 100), (SUPERSAMPLE_MAX_DIMENSION, 200));
+    }
+
+    #[test]
+    fn position_bounds_encloses_all_vertices() {
+        let v = |p: [f32; 3]| TerrainVertex::unlit(p, [0.0; 3]);
+        let (min, max) = position_bounds(&[v([1.0, -2.0, 3.0]), v([-4.0, 5.0, 0.5]), v([0.0, 0.0, 9.0])]);
+        assert_eq!(min, [-4.0, -2.0, 0.5]);
+        assert_eq!(max, [1.0, 5.0, 9.0]);
+        // 頂点が無ければ空の直方体(どの点も含まない)。
+        let (min, max) = position_bounds(&[]);
+        assert!(min[0] > max[0]);
+    }
+
+    #[test]
+    fn screen_matrix_maps_pixels_to_clip_space_with_y_down() {
+        let m = screen_matrix(800.0, 600.0);
+        let map = |x: f32, y: f32| m * Vec4::new(x, y, 0.0, 1.0);
+        let close = |a: Vec4, b: [f32; 3]| (a.x - b[0]).abs() < 1e-6 && (a.y - b[1]).abs() < 1e-6 && a.w == 1.0;
+        assert!(close(map(0.0, 0.0), [-1.0, 1.0, 0.5])); // 左上
+        assert!(close(map(800.0, 600.0), [1.0, -1.0, 0.5])); // 右下
+        assert!(close(map(400.0, 300.0), [0.0, 0.0, 0.5])); // 中心
+        assert_eq!(map(10.0, 10.0).z, 0.5); // 深度は一定
+    }
+
+    fn view_proj(mode: ViewMode, distance: f32) -> Mat4 {
+        let mut o = OrbitCamera::preset(CameraPreset::Overview, 0.0);
+        o.mode = mode;
+        o.distance = distance;
+        o.to_camera(1.5).view_proj_matrix()
+    }
+
+    fn cube(center: Vec3, half: f32) -> ([f32; 3], [f32; 3]) {
+        ((center - Vec3::splat(half)).to_array(), (center + Vec3::splat(half)).to_array())
+    }
+
+    #[test]
+    fn frustum_test_culls_boxes_that_are_clearly_outside() {
+        let vp = view_proj(ViewMode::ThreeD, 10_000.0);
+        // 注視点まわりの直方体は見える。
+        assert!(!is_outside_frustum(&vp, cube(Vec3::ZERO, 100.0)));
+        // 視野の左右・下・カメラの後ろ・far面の外は見えない。
+        assert!(is_outside_frustum(&vp, cube(Vec3::new(500_000.0, 0.0, 0.0), 100.0)));
+        assert!(is_outside_frustum(&vp, cube(Vec3::new(0.0, 500_000.0, 0.0), 100.0)));
+        assert!(is_outside_frustum(&vp, cube(Vec3::new(-8_000.0, -8_000.0, 6_000.0), 10.0))); // 視点の後ろ
+        assert!(is_outside_frustum(&vp, cube(Vec3::new(-20_000_000.0, -20_000_000.0, 0.0), 100.0)));
+        // 視錐台をまたぐ大きな直方体は外ではない。
+        assert!(!is_outside_frustum(&vp, cube(Vec3::ZERO, 5_000_000.0)));
+    }
+
+    // 保守的であること: 視野の中に見えている点を含む直方体を「外」と判定してはいけない。
+    #[test]
+    fn frustum_test_never_culls_a_visible_box() {
+        for mode in [ViewMode::ThreeD, ViewMode::TwoD] {
+            let vp = view_proj(mode, 50_000.0);
+            let mut checked = 0;
+            for xi in -10..=10 {
+                for yi in -10..=10 {
+                    for zi in [-2000.0, 0.0, 3000.0] {
+                        let center = Vec3::new(xi as f32 * 8_000.0, yi as f32 * 8_000.0, zi);
+                        let clip = vp * center.extend(1.0);
+                        let inside = clip.w > 0.0
+                            && clip.x.abs() <= clip.w
+                            && clip.y.abs() <= clip.w
+                            && clip.z >= 0.0
+                            && clip.z <= clip.w;
+                        if inside {
+                            checked += 1;
+                            assert!(!is_outside_frustum(&vp, cube(center, 50.0)), "{mode:?} {center}");
+                        }
+                    }
+                }
+            }
+            assert!(checked > 20, "{mode:?}: only {checked} visible sample points");
+        }
+    }
+
+    // ---- WGSLの検証と、Rust側とのレイアウトの一致 ----
+
+    fn parse(src: &str) -> naga::Module {
+        naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("WGSL parse error: {}", e.emit_to_string(src)))
+    }
+
+    fn struct_of<'m>(module: &'m naga::Module, name: &str) -> (u32, &'m [naga::StructMember]) {
+        module
+            .types
+            .iter()
+            .find_map(|(_, ty)| match (&ty.name, &ty.inner) {
+                (Some(n), naga::TypeInner::Struct { members, span }) if n == name => Some((*span, members.as_slice())),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("struct {name} not found in WGSL"))
+    }
+
+    fn offsets(members: &[naga::StructMember]) -> Vec<(String, u32)> {
+        members.iter().map(|m| (m.name.clone().unwrap_or_default(), m.offset)).collect()
+    }
+
+    #[test]
+    fn wgsl_modules_parse_and_validate() {
+        for (name, src) in [("terrain.wgsl", TERRAIN_WGSL), ("draw.wgsl", DRAW_WGSL)] {
+            let module = parse(src);
+            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+                .validate(&module)
+                .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(src)));
+        }
+    }
+
+    #[test]
+    fn camera_uniform_matches_the_wgsl_struct() {
+        let module = parse(TERRAIN_WGSL);
+        let (span, members) = struct_of(&module, "CameraUniform");
+        assert_eq!(span as usize, size_of::<CameraUniform>());
+        let expected = [
+            ("view_proj", offset_of!(CameraUniform, view_proj)),
+            ("shading", offset_of!(CameraUniform, shading)),
+            ("eye", offset_of!(CameraUniform, eye)),
+            ("forward", offset_of!(CameraUniform, forward)),
+            ("right", offset_of!(CameraUniform, right)),
+            ("up", offset_of!(CameraUniform, up)),
+            ("ellipsoid_m", offset_of!(CameraUniform, ellipsoid_m)),
+            ("ellipsoid_g", offset_of!(CameraUniform, ellipsoid_g)),
+        ];
+        let want: Vec<(String, u32)> = expected.iter().map(|(n, o)| (n.to_string(), *o as u32)).collect();
+        assert_eq!(offsets(members), want);
+    }
+
+    #[test]
+    fn draw_uniform_matches_the_wgsl_struct() {
+        let module = parse(DRAW_WGSL);
+        let (span, members) = struct_of(&module, "DrawUniform");
+        assert_eq!(span as usize, size_of::<DrawUniform>());
+        let want: Vec<(String, u32)> = [
+            ("view_proj", offset_of!(DrawUniform, view_proj)),
+            ("viewport", offset_of!(DrawUniform, viewport)),
+            ("light", offset_of!(DrawUniform, light)),
+        ]
+        .iter()
+        .map(|(n, o)| (n.to_string(), *o as u32))
+        .collect();
+        assert_eq!(offsets(members), want);
+    }
+
+    /// `vs_main`の頂点入力(location・型)を、Rust側の頂点属性と突き合わせる。
+    fn check_vertex_inputs(src: &str, attributes: &[wgpu::VertexAttribute]) {
+        let module = parse(src);
+        let entry = module.entry_points.iter().find(|e| e.name == "vs_main").expect("vs_main");
+        let input = module.types[entry.function.arguments[0].ty].clone();
+        let naga::TypeInner::Struct { members, .. } = input.inner else { panic!("vs_main takes a struct") };
+
+        assert_eq!(members.len(), attributes.len());
+        for member in &members {
+            let Some(naga::Binding::Location { location, .. }) = member.binding else {
+                panic!("{:?} has no @location", member.name)
+            };
+            let attribute = attributes
+                .iter()
+                .find(|a| a.shader_location == location)
+                .unwrap_or_else(|| panic!("no vertex attribute for @location({location})"));
+            // 浮動小数のベクトルとして読む形式(Float32xN・Snorm16x2)と、WGSLのvecN<f32>が同じ次元。
+            let components = match attribute.format {
+                wgpu::VertexFormat::Float32x2 | wgpu::VertexFormat::Snorm16x2 => naga::VectorSize::Bi,
+                wgpu::VertexFormat::Float32x3 => naga::VectorSize::Tri,
+                wgpu::VertexFormat::Float32x4 => naga::VectorSize::Quad,
+                other => panic!("unexpected vertex format {other:?}"),
+            };
+            match &module.types[member.ty].inner {
+                naga::TypeInner::Vector { size, scalar } => {
+                    assert_eq!(*size, components, "@location({location})");
+                    assert_eq!(scalar.kind, naga::ScalarKind::Float, "@location({location})");
+                }
+                other => panic!("@location({location}) is {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn terrain_vertex_layout_matches_struct_and_wgsl() {
+        let offsets: Vec<u64> = TERRAIN_VERTEX_ATTRIBUTES.iter().map(|a| a.offset).collect();
+        assert_eq!(
+            offsets,
+            [
+                offset_of!(TerrainVertex, position) as u64,
+                offset_of!(TerrainVertex, color) as u64,
+                offset_of!(TerrainVertex, normal_xy) as u64
+            ]
+        );
+        let last = TERRAIN_VERTEX_ATTRIBUTES.last().unwrap();
+        assert_eq!(last.offset + last.format.size(), size_of::<TerrainVertex>() as u64);
+        check_vertex_inputs(TERRAIN_WGSL, &TERRAIN_VERTEX_ATTRIBUTES);
+    }
+
+    #[test]
+    fn draw_vertex_layout_matches_struct_and_wgsl() {
+        let offsets: Vec<u64> = DRAW_VERTEX_ATTRIBUTES.iter().map(|a| a.offset).collect();
+        assert_eq!(
+            offsets,
+            [
+                offset_of!(DrawVertex, position) as u64,
+                offset_of!(DrawVertex, color) as u64,
+                offset_of!(DrawVertex, aux) as u64,
+                offset_of!(DrawVertex, params) as u64
+            ]
+        );
+        let last = DRAW_VERTEX_ATTRIBUTES.last().unwrap();
+        assert_eq!(last.offset + last.format.size(), size_of::<DrawVertex>() as u64);
+        check_vertex_inputs(DRAW_WGSL, &DRAW_VERTEX_ATTRIBUTES);
+    }
 }

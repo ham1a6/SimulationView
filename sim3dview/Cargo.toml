@@ -41,3 +41,7 @@ features = [
     "Navigator",
     "KeyboardEvent",
 ]
+
+[dev-dependencies]
+# WGSLの構文・型の検証と、uniform・頂点のレイアウトがRust側の構造体と一致することの確認(単体テスト専用)。
+naga = { version = "30", features = ["wgsl-in"] }

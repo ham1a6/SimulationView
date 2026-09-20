@@ -371,3 +371,142 @@ pub fn compute_los_dome(
         })
         .collect()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 標高0mの平らな地形(緯度30〜33度・経度120〜123度)と、その中央の原点。
+    fn flat() -> (TerrainData, Origin) {
+        (
+            TerrainData::synthetic(30, 120, 3, 3, |_, _| 0),
+            Origin { lat_deg: 31.5, lon_deg: 121.5 },
+        )
+    }
+
+    /// 経度121.6667度(原点の東約16km)に1,500mの尾根がある地形(それ以外は0m)。
+    fn ridge() -> TerrainData {
+        TerrainData::synthetic(30, 120, 3, 3, |_, lon| {
+            if (lon - 121.0 - 4.0 / 6.0).abs() < 1e-6 {
+                1500
+            } else {
+                0
+            }
+        })
+    }
+
+    /// 平坦地で高さhのアンテナから見える地平線までの距離 √(2 r_eff h)(電波の地平線)。
+    fn radio_horizon_m(height_m: f64) -> f64 {
+        (2.0 * EARTH_RADIUS_M * K_FACTOR * height_m).sqrt()
+    }
+
+    #[test]
+    fn azimuth_index_is_in_mils() {
+        assert_eq!(azimuth_deg_of(0), 0.0);
+        assert_eq!(azimuth_deg_of(1600), 90.0);
+        assert_eq!(azimuth_deg_of(3200), 180.0);
+        assert!((azimuth_deg_of(NUM_AZIMUTHS - 1) - 359.94375).abs() < 1e-9);
+    }
+
+    #[test]
+    fn curvature_drop_grows_with_the_square_of_distance() {
+        let r = EARTH_RADIUS_M * K_FACTOR;
+        assert_eq!(curvature_drop_m(0.0, r), 0.0);
+        assert!((curvature_drop_m(20_000.0, r) - 4.0 * curvature_drop_m(10_000.0, r)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn point_visibility_on_flat_ground_follows_the_radio_horizon() {
+        let (data, origin) = flat();
+        let (lat, lon) = (origin.lat_deg, origin.lon_deg);
+        // 高さ10mのアンテナの地平線は約13km。その内側の地表は見え、外側は見えない。
+        assert!((radio_horizon_m(10.0) - 13_000.0).abs() < 100.0);
+        let at = |km: f64| lon + km / 94.9; // この緯度の経度1度は約94.9km
+        assert!(is_visible(&data, lat, lon, 10.0, 200_000.0, lat, at(5.0)));
+        assert!(!is_visible(&data, lat, lon, 10.0, 200_000.0, lat, at(30.0)));
+        // アンテナが高ければ30km先も見える(100mなら地平線は約41km)。
+        assert!(is_visible(&data, lat, lon, 100.0, 200_000.0, lat, at(30.0)));
+        // 最大観測範囲の外は常に見えない。真上(距離0)は見える。
+        assert!(!is_visible(&data, lat, lon, 100.0, 20_000.0, lat, at(30.0)));
+        assert!(is_visible(&data, lat, lon, 10.0, 20_000.0, lat, lon));
+    }
+
+    #[test]
+    fn a_ridge_hides_what_is_behind_it() {
+        let data = ridge();
+        let (lat, lon) = (31.5, 121.5);
+        let at = |km: f64| lon + km / 94.9;
+        // 尾根(東16km)の向こう25km地点は、41kmの地平線の内側でも尾根に遮られる。
+        assert!(!is_visible(&data, lat, lon, 100.0, 200_000.0, lat, at(25.0)));
+        // 反対側(西25km)は遮るものがなく見える。
+        assert!(is_visible(&data, lat, lon, 100.0, 200_000.0, lat, at(-25.0)));
+        // 尾根の手前は見える。
+        assert!(is_visible(&data, lat, lon, 100.0, 200_000.0, lat, at(8.0)));
+    }
+
+    #[test]
+    fn min_visible_altitude_is_consistent_with_visibility() {
+        let (data, origin) = flat();
+        let (lat, lon) = (origin.lat_deg, origin.lon_deg);
+        let at = |km: f64| lon + km / 94.9;
+        // 10mのアンテナで30km先を見るには、地表より少し(約17m)高くないと見えない。
+        let alt = min_visible_altitude(&data, lat, lon, 10.0, 200_000.0, lat, at(30.0)).unwrap();
+        assert!(alt > 10.0 && alt < 25.0, "alt={alt}");
+        // 100mのアンテナなら地表(0m)でほぼ見える。
+        let low = min_visible_altitude(&data, lat, lon, 100.0, 200_000.0, lat, at(30.0)).unwrap();
+        assert!(low < 5.0 && low > -20.0, "low={low}");
+        // 最大観測範囲の外はNone、真上は観測点の高さ。
+        assert!(min_visible_altitude(&data, lat, lon, 10.0, 20_000.0, lat, at(30.0)).is_none());
+        assert_eq!(min_visible_altitude(&data, lat, lon, 10.0, 20_000.0, lat, lon), Some(10.0));
+    }
+
+    #[test]
+    fn los_range_on_flat_ground_is_the_radio_horizon_in_every_direction() {
+        let (data, origin) = flat();
+        let params = LosParams { observer_height_m: 10.0, max_range_m: 50_000.0 };
+        let result = compute_los(&data, &origin, &params);
+        assert_eq!(result.len(), NUM_AZIMUTHS);
+        assert_eq!(result[1600].azimuth_deg, 90.0);
+        let horizon = radio_horizon_m(10.0);
+        for p in [&result[0], &result[1600], &result[3200], &result[4800], &result[777]] {
+            assert!((p.range_m - horizon).abs() < 300.0, "az={} range={}", p.azimuth_deg, p.range_m);
+        }
+    }
+
+    #[test]
+    fn coverage_area_reaches_the_max_range_for_a_high_target_and_stops_at_the_ridge() {
+        let (data, origin) = flat();
+        let params = LosParams { observer_height_m: 10.0, max_range_m: 30_000.0 };
+        // 平坦地の上空1,000mを飛ぶ対象は、最大観測範囲(30km)までどの方位でも見える。
+        for p in compute_coverage_area(&data, &origin, &params, 1_000.0).iter().step_by(800) {
+            assert!((p.range_m - 30_000.0).abs() < 1.0, "az={} range={}", p.azimuth_deg, p.range_m);
+        }
+        // 東の尾根(標高1,500m)より低い高度の対象は、東側では尾根の手前までしか届かない。
+        let cov = compute_coverage_area(&ridge(), &origin, &params, 500.0);
+        let east = cov[1600].range_m;
+        let west = cov[4800].range_m;
+        assert!(east < 17_000.0, "east={east}");
+        assert!((west - 30_000.0).abs() < 1.0, "west={west}");
+    }
+
+    #[test]
+    fn dome_rings_are_full_spheres_over_flat_ground() {
+        let (data, origin) = flat();
+        let params = LosParams { observer_height_m: 10.0, max_range_m: 30_000.0 };
+        let rings = compute_los_dome(&data, &origin, &params, &[0.0, 5.0, 30.0]);
+        assert_eq!(rings.len(), 3);
+        for ring in &rings {
+            assert_eq!(ring.points.len(), NUM_AZIMUTHS);
+            // 遮蔽がなければ、どの仰角でも最大観測範囲(スラントレンジ)ちょうどの球面になる。
+            for p in ring.points.iter().step_by(1000) {
+                assert!(
+                    (p.range_m - 30_000.0).abs() < 1.0,
+                    "el={} az={} r={}",
+                    ring.elevation_deg,
+                    p.azimuth_deg,
+                    p.range_m
+                );
+            }
+        }
+    }
+}

@@ -159,6 +159,18 @@ pub fn plan_levels(
     canvas_height_px: f32,
     resident: &HashMap<TileKey, Resident>,
 ) -> Vec<(TileKey, TilePlan)> {
+    plan_levels_with_budget(data, transform, camera, canvas_height_px, resident, DETAIL_VERTEX_BUDGET)
+}
+
+/// `plan_levels`の頂点数の予算を指定できる版(単体テストで予算の配分を確かめるため)。
+fn plan_levels_with_budget(
+    data: &TerrainData,
+    transform: &EnuTransform,
+    camera: &Camera,
+    canvas_height_px: f32,
+    resident: &HashMap<TileKey, Resident>,
+    budget: usize,
+) -> Vec<(TileKey, TilePlan)> {
     let canvas_h = canvas_height_px.max(1.0);
     let (focus, tan_half, ortho_pixel_m) = match camera.projection {
         Projection::Perspective { fov_y_radians } => {
@@ -252,7 +264,7 @@ pub fn plan_levels(
 
     // 予算の配分。まず、全タイルに、全チャンクをレベル1で載せる下限の分を、近い(見えている)タイル
     // から順に確保する(足りなければそのタイルは全体表示のまま)。
-    let mut remaining = DETAIL_VERTEX_BUDGET;
+    let mut remaining = budget;
     let base_cost = chunk_count * chunk_vertex_cost(data, 1);
     let mut levels: HashMap<TileKey, Vec<u8>> = HashMap::new();
     for info in &infos {
@@ -297,4 +309,163 @@ pub fn plan_levels(
             (info.key, plan)
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terrain::camera::{CameraPreset, OrbitCamera};
+    use crate::terrain::loader::Ellipsoid;
+    use crate::terrain::mesh::Origin;
+
+    /// 実データと同じレベル定義(1度あたり60/180/600/1800/3600セル、6x6チャンク)の3x3タイル
+    /// (緯度30〜33度・経度130〜133度)。標高は全部0m。
+    fn data() -> TerrainData {
+        TerrainData::synthetic_with_levels(30, 130, 3, 3, vec![60, 180, 600, 1800, 3600], 6, |_, _| 0)
+    }
+
+    /// 原点は中央のタイル(31,131)の中心。
+    fn transform() -> EnuTransform {
+        EnuTransform::new(
+            &Origin { lat_deg: 31.5, lon_deg: 131.5 },
+            &Ellipsoid { a_m: 6_378_137.0, inv_f: 298.257_222_101 },
+        )
+    }
+
+    /// 原点の真上(標高0m)を注視する既定の3Dカメラ。
+    fn camera(target: Vec3, distance: f32) -> Camera {
+        let mut orbit = OrbitCamera::preset(CameraPreset::Overview, 0.0);
+        orbit.target = target;
+        orbit.distance = distance;
+        orbit.to_camera(1.5)
+    }
+
+    fn plan(cam: &Camera, resident: &HashMap<TileKey, Resident>) -> Vec<(TileKey, TilePlan)> {
+        plan_levels(&data(), &transform(), cam, 700.0, resident)
+    }
+
+    fn levels_of(plan: &[(TileKey, TilePlan)], key: TileKey) -> Vec<u8> {
+        match &plan.iter().find(|(k, _)| *k == key).expect("tile in plan").1 {
+            TilePlan::Chunks(l) => l.clone(),
+            TilePlan::Whole => panic!("{key:?} is planned as Whole"),
+        }
+    }
+
+    #[test]
+    fn cell_sizes_and_chunk_costs_match_the_documented_numbers() {
+        let d = data();
+        assert!((cell_size_m(&d, 1) - 616.7).abs() < 0.1);
+        assert!((cell_size_m(&d, 4) - 30.8).abs() < 0.1);
+        // 設計メモにある「チャンク1個=1085頂点(レベル1)」。
+        assert_eq!(chunk_vertex_cost(&d, 1), 1085);
+        assert!(chunk_vertex_cost(&d, 4) > 300_000);
+    }
+
+    #[test]
+    fn ideal_level_picks_the_coarsest_level_fine_enough_for_the_pixel() {
+        let d = data();
+        assert_eq!(ideal_level(&d, 1.0e6, 1), 1);
+        assert_eq!(ideal_level(&d, 200.0, 1), 2); // 185m/セル
+        assert_eq!(ideal_level(&d, 50.0, 1), 4); // 61.7mは足りず、30.8m
+        assert_eq!(ideal_level(&d, 1.0, 1), 4); // どれも満たさなければ最細
+        assert_eq!(ideal_level(&d, 1.0e6, 2), 2); // `from`より粗くはしない
+    }
+
+    #[test]
+    fn far_view_uses_the_floor_level_for_every_tile() {
+        let cam = camera(Vec3::ZERO, 2_000_000.0);
+        let result = plan(&cam, &HashMap::new());
+        assert_eq!(result.len(), 9);
+        for (key, _) in &result {
+            assert!(levels_of(&result, *key).iter().all(|&l| l == 1), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn close_view_refines_near_chunks_only_and_lists_the_nearest_tile_first() {
+        let cam = camera(Vec3::ZERO, 20_000.0);
+        let result = plan(&cam, &HashMap::new());
+        // 視点は中央タイルの中にあるので、中央タイルが先頭で、最細のチャンクを持つ。
+        assert_eq!(result[0].0, (31, 131));
+        let near = levels_of(&result, (31, 131));
+        assert_eq!(near.iter().copied().max(), Some(4));
+        // 中央タイルの中でも、遠いチャンクは粗い(近いものより細かくならない)。
+        assert!(near.iter().any(|&l| l < 4), "{near:?}");
+        // 隣の外側のタイルは、中央より細かいチャンクを持たない。
+        let far = levels_of(&result, (30, 130));
+        assert!(far.iter().copied().max() <= near.iter().copied().max());
+    }
+
+    #[test]
+    fn budget_decides_which_tiles_get_chunks() {
+        let cam = camera(Vec3::ZERO, 20_000.0);
+        let d = data();
+        let per_tile = d.chunk_count() * chunk_vertex_cost(&d, 1);
+        // 下限(全チャンクをレベル1)を3タイル分だけ確保できる予算。上げる余裕は無い。
+        let result =
+            plan_levels_with_budget(&d, &transform(), &cam, 700.0, &HashMap::new(), 3 * per_tile);
+        let chunked: Vec<_> = result
+            .iter()
+            .filter(|(_, p)| matches!(p, TilePlan::Chunks(_)))
+            .map(|(k, _)| *k)
+            .collect();
+        assert_eq!(chunked.len(), 3);
+        // 近い順(先頭から)に確保されるので、視点のあるタイルは必ず含まれる。
+        assert!(chunked.contains(&(31, 131)));
+        assert!(levels_of(&result, (31, 131)).iter().all(|&l| l == 1));
+        // 予算が0なら全タイルが全体表示。
+        let none = plan_levels_with_budget(&d, &transform(), &cam, 700.0, &HashMap::new(), 0);
+        assert!(none.iter().all(|(_, p)| *p == TilePlan::Whole));
+    }
+
+    #[test]
+    fn upgrades_never_exceed_the_budget() {
+        let cam = camera(Vec3::ZERO, 20_000.0);
+        let d = data();
+        let per_tile = d.chunk_count() * chunk_vertex_cost(&d, 1);
+        let budget = 9 * per_tile + 1_000_000; // 全タイルの下限+100万頂点だけ上げられる
+        let result = plan_levels_with_budget(&d, &transform(), &cam, 700.0, &HashMap::new(), budget);
+        let used: usize = result
+            .iter()
+            .map(|(_, p)| match p {
+                TilePlan::Chunks(l) => l.iter().map(|&l| chunk_vertex_cost(&d, l as usize)).sum(),
+                TilePlan::Whole => 0,
+            })
+            .sum();
+        assert!(used <= budget, "used={used} budget={budget}");
+        // 余りを近いチャンクへ回すので、下限だけよりは多く使っている。
+        assert!(used > 9 * per_tile);
+    }
+
+    #[test]
+    fn hysteresis_keeps_one_level_finer_than_ideal_but_not_more() {
+        let cam = camera(Vec3::ZERO, 2_000_000.0); // どのタイルも理想はレベル1(見えている)
+        let key = (31, 131);
+        let with = |levels: Resident| {
+            let mut resident = HashMap::new();
+            resident.insert(key, levels);
+            levels_of(&plan(&cam, &resident), key)
+        };
+        // 理想(1)より1つ細かい(2)だけなら保つ。
+        assert!(with(Resident::Chunks(vec![2; 36])).iter().all(|&l| l == 2));
+        // それより細かい(4)なら、1つ細かい所(2)まで下げる。
+        assert!(with(Resident::Chunks(vec![4; 36])).iter().all(|&l| l == 2));
+        // 全体表示からは、まず下限(1)から。
+        assert!(with(Resident::Whole).iter().all(|&l| l == 1));
+    }
+
+    #[test]
+    fn tiles_outside_the_view_keep_their_current_level() {
+        // 注視点を原点の3,000km東へ。原点のタイル群は視野の外(背後か脇)になる。
+        let cam = camera(Vec3::new(3_000_000.0, 0.0, 0.0), 100_000.0);
+        let key = (31, 131);
+        let mut resident = HashMap::new();
+        resident.insert(key, Resident::Chunks(vec![3; 36]));
+        let result = plan(&cam, &resident);
+        assert!(levels_of(&result, key).iter().all(|&l| l == 3));
+        // 視野の外のタイルは、見えているタイルより後ろに並ぶ(ここでは全部が外なので順序は距離順)。
+        assert_eq!(result.len(), 9);
+        // 何も出していなかったタイルは、下限のレベル1。
+        assert!(levels_of(&result, (30, 130)).iter().all(|&l| l == 1));
+    }
 }

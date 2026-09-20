@@ -82,3 +82,67 @@ pub fn pick_lat_lon(
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terrain::camera::{CameraPreset, OrbitCamera, ViewMode};
+    use glam::Vec3;
+
+    /// 標高0mの平らな地形(緯度30〜33度・経度130〜133度)と、その中央(31.5, 131.5)の原点。
+    fn flat() -> (TerrainData, Origin) {
+        (
+            TerrainData::synthetic(30, 130, 3, 3, |_, _| 0),
+            Origin { lat_deg: 31.5, lon_deg: 131.5 },
+        )
+    }
+
+    fn orbit(mode: ViewMode, distance: f32, pitch: f32) -> OrbitCamera {
+        let mut o = OrbitCamera::preset(CameraPreset::Overview, 0.0);
+        o.mode = mode;
+        o.distance = distance;
+        o.pitch = pitch;
+        o.target = Vec3::ZERO;
+        o
+    }
+
+    #[test]
+    fn center_pixel_picks_the_look_at_point() {
+        let (data, origin) = flat();
+        for distance in [30_000.0, 400_000.0] {
+            let camera = orbit(ViewMode::ThreeD, distance, 0.6).to_camera(1.0);
+            let (lat, lon) = pick_lat_lon(&data, &origin, &camera, 350.0, 350.0, 700.0, 700.0).unwrap();
+            assert!((lat - 31.5).abs() < 0.01 && (lon - 131.5).abs() < 0.01, "d={distance}: {lat},{lon}");
+        }
+    }
+
+    #[test]
+    fn top_pixel_looking_at_the_sky_picks_nothing() {
+        let (data, origin) = flat();
+        // ほぼ水平(仰角0.05)から見ると、画面の上端は地平線より上の空を見る。
+        let camera = orbit(ViewMode::ThreeD, 30_000.0, 0.05).to_camera(1.0);
+        assert!(pick_lat_lon(&data, &origin, &camera, 350.0, 0.0, 700.0, 700.0).is_none());
+    }
+
+    #[test]
+    fn orthographic_pick_maps_pixels_to_east_north_offsets() {
+        let (data, origin) = flat();
+        // 縦100kmが700px。中心から右へ100px = 東へ約14.3km(この緯度で経度約0.15度)。
+        let camera = orbit(ViewMode::TwoD, 100_000.0, 0.6).to_camera(1.0);
+        let (lat, lon) = pick_lat_lon(&data, &origin, &camera, 450.0, 350.0, 700.0, 700.0).unwrap();
+        assert!((lat - 31.5).abs() < 0.01, "lat={lat}");
+        assert!((lon - 131.5 - 0.15).abs() < 0.01, "lon={lon}");
+        // 上へ100px = 北へ約14.3km(緯度約0.129度)。
+        let (lat, lon) = pick_lat_lon(&data, &origin, &camera, 350.0, 250.0, 700.0, 700.0).unwrap();
+        assert!((lat - 31.5 - 0.129).abs() < 0.01 && (lon - 131.5).abs() < 0.01, "{lat},{lon}");
+    }
+
+    #[test]
+    fn hits_outside_the_data_are_rejected() {
+        let (data, origin) = flat();
+        // 注視点を地形データの範囲の外(東へ約1,000km)にする。
+        let mut o = orbit(ViewMode::TwoD, 100_000.0, 0.6);
+        o.target = Vec3::new(1_000_000.0, 0.0, 0.0);
+        assert!(pick_lat_lon(&data, &origin, &o.to_camera(1.0), 350.0, 350.0, 700.0, 700.0).is_none());
+    }
+}

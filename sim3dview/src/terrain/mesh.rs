@@ -581,4 +581,155 @@ mod tests {
         assert!(d > 1_800_000.0 && d < 2_000_000.0, "d={d}");
         assert!(u < -250_000.0 && u > -350_000.0, "u={u}");
     }
+
+    /// 東へ1度で600m上がる斜面(ノード間隔1/6度で整数になる)。タイル(30,120)用。
+    fn east_slope(_lat: f64, lon: f64) -> i16 {
+        (600.0 * (lon - 120.0)).round() as i16
+    }
+
+    #[test]
+    fn heightmap_is_sampled_inside_bounds_only() {
+        let data = TerrainData::synthetic(30, 120, 1, 1, east_slope);
+        assert!((sample_heightmap(&data, 30.5, 120.25).unwrap() - 150.0).abs() < 1e-3);
+        // 東端・北端ちょうどは範囲内(内側のタイルの端として扱う)。
+        assert!((sample_heightmap(&data, 31.0, 121.0).unwrap() - 600.0).abs() < 1e-3);
+        assert!(sample_heightmap(&data, 29.99, 120.5).is_none());
+        assert!(sample_heightmap(&data, 30.5, 121.01).is_none());
+    }
+
+    #[test]
+    fn ground_curves_down_like_d2_over_2r() {
+        let data = TerrainData::synthetic(30, 130, 10, 10, |_, _| 0);
+        let t = transform_at(35.0, 135.0);
+        for &(east, north) in &[(400_000.0, 0.0), (0.0, -400_000.0), (300_000.0, 300_000.0)] {
+            let (lat, lon, up) = ground_at_enu(&data, &t, east, north);
+            let d2 = east * east + north * north;
+            let drop = d2 / (2.0 * 6_378_137.0);
+            // 楕円体の曲率半径は場所で1%ほど違うので、球の概算とは数%以内で一致すればよい。
+            assert!((up as f64 + drop).abs() < 0.03 * drop, "east={east} north={north} up={up} drop={drop}");
+            // 返した緯度経度の地表(標高0m)を変換し直すと、同じENU位置に戻る。
+            let [e2, n2, u2] = t.transform_f64(lat, lon, 0.0);
+            assert!((e2 - east).abs() < 1.0 && (n2 - north).abs() < 1.0, "{e2},{n2}");
+            assert!((u2 - up as f64).abs() < 1.0, "{u2} vs {up}");
+        }
+    }
+
+    #[test]
+    fn ground_follows_terrain_height_far_away() {
+        let flat = TerrainData::synthetic(30, 130, 10, 10, |_, _| 0);
+        let hill = TerrainData::synthetic(30, 130, 10, 10, |_, _| 1000);
+        let t = transform_at(35.0, 135.0);
+        let (_, _, up0) = ground_at_enu(&flat, &t, 400_000.0, 0.0);
+        let (_, _, up1) = ground_at_enu(&hill, &t, 400_000.0, 0.0);
+        // 遠方では鉛直方向が傾くので、1000m高い地表の上座標の差は1000mよりわずかに小さい。
+        assert!((up1 - up0 - 1000.0).abs() < 10.0, "{up0} -> {up1}");
+    }
+
+    #[test]
+    fn same_ground_point_regardless_of_origin() {
+        let data = TerrainData::synthetic(30, 130, 10, 10, |lat, lon| ((lat + lon) * 3.0) as i16);
+        let (lat, lon) = (33.3, 137.7);
+        let expected = sample_heightmap(&data, lat, lon).unwrap();
+        for origin in [(35.0, 135.0), (31.0, 139.0), (39.0, 131.0)] {
+            let t = transform_at(origin.0, origin.1);
+            let (east, north, _) = ground_at_geodetic(&data, &t, lat, lon);
+            let (lat2, lon2, _) = ground_at_enu(&data, &t, east as f64, north as f64);
+            // f32のENU座標(数百km)の丸めは0.1m程度なので、緯度経度は1e-5度(約1m)以内で戻る。
+            assert!((lat2 - lat).abs() < 1e-5 && (lon2 - lon).abs() < 1e-5, "{origin:?}: {lat2},{lon2}");
+            assert!((sample_heightmap(&data, lat2, lon2).unwrap() - expected).abs() < 0.05);
+        }
+    }
+
+    #[test]
+    fn color_ramp_clamps_and_handles_empty_range() {
+        let same = |a: [f32; 3], b: [f32; 3]| a.iter().zip(&b).all(|(x, y)| (x - y).abs() < 1e-5);
+        let lowest = [0.12, 0.4, 0.18];
+        let highest = [0.95, 0.95, 0.95];
+        assert!(same(elevation_to_color(-50.0, 0.0, 1000.0), lowest));
+        assert!(same(elevation_to_color(0.0, 0.0, 1000.0), lowest));
+        assert!(same(elevation_to_color(5000.0, 0.0, 1000.0), highest));
+        // 範囲が空(max<=min)なら常に最低標高の色。
+        assert!(same(elevation_to_color(500.0, 0.0, 0.0), lowest));
+        // 中間はストップの間を線形補間する(t=0.125は、最初の2ストップの中点)。
+        let mid = elevation_to_color(125.0, 0.0, 1000.0);
+        assert!((mid[1] - 0.45).abs() < 1e-5, "{mid:?}");
+    }
+
+    #[test]
+    fn skirt_gets_shallower_at_finer_levels() {
+        assert_eq!(skirt_depth_m(0), 800.0);
+        assert!(skirt_depth_m(1) < skirt_depth_m(0));
+        // 定義済みの段数より細かいレベルは、最後の深さのまま。
+        assert_eq!(skirt_depth_m(4), skirt_depth_m(99));
+    }
+
+    #[test]
+    fn whole_tile_mesh_has_the_documented_vertex_count() {
+        let data = TerrainData::synthetic(30, 120, 1, 1, east_slope);
+        let tile = data.tile((30, 120)).unwrap();
+        let t = transform_at(30.5, 120.5);
+        let mesh = build_whole_tile_mesh(&data, tile, &t);
+        let cells = data.level_cells(0);
+        assert_eq!(mesh.vertices.len(), tile_vertex_count(cells));
+        // 全部陸: 地表 2*cells^2 三角形 + スカート 4辺*cells*2 三角形。
+        assert_eq!(mesh.indices.len(), 3 * (2 * cells * cells + 4 * cells * 2));
+        assert!(mesh.indices.iter().all(|&i| (i as usize) < mesh.vertices.len()));
+        // 原点(タイル中央のノード)の頂点は、ENUの原点=(0,0,標高)にある。
+        let n = cells + 1;
+        let center = mesh.vertices[(cells / 2) * n + cells / 2].position;
+        assert!(center[0].abs() < 1.0 && center[1].abs() < 1.0, "{center:?}");
+        assert!((center[2] - 300.0).abs() < 1.0, "{center:?}");
+    }
+
+    #[test]
+    fn triangles_touching_no_data_are_dropped() {
+        // 全部陸のグリッドから、1ノードだけデータなしにする。
+        let cells = 4;
+        let n = cells + 1;
+        let full = vec![10i16; n * n];
+        let mut holed = full.clone();
+        holed[2 * n + 2] = NO_DATA; // 中央のノード
+        let count = |g: &[i16]| grid_indices(g, cells).len() / 3;
+        let all = count(&full);
+        // 中央のノードを含む三角形は6枚(内側のノード1個は、周囲の4セル・計6三角形に含まれる)。
+        assert_eq!(count(&holed), all - 6);
+        assert!(grid_indices(&holed, cells).iter().all(|&i| i as usize != 2 * n + 2));
+
+        // 縁のノードがデータなしなら、その隣り合う2辺のスカートの壁も張らない。
+        let mut edge_hole = full.clone();
+        edge_hole[2] = NO_DATA; // 南の縁の中央
+        // 地表は節点2を含む3枚(セル1の2枚+セル2の1枚)、スカートは節点2に接する2区間の壁(2枚ずつ)。
+        assert_eq!(count(&full) - count(&edge_hole), 3 + 2 * 2);
+    }
+
+    #[test]
+    fn normals_are_lit_only_where_defined_and_lean_away_from_the_slope() {
+        let data = TerrainData::synthetic(30, 120, 1, 1, east_slope);
+        let tile = data.tile((30, 120)).unwrap();
+        let t = transform_at(30.5, 120.5);
+        let cells = data.level_cells(0);
+        let n = cells + 1;
+        let vertices = build_whole_tile_vertices(&data, tile, &t);
+        let normals = node_normals(
+            data.whole_grid(tile),
+            n,
+            &vertices[..n * n]
+                .iter()
+                .map(|v| [v.position[0] as f64, v.position[1] as f64, v.position[2] as f64])
+                .collect::<Vec<_>>(),
+        );
+        // 東へ上る斜面の法線は、西を向く(x<0)。南北方向には傾かない(y≈0)。
+        let center = normals[(cells / 2) * n + cells / 2];
+        assert!(center[0] < -100, "{center:?}");
+        assert!(center[1].abs() < 5, "{center:?}");
+        // 四隅のノードは片側に隣がないだけなので、法線は求まる。
+        assert_ne!(normals[0], TerrainVertex::UNLIT_NORMAL);
+
+        // 海(NO_DATA)のノードと、隣が両側とも海のノードは陰影なし。
+        let mut grid = data.whole_grid(tile).to_vec();
+        let positions = vec![[0.0, 0.0, 0.0]; n * n];
+        grid[3 * n + 3] = NO_DATA;
+        let lit = node_normals(&grid, n, &positions);
+        assert_eq!(lit[3 * n + 3], TerrainVertex::UNLIT_NORMAL);
+    }
 }

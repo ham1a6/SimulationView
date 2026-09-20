@@ -14,8 +14,9 @@ pub struct ProfilePoint {
 
 /// 方位角方向1本につき何点サンプリングするか。
 const NUM_SAMPLES: usize = 300;
-/// 二分探索で「地形データの範囲内かどうか」を調べる際の初期上限距離。
-/// 地形データの外接矩形(5度四方、対角線で約780km)より確実に大きい値にしておく。
+/// 断面図・見通し範囲が扱う最大距離(メートル)。二分探索の初期上限でもあり、この距離でもまだ
+/// 地形データの範囲内なら、範囲の端まで届かなくてもここで打ち切る(地形データ全体は30度四方で
+/// 約3,300kmあるが、原点からこれより遠くは扱わない)。
 const SEARCH_UPPER_BOUND_M: f64 = 1_000_000.0;
 
 /// 方位角方向(東=dir_east, 北=dir_north の単位ベクトル)に、地形データの範囲内でいられる
@@ -49,8 +50,8 @@ pub(super) fn max_valid_distance(
     lo
 }
 
-/// 原点から方位角(度、北=0・東=90・時計回り)方向へ、地形データの範囲内いっぱいまで
-/// 地表をサンプリングする。原点変更・方位角変更のたびに呼び直す想定。
+/// 原点から方位角(度、北=0・東=90・時計回り)方向へ、地形データの範囲内(最大で
+/// `SEARCH_UPPER_BOUND_M`)まで地表をサンプリングする。原点変更・方位角変更のたびに呼び直す想定。
 pub fn build_profile(data: &TerrainData, origin: &Origin, azimuth_deg: f64) -> Vec<ProfilePoint> {
     let transform = EnuTransform::new(origin, &data.metadata.ellipsoid);
     let az_rad = azimuth_deg.to_radians();
@@ -70,4 +71,60 @@ pub fn build_profile(data: &TerrainData, origin: &Origin, azimuth_deg: f64) -> V
             ProfilePoint { distance_m: distance, elevation_m: elevation, lat_deg: lat, lon_deg: lon }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terrain::loader::Ellipsoid;
+
+    fn transform(lat: f64, lon: f64) -> EnuTransform {
+        EnuTransform::new(
+            &Origin { lat_deg: lat, lon_deg: lon },
+            &Ellipsoid { a_m: 6_378_137.0, inv_f: 298.257_222_101 },
+        )
+    }
+
+    /// 東へ1度で600m上がる斜面(タイル(30,120)用。ノード間隔1/6度で整数になる)。
+    fn east_slope(_lat: f64, lon: f64) -> i16 {
+        (600.0 * (lon - 120.0)).round() as i16
+    }
+
+    #[test]
+    fn max_valid_distance_stops_at_the_data_edge() {
+        let data = TerrainData::synthetic(30, 120, 1, 1, east_slope);
+        let t = transform(30.5, 120.5);
+        // 東へ0.5度(緯度30.5での経度1度は約96km)、北へ0.5度(約55km)。
+        let east = max_valid_distance(&data, &t, 1.0, 0.0);
+        let north = max_valid_distance(&data, &t, 0.0, 1.0);
+        assert!((east - 48_000.0).abs() < 1_500.0, "east={east}");
+        assert!((north - 55_400.0).abs() < 1_000.0, "north={north}");
+    }
+
+    #[test]
+    fn max_valid_distance_is_capped_at_the_search_bound() {
+        // 東へ15度(約1,600km)先まで地形がある場合でも、1,000kmで打ち切る。
+        let data = TerrainData::synthetic(0, 100, 30, 30, |_, _| 0);
+        let t = transform(15.0, 115.0);
+        assert_eq!(max_valid_distance(&data, &t, 1.0, 0.0), SEARCH_UPPER_BOUND_M);
+    }
+
+    #[test]
+    fn profile_samples_evenly_from_the_origin_to_the_edge() {
+        let data = TerrainData::synthetic(30, 120, 1, 1, east_slope);
+        let origin = Origin { lat_deg: 30.5, lon_deg: 120.5 };
+        let east = build_profile(&data, &origin, 90.0);
+        assert_eq!(east.len(), NUM_SAMPLES + 1);
+        assert_eq!(east[0].distance_m, 0.0);
+        assert!((east[0].elevation_m - 300.0).abs() < 1.0); // 原点の標高
+        // 東へ進むほど高くなり、最後は東端(経度121度=600m)付近。
+        assert!(east.windows(2).all(|w| w[1].elevation_m >= w[0].elevation_m));
+        assert!((east[NUM_SAMPLES].elevation_m - 600.0).abs() < 25.0, "{}", east[NUM_SAMPLES].elevation_m);
+        // 等間隔。
+        let step = east[1].distance_m;
+        assert!((east[NUM_SAMPLES].distance_m - step * NUM_SAMPLES as f64).abs() < 1e-6);
+        // 北向きは東西方向に傾斜のない斜面の上なので標高が変わらない。
+        let north = build_profile(&data, &origin, 0.0);
+        assert!(north.iter().all(|p| (p.elevation_m - 300.0).abs() < 25.0));
+    }
 }

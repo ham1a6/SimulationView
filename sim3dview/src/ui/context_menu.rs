@@ -196,12 +196,13 @@ pub fn ContextMenu() -> impl IntoView {
         });
     });
 
-    // Escで閉じる。
-    window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
+    // Escで閉じる。コンポーネントが破棄されたらリスナーを外す。
+    let keydown_handle = window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
         if ev.key() == "Escape" && state.is_open() {
             state.close();
         }
     });
+    on_cleanup(move || keydown_handle.remove());
 
     view! {
         {move || {
