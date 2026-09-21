@@ -4,6 +4,8 @@
 //! 描画用の頂点列を作るだけの純粋関数群。
 //! - 観測点のマーカー: 画面サイズ固定のピン(ビルボード、`DrawVertex::billboard`)。`TerrainRenderer::update_markers`。
 //! - 3Dの覆域ドーム: TriangleListの半透明の面(`TerrainVertex`)。`TerrainRenderer::update_dome`。
+//!   覆域の計算(`start_dome_computation`・`start_coverage_computation`。重いので小分けに進める)と、
+//!   計算結果からの頂点列の生成(`dome_geometry`・`coverage_2d_geometry`)は別の関数で、計算結果は使い回せる。
 //! - 2Dの覆域: 塗り(半透明の三角形)+輪郭線(太い線)を`DrawVertex`で。深度テストなしで描く
 //!   (`TerrainRenderer::update_coverage_2d`)。
 //!
@@ -15,7 +17,7 @@ use super::drawing_geometry::append_line_strip;
 use super::vertex::DrawVertex;
 use super::loader::TerrainData;
 use super::render_bias::{COVERAGE_AREA_M, DOME_M, MARKER_M};
-use super::los::{compute_coverage_area, compute_los_dome, LosParams};
+use super::los::{DomeComputation, DomeRing, LosParams, LosPoint, RangeComputation, RangeKind};
 use super::mesh::TerrainVertex;
 use super::geodesy::EnuTransform;
 use super::heightmap::sample_heightmap;
@@ -102,26 +104,38 @@ const PIN_HEAD_SEGMENTS: usize = 24;
 /// 形が出る低い仰角(遮蔽物の仰角は多くの場合10〜20度以下)を細かく、開けた上空側を粗くしてあるが、
 /// 最上部でも4度刻み以下にして、輪郭が多角形に見えないようにしてある。
 /// リング数が多いほどドームの頂点数(リング数 x 方位数 x 6/リング間)が増える。
-const DOME_RING_ELEVATIONS_DEG: [f64; 38] = [
+pub const DOME_RING_ELEVATIONS_DEG: [f64; 38] = [
     0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, // 1度刻み
     12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0, 26.0, 28.0, 30.0, // 2度刻み
     33.0, 36.0, 39.0, 42.0, 45.0, 48.0, 51.0, 54.0, 57.0, 60.0, // 3度刻み
     64.0, 68.0, 72.0, 76.0, 80.0, 84.0, 87.0, // 4度刻み(最上段は87度)
 ];
-/// ドームの方位角の間引き(計算は1mil刻み・6400方位のまま、なめらかにした後で描くときだけ間引く)。
-/// 2なら3200方位(50km先で約98m間隔)で、平滑化後の形は間引いても変わらない。
-const DOME_AZIMUTH_STRIDE: usize = 2;
-/// 最上段リングを1点(アペックス)に閉じる傘の三角形の数。`compute_los_dome`の全方位角を傘に使うと、
+/// ドームの方位角の刻み(mil)。4なら1,600方位(50km先で約196m間隔)。ドームは下の平滑化でなだらかにするので、
+/// 1mil刻み(6400方位)で計算しても、1〜数方位の細かい凹凸は消えてしまう。計算量(方位数に比例)と頂点数を減らすために間引く。
+pub const DOME_AZIMUTH_STEP: usize = 4;
+/// 2D覆域の境界の方位角の刻み(mil)。2なら3,200方位(50km先で約98m間隔)。
+pub const COVERAGE_AZIMUTH_STEP: usize = 2;
+/// 最上段リングを1点(アペックス)に閉じる傘の三角形の数。全方位角を傘に使うと、
 /// 極端に細い三角形が大量に1点へ重なり、半透明合成(アルファブレンド)の描画順依存の副作用で
 /// カメラ操作中にチカチカして見えることが分かった(360方位角のときに確認)ので、方位角を間引いて
 /// この数の三角形にする。リング間の四角形パッチは互いに重ならないので間引かない。
 const DOME_APEX_SEGMENTS: usize = 48;
-/// ドームの半径(方位角方向)の平滑化: 1〜数方位だけの外れ値を除くメディアン(前後この方位ずつ)→平均(同)。
-/// 生の計算結果は1mil(0.056度)ごとの遮蔽判定なので、地形の細かい凹凸や、1方位だけ遮蔽される所が
-/// 観測点へ向かう細い三角形(放射状の筋)になって、ドームが滑らかに見えない。地形に遮蔽される境目も
-/// 数十m〜数百mの幅でなだらかになるだけで、遮蔽されない方角の半径(最大観測範囲)は変わらない。
-const DOME_SMOOTH_MEDIAN_HALF: usize = 3;
-const DOME_SMOOTH_MEAN_HALF: usize = 6;
+/// ドームの半径の平滑化。生の計算結果は方位ごとの遮蔽判定なので、地形の細かい凹凸や、1方位だけ遮蔽される所が
+/// 観測点へ向かう細い三角形(放射状の筋)になって、ドームが滑らかに見えない。
+/// (1) 方位角方向: 前後この方位ずつのメディアン(外れ値の除去)→前後この方位ずつの平均を`DOME_SMOOTH_MEAN_PASSES`回
+///     (平均を重ねると重みが山形になり、段差がなだらかな曲線になる)。
+/// (2) 仰角方向: 隣のリングと[1,2,1]/4で平均を`DOME_ELEVATION_SMOOTH_PASSES`回(リングごとの段が階段状に見えるのを消す)。
+/// 地形に遮蔽される境目は数百m〜1kmの幅でなだらかになるだけで、遮蔽されない方角の半径(最大観測範囲)は変わらない。
+const DOME_SMOOTH_MEDIAN_HALF: usize = 1;
+const DOME_SMOOTH_MEAN_HALF: usize = 3;
+const DOME_SMOOTH_MEAN_PASSES: usize = 2;
+const DOME_ELEVATION_SMOOTH_PASSES: usize = 1;
+/// ドームのメッシュの頂点を置く方位の間引き(計算・平滑化は`DOME_AZIMUTH_STEP`の刻みのまま、面を張るときだけ間引く)。
+/// 平滑化した半径は方位方向になだらかなので、2方位に1つでも輪郭が多角形には見えない(50km先で約390m間隔、半径50kmの円の弦の誤差は約0.4m)。
+const DOME_MIN_RING_STRIDE: usize = 2;
+/// 高いリングほど円周が短いので、方位の頂点をさらに間引く(隣のリングとは整数倍。2のべき乗個おき)。この間隔の上限。
+/// 間引かないと最上部の細い三角形が大量に重なり、無駄が多く筋が出る。
+const DOME_MAX_RING_STRIDE: usize = 32;
 
 /// 2D地図モードでの覆域表示(指定した海抜高度での探知可能領域)の塗り色(RGB)と不透明度。
 /// 3Dの覆域ドーム(`DOME_SURFACE_COLOR`)とは見た目で区別できる色にする。
@@ -132,28 +146,96 @@ const COVERAGE_AREA_ALPHA: f32 = 0.32;
 const COVERAGE_OUTLINE_COLOR: [f32; 4] = [0.75, 1.0, 0.4, 1.0];
 const COVERAGE_OUTLINE_WIDTH_PX: f32 = 2.5;
 /// 2Dの覆域の境界の平滑化(前後この方位ずつ。ドームより弱く、境界の形が残る程度)。
-const COVERAGE_SMOOTH_MEDIAN_HALF: usize = 2;
-const COVERAGE_SMOOTH_MEAN_HALF: usize = 3;
+const COVERAGE_SMOOTH_MEDIAN_HALF: usize = 1;
+const COVERAGE_SMOOTH_MEAN_HALF: usize = 2;
 
-/// 円環上の値(方位角ごとの半径など)を平滑化する: 前後`median_half`個ずつのメディアン(外れ値の除去、
-/// 段差の位置は保つ)→前後`mean_half`個ずつの平均(段差をなだらかにする)。端は反対側へつながる。
-fn smooth_circular(values: &[f64], median_half: usize, mean_half: usize) -> Vec<f64> {
+/// 円環上の値(方位角ごとの半径など)の、前後`half`個ずつのメディアン(外れ値の除去。段差の位置は保つ)。端は反対側へつながる。
+fn median_circular(values: &[f64], half: usize) -> Vec<f64> {
     let n = values.len();
-    if n == 0 {
-        return Vec::new();
-    }
-    let at = |v: &[f64], i: isize| v[i.rem_euclid(n as isize) as usize];
-    let (mh, ah) = (median_half as isize, mean_half as isize);
-    let medians: Vec<f64> = (0..n as isize)
+    let h = half as isize;
+    (0..n as isize)
         .map(|i| {
-            let mut window: Vec<f64> = (-mh..=mh).map(|d| at(values, i + d)).collect();
+            let mut window: Vec<f64> = (-h..=h).map(|d| values[(i + d).rem_euclid(n as isize) as usize]).collect();
             window.sort_by(f64::total_cmp);
             window[window.len() / 2]
         })
-        .collect();
-    (0..n as isize)
-        .map(|i| (-ah..=ah).map(|d| at(&medians, i + d)).sum::<f64>() / (2 * ah + 1) as f64)
         .collect()
+}
+
+/// 円環上の値の、前後`half`個ずつの平均(段差をなだらかにする)。端は反対側へつながる。
+fn mean_circular(values: &[f64], half: usize) -> Vec<f64> {
+    let n = values.len();
+    let h = half as isize;
+    (0..n as isize)
+        .map(|i| {
+            (-h..=h).map(|d| values[(i + d).rem_euclid(n as isize) as usize]).sum::<f64>() / (2 * h + 1) as f64
+        })
+        .collect()
+}
+
+/// 円環上の値(方位角ごとの半径など)を平滑化する: 前後`median_half`個ずつのメディアン→前後`mean_half`個ずつの
+/// 平均を`mean_passes`回。端は反対側へつながる。
+fn smooth_circular(values: &[f64], median_half: usize, mean_half: usize, mean_passes: usize) -> Vec<f64> {
+    if values.is_empty() {
+        return Vec::new();
+    }
+    let mut smoothed = median_circular(values, median_half);
+    for _ in 0..mean_passes {
+        smoothed = mean_circular(&smoothed, mean_half);
+    }
+    smoothed
+}
+
+/// リング(仰角)方向の平滑化: 方位ごとに、隣のリングと[1,2,1]/4で平均する(端のリングは、外側を自分と同じ値とみなす)。
+/// `rings[k][j]`はリングk・方位jの値。
+fn smooth_across_rings(rings: &mut [Vec<f64>], passes: usize) {
+    let num_rings = rings.len();
+    if num_rings < 3 {
+        return;
+    }
+    for _ in 0..passes {
+        let before = rings.to_vec();
+        for k in 0..num_rings {
+            let (below, above) = (&before[k.saturating_sub(1)], &before[(k + 1).min(num_rings - 1)]);
+            for (j, value) in rings[k].iter_mut().enumerate() {
+                *value = 0.25 * below[j] + 0.5 * before[k][j] + 0.25 * above[j];
+            }
+        }
+    }
+}
+
+/// ドームのリングの方位の間引き間隔(何方位おきに頂点を置くか)。`DOME_MIN_RING_STRIDE`以上で、高い(円周が短い)リングほど
+/// 大きくして、頂点の間隔が赤道側と同じくらいになるようにする。2のべき乗で、隣のリングとは整数倍になる。
+fn ring_stride(elevation_deg: f64, num_azimuths: usize) -> usize {
+    let inverse_cos = 1.0 / elevation_deg.to_radians().cos().max(1e-6);
+    let mut stride = DOME_MIN_RING_STRIDE;
+    // 浮動小数点の誤差(cos(60°)が0.5より少し大きい等)で、ちょうど2倍の仰角が1段手前になるのを防ぐ。
+    while stride * 2 <= DOME_MAX_RING_STRIDE
+        && (stride * 2) as f64 <= inverse_cos + 1e-9
+        && num_azimuths % (stride * 2) == 0
+    {
+        stride *= 2;
+    }
+    stride
+}
+
+/// 隣り合う2リングの間の帯を三角形で埋める。`lower`・`upper`はリングの頂点(円環)で、`upper`の頂点数は`lower`の
+/// 約数(`lower.len() / upper.len()`が整数)。下のリングの頂点が多い分は、上のリングの1辺に複数の三角形を
+/// 扇状に付けてつなぐ(頂点の間引きの違うリングの間に、すき間もT字の継ぎ目も作らない)。表裏どちらも見えるので巻き順は問わない。
+fn stitch_rings<V: Copy>(lower: &[V], upper: &[V], mut push: impl FnMut(V, V, V)) {
+    let (n_lower, n_upper) = (lower.len(), upper.len());
+    if n_upper == 0 || n_lower % n_upper != 0 {
+        return;
+    }
+    let ratio = n_lower / n_upper;
+    for j in 0..n_upper {
+        let (u0, u1) = (upper[j], upper[(j + 1) % n_upper]);
+        for i in 0..ratio {
+            let (a, b) = (j * ratio + i, (j * ratio + i + 1) % n_lower);
+            push(lower[a], lower[b], u0);
+        }
+        push(u0, u1, lower[((j + 1) * ratio) % n_lower]);
+    }
 }
 
 /// 三角形を1つ追加する。
@@ -214,164 +296,6 @@ fn push_marker_pin(
     }
 }
 
-/// 選択中マーカーの覆域を、半球状の面(TriangleList)としてSurfaceつきの頂点列に追加する
-/// (「ワイヤーフレームではなくSurfaceが存在する多面体に」という要望による)。
-/// `compute_los_dome`が仰角ごとに求めるスラントレンジ(地形に遮蔽されない方角では最大観測
-/// 範囲まで一定、遮蔽される方角だけ内側に凹む)を、方位角方向に平滑化(`DOME_SMOOTH_*`)してから、
-/// 隣接する2リング×隣接する2方位角ごとに四角形パッチ(三角形2枚)を貼って球面状の面を作る。
-/// 最上段リングは、その半径の平均を高さとする頂点(アペックス)へ傘状に閉じ、開いた穴のない多面体にする。
-fn push_dome_surface(
-    out: &mut Vec<TerrainVertex>,
-    data: &TerrainData,
-    mesh_transform: &EnuTransform,
-    marker: &RadarMarker,
-) {
-    let radar_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
-    let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
-    let params = LosParams { observer_height_m: marker.height_m, max_range_m: marker.max_range_m };
-    let rings = compute_los_dome(data, &radar_origin, &params, &DOME_RING_ELEVATIONS_DEG);
-    let Some(num_raw_azimuths) = rings.first().map(|r| r.points.len()) else {
-        return;
-    };
-    let azimuth_indices: Vec<usize> = (0..num_raw_azimuths).step_by(DOME_AZIMUTH_STRIDE).collect();
-    let num_azimuths = azimuth_indices.len();
-    if num_azimuths < 2 || rings.len() < 2 {
-        return;
-    }
-    let observer_height =
-        sample_heightmap(data, marker.lat_deg, marker.lon_deg).unwrap_or(0.0) as f64 + marker.height_m;
-
-    // リングごとに、半径を方位角方向に平滑化する。
-    let smoothed: Vec<Vec<f64>> = rings
-        .iter()
-        .map(|ring| {
-            let ranges: Vec<f64> = ring.points.iter().map(|p| p.range_m).collect();
-            smooth_circular(&ranges, DOME_SMOOTH_MEDIAN_HALF, DOME_SMOOTH_MEAN_HALF)
-        })
-        .collect();
-
-    // ドーム上の全頂点(リングごと・方位角ごと)を地形メッシュのENU座標へ変換しておく。
-    // 四角形パッチが各頂点を最大4回使うので、先に1回ずつだけ計算する。
-    let dome_vertices: Vec<Vec<TerrainVertex>> = rings
-        .iter()
-        .zip(&smoothed)
-        .map(|(ring, ranges)| {
-            let el_rad = ring.elevation_deg.to_radians();
-            azimuth_indices
-                .iter()
-                .map(|&az_i| {
-                    let az_rad = ring.points[az_i].azimuth_deg.to_radians();
-                    let range_m = ranges[az_i];
-                    let horizontal = range_m * el_rad.cos();
-                    let local_east = horizontal * az_rad.sin();
-                    let local_north = horizontal * az_rad.cos();
-                    let (lat, lon) = local_transform.inverse(local_east, local_north);
-                    let absolute_height = observer_height + range_m * el_rad.sin() + DOME_M;
-                    let pos = mesh_transform.transform(lat, lon, absolute_height);
-                    TerrainVertex::unlit(pos, DOME_SURFACE_COLOR)
-                })
-                .collect()
-        })
-        .collect();
-
-    // リング間の四角形パッチ(三角形2枚ずつ)。表裏どちらも見えるよう(cull_mode: None)、
-    // 巻き順は特に気にしない。
-    for ring_i in 0..rings.len() - 1 {
-        let (lower, upper) = (&dome_vertices[ring_i], &dome_vertices[ring_i + 1]);
-        for az_i in 0..num_azimuths {
-            let az_next = (az_i + 1) % num_azimuths;
-            let (a, b, c, d) = (lower[az_i], lower[az_next], upper[az_i], upper[az_next]);
-            out.push(a);
-            out.push(b);
-            out.push(c);
-            out.push(b);
-            out.push(d);
-            out.push(c);
-        }
-    }
-
-    // 最上段リングを、その半径の平均を高さとする頂点(アペックス)へ傘状の三角形群で閉じる
-    // (最上段リングは仰角87度で、ほぼ真上。遮蔽がなければ半径=最大観測範囲=球の頂点の高さ)。
-    let top_ring_i = rings.len() - 1;
-    let top_ranges = &smoothed[top_ring_i];
-    let avg_range = top_ranges.iter().sum::<f64>() / top_ranges.len() as f64;
-    let apex_pos = mesh_transform.transform(
-        marker.lat_deg,
-        marker.lon_deg,
-        observer_height + avg_range + DOME_M,
-    );
-    let apex = TerrainVertex::unlit(apex_pos, DOME_SURFACE_COLOR);
-    let steps: Vec<usize> = (0..num_azimuths).step_by((num_azimuths / DOME_APEX_SEGMENTS).max(1)).collect();
-    for k in 0..steps.len() {
-        let az_i = steps[k];
-        let az_next = steps[(k + 1) % steps.len()];
-        out.push(dome_vertices[top_ring_i][az_i]);
-        out.push(dome_vertices[top_ring_i][az_next]);
-        out.push(apex);
-    }
-}
-
-/// 選択中マーカーの、指定した海抜高度での探知可能領域(2D地図モード用)の塗り(地表面に
-/// 沿って貼り付けた半透明のSurface)と、その外周の輪郭線(不透明な太い線)の頂点列を`out`に追加する。
-/// どちらも`DrawVertex`で、深度テストなしで描く(`TerrainRenderer::update_coverage_2d`)。2Dは真上からの
-/// 正射影で地形に隠れることがないので、深度テストをすると、観測点から境界への大きな三角形が
-/// 地形の起伏に埋まって、塗りが場所によって欠けて不均一になる。
-///
-/// `compute_coverage_area`が全方位角(1mil刻み、6400方向)について求める水平距離を、方位角方向に
-/// 平滑化(`COVERAGE_SMOOTH_*`。1方位だけの外れ値による細い切れ込み・突起を除く)したものを境界とする、
-/// 観測点を中心とした星形(star-shaped)領域なので、観測点から境界上の隣接2点への三角形
-/// (ファン)を並べるだけで自己交差のない面になる(3Dの覆域ドームのアペックス付近のような、
-/// 視点回転時の半透明合成チカチカ対策の間引きは、2Dは常に真上固定視点で回転しないため不要)。
-/// 境界の計算(6400本のレイ)が重いので、塗りと輪郭線で1回の結果を共有する。
-fn push_coverage_2d(
-    out: &mut Vec<DrawVertex>,
-    data: &TerrainData,
-    mesh_transform: &EnuTransform,
-    marker: &RadarMarker,
-    target_altitude_m: f64,
-) {
-    let radar_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
-    let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
-    let params = LosParams { observer_height_m: marker.height_m, max_range_m: marker.max_range_m };
-    let points = compute_coverage_area(data, &radar_origin, &params, target_altitude_m);
-    if points.len() < 2 {
-        return;
-    }
-    let ranges: Vec<f64> = points.iter().map(|p| p.range_m).collect();
-    let ranges = smooth_circular(&ranges, COVERAGE_SMOOTH_MEDIAN_HALF, COVERAGE_SMOOTH_MEAN_HALF);
-
-    // 地表面に沿わせるため、各点(観測点自身も含む)は「その地点の地表標高+バイアス」の
-    // 高さに置く(覆域そのものの高度target_altitude_mではない。あくまで地図上に貼る
-    // 塗り分けのオーバーレイであり、3Dドームのように空間中の実際の高度を表現するもの
-    // ではないため)。
-    let position_at = |lat: f64, lon: f64| -> [f32; 3] {
-        let ground = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
-        mesh_transform.transform(lat, lon, ground + COVERAGE_AREA_M)
-    };
-    let boundary: Vec<[f32; 3]> = points
-        .iter()
-        .zip(&ranges)
-        .map(|(p, &range_m)| {
-            let az_rad = p.azimuth_deg.to_radians();
-            let local_east = range_m * az_rad.sin();
-            let local_north = range_m * az_rad.cos();
-            let (lat, lon) = local_transform.inverse(local_east, local_north);
-            position_at(lat, lon)
-        })
-        .collect();
-
-    let fill = [COVERAGE_AREA_COLOR[0], COVERAGE_AREA_COLOR[1], COVERAGE_AREA_COLOR[2], COVERAGE_AREA_ALPHA];
-    let center = position_at(marker.lat_deg, marker.lon_deg);
-    let n = boundary.len();
-    for i in 0..n {
-        let (a, b) = (boundary[i], boundary[(i + 1) % n]);
-        for position in [center, a, b] {
-            out.push(DrawVertex::surface(position, fill, None));
-        }
-    }
-    append_line_strip(out, &boundary, true, COVERAGE_OUTLINE_COLOR, COVERAGE_OUTLINE_WIDTH_PX);
-}
-
 /// マーカー一覧 + 選択状態から、マーカー(ピン)の頂点列を作る。
 /// `mesh_origin`は現在GPUにアップロードされている地形メッシュの原点(マーカー自体の
 /// 緯度経度とは無関係。マーカー位置をこの原点基準のENU座標へ変換するために使う)。
@@ -391,36 +315,166 @@ pub fn build_marker_geometry(
     out
 }
 
-/// 選択中マーカーの覆域ドーム(半球状の面、TriangleList)の頂点列を作る。複数マーカーの
-/// 覆域を同時に重ねると見づらいため、選択中のマーカーについてのみ描く。
-pub fn build_dome_surface_geometry(
+/// 観測点の覆域ドームの計算(`compute_los_dome`)を始める(`azimuth_step`は`DOME_AZIMUTH_STEP`)。結果は`dome_geometry`へ渡す。
+/// 全方位の計算は重いので、`advance`を時間で区切って呼ぶこと(`ui::terrain_view::coverage`)。
+pub fn start_dome_computation(data: &TerrainData, marker: &RadarMarker) -> DomeComputation {
+    let origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
+    let params = LosParams { observer_height_m: marker.height_m, max_range_m: marker.max_range_m };
+    DomeComputation::new(data, &origin, &params, &DOME_RING_ELEVATIONS_DEG, DOME_AZIMUTH_STEP)
+}
+
+/// 観測点の2D覆域(指定した海抜高度での探知可能領域)の計算を始める(`azimuth_step`は`COVERAGE_AZIMUTH_STEP`)。
+/// 結果は`coverage_2d_geometry`へ渡す。
+pub fn start_coverage_computation(data: &TerrainData, marker: &RadarMarker, target_altitude_m: f64) -> RangeComputation {
+    let origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
+    let params = LosParams { observer_height_m: marker.height_m, max_range_m: marker.max_range_m };
+    RangeComputation::new(data, &origin, &params, RangeKind::AtAltitude(target_altitude_m), COVERAGE_AZIMUTH_STEP)
+}
+
+/// ドームのリングごとの半径(スラントレンジ)を平滑化する(`DOME_SMOOTH_*`・`DOME_ELEVATION_SMOOTH_PASSES`)。
+/// 戻り値は`[リング][方位]`。遮蔽されない方角(どのリングも最大観測範囲)は値が変わらない。
+fn smooth_dome_ranges(rings: &[DomeRing]) -> Vec<Vec<f64>> {
+    let mut smoothed: Vec<Vec<f64>> = rings
+        .iter()
+        .map(|ring| {
+            let ranges: Vec<f64> = ring.points.iter().map(|p| p.range_m).collect();
+            smooth_circular(&ranges, DOME_SMOOTH_MEDIAN_HALF, DOME_SMOOTH_MEAN_HALF, DOME_SMOOTH_MEAN_PASSES)
+        })
+        .collect();
+    smooth_across_rings(&mut smoothed, DOME_ELEVATION_SMOOTH_PASSES);
+    smoothed
+}
+
+/// 覆域ドーム(半球状の面、TriangleList)の頂点列を作る。複数マーカーの覆域を同時に重ねると見づらいため、
+/// 呼び出し側は選択中のマーカーについてのみ作る。`rings`は`start_dome_computation`の結果。
+/// `mesh_origin`は現在GPUにアップロードされている地形メッシュの原点(頂点をこの原点基準のENU座標へ変換する)。
+///
+/// `compute_los_dome`が仰角ごとに求めるスラントレンジ(地形に遮蔽されない方角では最大観測
+/// 範囲まで一定、遮蔽される方角だけ内側に凹む)を平滑化(`smooth_dome_ranges`)してから、
+/// 隣接する2リングの間を三角形で埋めて球面状の面を作る(「ワイヤーフレームではなくSurfaceが存在する多面体に」という要望による)。
+/// 高いリングほど方位の頂点を間引き(`ring_stride`)、最上段リングは、その半径の平均を高さとする頂点(アペックス)へ
+/// 傘状に閉じて、開いた穴のない多面体にする。
+pub fn dome_geometry(
     data: &TerrainData,
     mesh_origin: &Origin,
-    markers: &[RadarMarker],
-    selected: Option<u64>,
+    marker: &RadarMarker,
+    rings: &[DomeRing],
 ) -> Vec<TerrainVertex> {
-    let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
     let mut out = Vec::new();
-    if let Some(marker) = selected.and_then(|id| markers.iter().find(|m| m.id == id)) {
-        push_dome_surface(&mut out, data, &mesh_transform, marker);
+    let Some(num_azimuths) = rings.first().map(|r| r.points.len()) else {
+        return out;
+    };
+    if num_azimuths < 2 || rings.len() < 2 {
+        return out;
+    }
+    let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
+    let radar_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
+    let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
+    let observer_height =
+        sample_heightmap(data, marker.lat_deg, marker.lon_deg).unwrap_or(0.0) as f64 + marker.height_m;
+    let smoothed = smooth_dome_ranges(rings);
+
+    // ドーム上の頂点(リングごと・方位ごと。高いリングは間引く)を、地形メッシュのENU座標へ変換しておく。
+    // パッチが各頂点を複数回使うので、先に1回ずつだけ計算する。
+    let dome_vertices: Vec<Vec<TerrainVertex>> = rings
+        .iter()
+        .zip(&smoothed)
+        .map(|(ring, ranges)| {
+            let el_rad = ring.elevation_deg.to_radians();
+            let stride = ring_stride(ring.elevation_deg, num_azimuths);
+            (0..num_azimuths)
+                .step_by(stride)
+                .map(|az_i| {
+                    let az_rad = ring.points[az_i].azimuth_deg.to_radians();
+                    let range_m = ranges[az_i];
+                    let horizontal = range_m * el_rad.cos();
+                    let (lat, lon) =
+                        local_transform.inverse(horizontal * az_rad.sin(), horizontal * az_rad.cos());
+                    let absolute_height = observer_height + range_m * el_rad.sin() + DOME_M;
+                    TerrainVertex::unlit(mesh_transform.transform(lat, lon, absolute_height), DOME_SURFACE_COLOR)
+                })
+                .collect()
+        })
+        .collect();
+
+    // リング間の帯(三角形)。
+    for pair in dome_vertices.windows(2) {
+        stitch_rings(&pair[0], &pair[1], |a, b, c| out.extend([a, b, c]));
+    }
+
+    // 最上段リングを、その半径の平均を高さとする頂点(アペックス)へ傘状の三角形群で閉じる
+    // (最上段リングは仰角87度で、ほぼ真上。遮蔽がなければ半径=最大観測範囲=球の頂点の高さ)。
+    let top = dome_vertices.last().expect("リングは2つ以上ある");
+    let top_ranges = smoothed.last().expect("リングは2つ以上ある");
+    let avg_range = top_ranges.iter().sum::<f64>() / top_ranges.len() as f64;
+    let apex_pos = mesh_transform.transform(
+        marker.lat_deg,
+        marker.lon_deg,
+        observer_height + avg_range + DOME_M,
+    );
+    let apex = TerrainVertex::unlit(apex_pos, DOME_SURFACE_COLOR);
+    let steps: Vec<usize> = (0..top.len()).step_by((top.len() / DOME_APEX_SEGMENTS).max(1)).collect();
+    for k in 0..steps.len() {
+        out.extend([top[steps[k]], top[steps[(k + 1) % steps.len()]], apex]);
     }
     out
 }
 
-/// 選択中マーカーの、指定した海抜高度での探知可能領域(2D地図モード)の頂点列(塗り+輪郭線)を作る。
-/// 3Dの`build_dome_surface_geometry`と同様、選択中のマーカーについてのみ描く。
-pub fn build_coverage_2d_geometry(
+/// 選択中マーカーの、指定した海抜高度での探知可能領域(2D地図モード用)の塗り(地表面に
+/// 沿って貼り付けた半透明のSurface)と、その外周の輪郭線(不透明な太い線)の頂点列を作る。
+/// どちらも`DrawVertex`で、深度テストなしで描く(`TerrainRenderer::update_coverage_2d`)。2Dは真上からの
+/// 正射影で地形に隠れることがないので、深度テストをすると、観測点から境界への大きな三角形が
+/// 地形の起伏に埋まって、塗りが場所によって欠けて不均一になる。
+///
+/// `points`は`start_coverage_computation`の結果(全方位角の水平距離)。方位角方向に平滑化
+/// (`COVERAGE_SMOOTH_*`。1方位だけの外れ値による細い切れ込み・突起を除く)したものを境界とする、
+/// 観測点を中心とした星形(star-shaped)領域なので、観測点から境界上の隣接2点への三角形
+/// (ファン)を並べるだけで自己交差のない面になる(3Dの覆域ドームのアペックス付近のような、
+/// 視点回転時の半透明合成チカチカ対策の間引きは、2Dは常に真上固定視点で回転しないため不要)。
+pub fn coverage_2d_geometry(
     data: &TerrainData,
     mesh_origin: &Origin,
-    markers: &[RadarMarker],
-    selected: Option<u64>,
-    target_altitude_m: f64,
+    marker: &RadarMarker,
+    points: &[LosPoint],
 ) -> Vec<DrawVertex> {
-    let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
     let mut out = Vec::new();
-    if let Some(marker) = selected.and_then(|id| markers.iter().find(|m| m.id == id)) {
-        push_coverage_2d(&mut out, data, &mesh_transform, marker, target_altitude_m);
+    if points.len() < 2 {
+        return out;
     }
+    let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
+    let radar_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
+    let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
+    let ranges: Vec<f64> = points.iter().map(|p| p.range_m).collect();
+    let ranges = smooth_circular(&ranges, COVERAGE_SMOOTH_MEDIAN_HALF, COVERAGE_SMOOTH_MEAN_HALF, 1);
+
+    // 地表面に沿わせるため、各点(観測点自身も含む)は「その地点の地表標高+バイアス」の
+    // 高さに置く(覆域そのものの高度target_altitude_mではない。あくまで地図上に貼る
+    // 塗り分けのオーバーレイであり、3Dドームのように空間中の実際の高度を表現するもの
+    // ではないため)。
+    let position_at = |lat: f64, lon: f64| -> [f32; 3] {
+        let ground = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
+        mesh_transform.transform(lat, lon, ground + COVERAGE_AREA_M)
+    };
+    let boundary: Vec<[f32; 3]> = points
+        .iter()
+        .zip(&ranges)
+        .map(|(p, &range_m)| {
+            let az_rad = p.azimuth_deg.to_radians();
+            let (lat, lon) = local_transform.inverse(range_m * az_rad.sin(), range_m * az_rad.cos());
+            position_at(lat, lon)
+        })
+        .collect();
+
+    let fill = [COVERAGE_AREA_COLOR[0], COVERAGE_AREA_COLOR[1], COVERAGE_AREA_COLOR[2], COVERAGE_AREA_ALPHA];
+    let center = position_at(marker.lat_deg, marker.lon_deg);
+    let n = boundary.len();
+    for i in 0..n {
+        let (a, b) = (boundary[i], boundary[(i + 1) % n]);
+        for position in [center, a, b] {
+            out.push(DrawVertex::surface(position, fill, None));
+        }
+    }
+    append_line_strip(&mut out, &boundary, true, COVERAGE_OUTLINE_COLOR, COVERAGE_OUTLINE_WIDTH_PX);
     out
 }
 
@@ -432,13 +486,13 @@ mod tests {
     fn smoothing_keeps_constant_and_removes_single_spikes() {
         // 一定の値は変わらない。
         let flat = vec![50_000.0; 100];
-        assert!(smooth_circular(&flat, 3, 6).iter().all(|&v| (v - 50_000.0).abs() < 1e-9));
+        assert!(smooth_circular(&flat, 3, 6, 1).iter().all(|&v| (v - 50_000.0).abs() < 1e-9));
         // 1方位だけの落ち込み(観測点へ向かう細い三角形になる)は消える。
         let mut spiky = flat.clone();
         spiky[40] = 0.0;
         spiky[70] = 0.0;
         spiky[71] = 0.0;
-        assert!(smooth_circular(&spiky, 3, 6).iter().all(|&v| (v - 50_000.0).abs() < 1e-9));
+        assert!(smooth_circular(&spiky, 3, 6, 1).iter().all(|&v| (v - 50_000.0).abs() < 1e-9));
     }
 
     #[test]
@@ -448,13 +502,106 @@ mod tests {
         for i in (0..20).chain(90..100) {
             v[i] = 2_000.0;
         }
-        let s = smooth_circular(&v, 3, 6);
+        let s = smooth_circular(&v, 3, 6, 1);
         // 段差の中心付近で中間の値、両側は元の値のまま(段差の幅の外は影響を受けない)。
         assert!(s[20] > 2_000.0 && s[20] < 10_000.0);
         assert!(s[5] < 2_000.0 + 1e-9 && s[50] > 10_000.0 - 1e-9);
         // 単調(段差の間で値が上下しない)。
         assert!(s[10..40].windows(2).all(|w| w[1] >= w[0] - 1e-9));
         assert!(s[70..100].windows(2).all(|w| w[1] <= w[0] + 1e-9));
+    }
+
+    #[test]
+    fn mean_passes_round_a_step_into_a_smoother_curve() {
+        let mut v = vec![10_000.0; 200];
+        for x in v.iter_mut().take(100) {
+            *x = 2_000.0;
+        }
+        let one = smooth_circular(&v, 0, 3, 1);
+        let two = smooth_circular(&v, 0, 3, 2);
+        // 平均を重ねるほど、段差の折れ目がなだらかな曲線になる(傾きの変化=2階差分の最大値が小さくなる)。
+        let max_bend = |s: &[f64]| s.windows(3).map(|w| (w[2] - 2.0 * w[1] + w[0]).abs()).fold(0.0_f64, f64::max);
+        assert!(max_bend(&two) < 0.5 * max_bend(&one), "{} vs {}", max_bend(&two), max_bend(&one));
+        // 平らな部分は変わらない。
+        assert!((two[50] - 2_000.0).abs() < 1e-9 && (two[150] - 10_000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ring_smoothing_keeps_constants_and_softens_steps_between_rings() {
+        let mut flat = vec![vec![30_000.0; 16]; 6];
+        smooth_across_rings(&mut flat, 1);
+        assert!(flat.iter().flatten().all(|&v| (v - 30_000.0).abs() < 1e-9));
+
+        // 下の3リングだけ遮蔽(5,000)、上は最大(30,000): 境目のリングが中間の値になり、離れたリングは変わらない。
+        let mut stepped: Vec<Vec<f64>> = (0..6).map(|k| vec![if k < 3 { 5_000.0 } else { 30_000.0 }; 4]).collect();
+        smooth_across_rings(&mut stepped, 1);
+        assert!((stepped[0][0] - 5_000.0).abs() < 1e-9 && (stepped[5][0] - 30_000.0).abs() < 1e-9);
+        assert!(stepped[2][0] > 5_000.0 && stepped[2][0] < 30_000.0);
+        assert!(stepped[3][0] > 5_000.0 && stepped[3][0] < 30_000.0);
+        assert!(stepped.windows(2).all(|w| w[1][0] >= w[0][0] - 1e-9));
+    }
+
+    #[test]
+    fn ring_stride_thins_high_rings_by_powers_of_two() {
+        let n = 1600;
+        assert_eq!(ring_stride(0.0, n), DOME_MIN_RING_STRIDE);
+        assert_eq!(ring_stride(45.0, n), DOME_MIN_RING_STRIDE);
+        assert_eq!(ring_stride(64.0, n), 2);
+        assert_eq!(ring_stride(80.0, n), 4);
+        assert_eq!(ring_stride(87.0, n), 16);
+        // 上限を超えず、仰角が上がっても減らない。隣のリングとは整数倍(2のべき乗どうし)。
+        let strides: Vec<usize> = DOME_RING_ELEVATIONS_DEG.iter().map(|&e| ring_stride(e, n)).collect();
+        assert!(strides.iter().all(|&s| (DOME_MIN_RING_STRIDE..=DOME_MAX_RING_STRIDE).contains(&s) && n % s == 0));
+        assert!(strides.windows(2).all(|w| w[1] >= w[0] && w[1] % w[0] == 0));
+    }
+
+    /// 頂点の間引きが違う2つのリングの間の帯に、すき間も継ぎ目のずれも無い(帯の辺は、リングの辺が1回、それ以外は2回)。
+    #[test]
+    fn stitched_band_between_rings_of_different_density_is_watertight() {
+        use std::collections::HashMap;
+        for (n_lower, n_upper) in [(8usize, 8usize), (8, 4), (16, 4), (12, 3)] {
+            let lower: Vec<usize> = (0..n_lower).collect();
+            let upper: Vec<usize> = (100..100 + n_upper).collect();
+            let mut edges: HashMap<(usize, usize), usize> = HashMap::new();
+            let mut triangles = 0;
+            stitch_rings(&lower, &upper, |a, b, c| {
+                triangles += 1;
+                for (p, q) in [(a, b), (b, c), (c, a)] {
+                    *edges.entry((p.min(q), p.max(q))).or_default() += 1;
+                }
+            });
+            // 三角形の数 = 下のリングの辺 + 上のリングの辺。
+            assert_eq!(triangles, n_lower + n_upper, "{n_lower}/{n_upper}");
+            for (&(p, q), &count) in &edges {
+                let is_ring_edge = (p < 100 && q < 100) || (p >= 100 && q >= 100);
+                assert_eq!(count, if is_ring_edge { 1 } else { 2 }, "{n_lower}/{n_upper} edge {p}-{q}");
+            }
+        }
+    }
+
+    /// 遮蔽のない平地では、ドームは観測点を中心とした球面になる(最大観測範囲の半径)。頂点数は方位を間引いた分だけ少ない。
+    #[test]
+    fn dome_over_flat_ground_is_a_smooth_sphere_with_thinned_vertices() {
+        let data = TerrainData::synthetic(30, 120, 3, 3, |_, _| 0);
+        let marker =
+            RadarMarker { id: 1, lat_deg: 31.5, lon_deg: 121.5, height_m: 10.0, max_range_m: 30_000.0 };
+        let mut computation = start_dome_computation(&data, &marker);
+        computation.advance(&data, usize::MAX);
+        let rings = computation.finish();
+        assert_eq!(rings.len(), DOME_RING_ELEVATIONS_DEG.len());
+        assert_eq!(rings[0].points.len(), 6400 / DOME_AZIMUTH_STEP);
+
+        let mesh_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
+        let vertices = dome_geometry(&data, &mesh_origin, &marker, &rings);
+        assert!(!vertices.is_empty() && vertices.len() % 3 == 0);
+        // 以前(3200方位を間引かずに38リング)の頂点数(約71万)の3分の1未満。
+        assert!(vertices.len() < 240_000, "{}", vertices.len());
+        for v in &vertices {
+            let [x, y, z] = v.position;
+            let distance = (x * x + y * y + (z - 10.0) * (z - 10.0)).sqrt();
+            // 地球の丸みで、最大観測範囲30kmの端は数十m下がる。球面から大きく外れる頂点(筋・突起)は無い。
+            assert!((distance - 30_000.0).abs() < 400.0, "distance={distance}");
+        }
     }
 
     #[test]

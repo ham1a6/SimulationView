@@ -14,6 +14,7 @@ use crate::terrain::origin::Origin;
 use crate::terrain::hillshade::HillshadeState;
 use crate::terrain::renderer::TerrainRenderer;
 use crate::terrain::tracks::{TrackId, TrackLabel, TracksState};
+use super::coverage::CoverageState;
 
 pub(super) struct ViewState {
     pub(super) renderer: Option<TerrainRenderer>,
@@ -56,6 +57,8 @@ pub(super) struct ViewState {
     pub(super) lod_soon_pending: bool,
     /// 地形メッシュのクロスフェード(`TerrainRenderer::is_fading`)の描き直しを予約中か。
     pub(super) fade_frame_pending: bool,
+    /// 覆域(3Dドーム・2D領域)の計算結果のキャッシュと、進行中の計算(`coverage`)。
+    pub(super) coverage: CoverageState,
 }
 
 /// 画面に重ねている航跡ラベル1つ分(HTML要素と、その元のデータ)。

@@ -5,7 +5,7 @@ use std::rc::Rc;
 
 use leptos::prelude::*;
 
-use super::{labels::*, state::*};
+use super::{coverage::refresh_coverage, labels::*, state::*};
 use crate::terrain::camera::ViewMode;
 use crate::terrain::drawing_geometry;
 use crate::terrain::geodesy::EnuTransform;
@@ -16,14 +16,26 @@ use crate::terrain::origin::Origin;
 use crate::terrain::tracks::{self, TrackOptions};
 
 /// レーダー観測点マーカー(ピン)・見通し範囲の覆域(3Dはドーム、2Dは塗り+輪郭線)のジオメトリを、現在の地形・原点・
-/// マーカー一覧・選択状態から作り直してGPUバッファへ反映する。原点変更時
+/// マーカー一覧・選択状態から作り直してGPUバッファへ反映する(覆域は非同期の計算が終わってから反映する)。原点変更時
 /// (メッシュ再構築後)・マーカー追加/削除/選択変更時に呼ぶ。描画自体は呼び出し側で
 /// `render_now`すること。
 pub(super) fn rebuild_markers(state: &Rc<RefCell<ViewState>>, radar_markers: RadarMarkersState) {
+    rebuild_marker_pins(state, radar_markers);
+    // 覆域(計算が重い)は、計算済みならジオメトリの作り直しだけ、未計算なら小分けに非同期で計算する(`coverage`)。
+    refresh_coverage(state, radar_markers, false);
+}
+
+/// `rebuild_markers`と同じだが、地形のレベルが切り替わったとき用。ピンは地表の高さに合わせて作り直し、覆域は
+/// 観測点の範囲の地形が変わっていれば、少し待ってから計算し直す(切り替えは続けて何度も起きるため)。
+pub(super) fn rebuild_markers_for_terrain(state: &Rc<RefCell<ViewState>>, radar_markers: RadarMarkersState) {
+    rebuild_marker_pins(state, radar_markers);
+    refresh_coverage(state, radar_markers, true);
+}
+
+/// 観測点のマーカー(ピン)のジオメトリだけを作り直す(軽い)。
+fn rebuild_marker_pins(state: &Rc<RefCell<ViewState>>, radar_markers: RadarMarkersState) {
     let mut s = state.borrow_mut();
-    let (Some(terrain), Some(mesh_origin), mode) =
-        (s.terrain.clone(), s.mesh_origin, s.camera.mode)
-    else {
+    let (Some(terrain), Some(mesh_origin)) = (s.terrain.clone(), s.mesh_origin) else {
         return;
     };
     let Some(renderer) = s.renderer.as_mut() else {
@@ -31,25 +43,7 @@ pub(super) fn rebuild_markers(state: &Rc<RefCell<ViewState>>, radar_markers: Rad
     };
     let marker_list = radar_markers.markers.get_untracked();
     let selected = radar_markers.selected.get_untracked();
-    let marker_vertices = markers::build_marker_geometry(&terrain, &mesh_origin, &marker_list, selected);
-    // 覆域表示は3D(半球ドーム)と2D(指定高度での探知可能領域)で見せ方自体が別物なので、
-    // モードに応じて別のジオメトリ・別のバッファ(パイプライン)に渡す(使わない方は空にする)。
-    let (dome_vertices, coverage_2d_vertices) = match mode {
-        ViewMode::ThreeD => (
-            markers::build_dome_surface_geometry(&terrain, &mesh_origin, &marker_list, selected),
-            Vec::new(),
-        ),
-        ViewMode::TwoD => {
-            let altitude_m = radar_markers.coverage_altitude_m.get_untracked();
-            (
-                Vec::new(),
-                markers::build_coverage_2d_geometry(&terrain, &mesh_origin, &marker_list, selected, altitude_m),
-            )
-        }
-    };
-    renderer.update_markers(&marker_vertices);
-    renderer.update_dome(&dome_vertices);
-    renderer.update_coverage_2d(&coverage_2d_vertices);
+    renderer.update_markers(&markers::build_marker_geometry(&terrain, &mesh_origin, &marker_list, selected));
 }
 
 /// 作図・航跡のジオメトリ生成(`drawing_geometry::BuildContext`)の入力。`BuildContext`は変換と地表の高さの

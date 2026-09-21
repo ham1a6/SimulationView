@@ -311,7 +311,7 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
         let has_markers = !state.borrow().radar_markers.markers.get_untracked().is_empty();
         if has_markers {
             let radar_markers = state.borrow().radar_markers;
-            rebuild_markers(state, radar_markers);
+            rebuild_markers_for_terrain(state, radar_markers);
         }
         // 地表に貼り付けた作図も、地形の高さが変わったので作り直す。
         let follows_terrain = state

@@ -1006,7 +1006,11 @@ flowchart LR
   (当初案の「`compute_los`の値を全仰角に使い回す」簡易的なextrudeは、遮蔽されない方角でも仰角で半径が変わらず物理的に不自然だったので改めた)
 - **2D覆域は「指定した海抜高度での探知可能領域」**(`compute_coverage_area`): `compute_los_dome`と対になり、仰角一定ではなく**高度一定の直線**を対象の高度について走査する。選択中の観測点についてのみ表示する点は3Dと共通。
   表示する海抜高度はメニュー「設定」→「覆域高度設定...」で指定する(既定1000m。`RadarMarkersState::coverage_altitude_m`、7.7節)
-- **性能**: 観測点1つあたり6400方位×1000サンプル=640万回の`heightmap`補間(選択中の1つだけ計算。目標は再計算+再描画が1秒以内、リリースビルドのブラウザ実測で3Dが約470ms・2Dが約230ms)。
+- **性能**: 観測点1つあたり方位数×1000サンプルの`heightmap`補間(選択中の1つだけ計算)。ドームは1600方位(4mil刻み)・2D覆域は3200方位(2mil刻み)・極座標図は3200方位で、全方位(6400方位)を計算していた以前の4分の1〜2分の1。
+  以前は1mil刻みの全方位を同期で計算していたので、開発ビルドで観測点の追加が約2秒、覆域を出している間はカメラ操作(ズーム等)のたびに(地形のレベルが切り替わるたびに全部計算し直して)約1秒ずつ画面が固まった。
+  そこで、(1)計算を小分け(1回8ms)にして非同期で進め、進行中に新しい要求が来たら古い計算は捨てる(`ui::util::run_in_slices`)、(2)計算結果をキャッシュし、観測点・モード・高度・**観測点の範囲に重なるチャンクのレベル**が同じなら計算し直さず、
+  ジオメトリの作り直しだけにする(原点変更・選択し直し・範囲の外のチャンクの切り替えでは計算しない)、(3)地形のレベル切り替えで計算し直すときは300ms待ってまとめる、ようにした(`ui/terrain_view/coverage.rs`)。
+  実機(開発ビルド)でズーム中の最大の固まりは、約1.05秒×22回→約70ms×2回、観測点の追加は約2秒→約120msになった。計算が終わるまでは、地形だけが変わったなら前の覆域を出し続け、観測点・モード・高度が変わったなら消す
   速度対策(いずれも結果は変えない): `EnuTransform`が原点の三角関数・曲率半径を`new`で前計算する、2D覆域の塗りと輪郭線で計算結果を共有する、`compute_los_dome`が走査中の最大仰角の単調性を使って
   全リング×全サンプルの走査を避ける(素朴実装と完全に同じ結果になることを比較テストで確認)
 
@@ -1018,13 +1022,15 @@ flowchart LR
 - **覆域ドーム**: 選択中の観測点についてのみ(複数を重ねると見づらいため)、仰角0°〜87°の38段の緯度リングを、隣接リング×隣接方位ごとの四角形パッチでつないだ半透明の面(ワイヤーフレームではなくSurfaceを持つ多面体)。
   専用の`dome_pipeline`(アルファブレンド有効・深度書き込み無効。地形やマーカーの奥に透けて見えるように)で描く。色は半透明の水色固定(`fs_dome`)
 - **滑らかにするための処理**: (1) 遮蔽されなかったリングの半径をサンプル位置に丸めず上限ちょうどにする(丸めると高仰角ほど半径が不揃いで球にならなかった)、
-  (2) 半径を方位角方向に平滑化する(3方位メディアン→6方位平均。1方位だけ遮蔽される所が細い三角形になって放射状の筋に見えるのを防ぐ。遮蔽されない方角の半径は変わらない)、
-  (3) リング数を増やし間隔を最上部まで細かくする。計算は1mil刻み(6400方位)のままで、平滑化後の描画は2方位に1つ(3200方位)に間引く
+  (2) 半径を**方位角方向**に平滑化する(前後1方位のメディアン→前後3方位の平均を2回。平均を重ねると重みが山形になり、遮蔽の段差がなだらかな曲線になる。1方位だけ遮蔽される所が細い三角形になって放射状の筋に見えるのを防ぐ)、
+  (3) 半径を**仰角方向**(隣のリングと[1,2,1]/4)にも平滑化する(リングごとの段が階段状に見えるのを消す)。遮蔽されない方角の半径(最大観測範囲)は、どちらの平滑化でも変わらない。
+  (4) リング数を増やし間隔を最上部まで細かくする。計算・平滑化は4mil刻み(1600方位)で、面を張るときは2方位に1つに間引き、さらに**高いリングほど間引く**(円周が短いので`1/cos(仰角)`以下の2のべき乗個おき、最大32)。
+  間引きの違うリングの間は、上のリングの1辺に下のリングの複数の頂点を扇状につないで、すき間もT字の継ぎ目も作らない(`stitch_rings`)。頂点数は以前(3200方位×38リング)の約71万から約16万に減り、最上部の細い三角形の重なりによる筋も無くなった
 - **ちらつき対策**: 最上段リングを閉じる傘の部分は48分割に間引く(全方位で三角形化するとアペックスへ極端に細い三角形が大量に重なり、アルファブレンドの描画順依存でカメラ角度ごとに明るさがちらつく)。
   リング間の四角形は重ならないので間引かない。また、遮蔽される方角ではドーム境界が定義上ちょうど地形表面に接してZファイティングするため、ドーム全体を一律に20m持ち上げる(`render_bias::DOME_M`)
 - **2D覆域の塗り**: 星形(観測点中心の極座標の境界なので自己交差しない)の塗り(半透明、アルファ0.32)+外周の輪郭線(不透明・太さ2.5px)。**深度テストなし**(`draw_screen_pipeline`)で描く。
   以前は深度テストありで描いていたが、塗りの三角形は観測点から境界への長い平面で間の起伏(数百m)に埋まり、場所によって塗りが欠けていた。2Dは真上からの正射影で地形に隠れることがないので、深度テストを外して均一に塗られるようにした。
-  3Dドームとはバッファ・パイプラインが別で、`ui/terrain_view/overlay.rs::rebuild_markers`がモードに応じてどちらを作るか切り替える(使わない方は空)
+  3Dドームとはバッファ・パイプラインが別で、`ui/terrain_view/coverage.rs::refresh_coverage`がモードに応じてどちらを作るか切り替える(使わない方は空)
 
 **メインパネルの2D/3D表示切り替え**: メインパネル右上の「2D表示に切替」/「3D表示に切替」ボタンで、`terrain::camera::ViewMode`(`ThreeD`/`TwoD`)を切り替える。
 3Dは自由視点(透視投影、ドラッグで回転)。2Dは真上からの正射影で、北を上に固定した地図のような見た目になり、ドラッグは回転ではなく`OrbitCamera::pan`による平行移動になる
@@ -1736,7 +1742,10 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
   リングkの水平距離の上限`horizontal_cap(k) = min(data_max, max_range * cos(el_k))`。遮蔽されずに上限まで届いたら**サンプル位置に丸めず上限ちょうど**(丸めると高仰角ほど半径が不揃いで球にならない)、`range = d/cos(el)`。
   **最適化**: 走査中の最大仰角`max_angle`は単調非減少なので、`max_angle > tan(el_k)`になったリングを先頭から順に確定し、全リング確定で打ち切る(全リング×全サンプル走査の素朴実装と**完全に同じ結果**になる。素朴実装との比較テストを書くこと)
 
-**性能**: 観測点1つ=6400方位×1000サンプル=640万回の`sample_heightmap`。リリースビルド(WASM)で再計算+再描画は3Dで約470ms(ドーム約230ms+極座標図約240ms)、2Dで約230msが目標(許容上限1秒)。
+**小分けの計算と方位の間引き**: `compute_los`・`compute_coverage_area`は`RangeComputation`(`RangeKind::{Visible, AtAltitude(高度)}`)、`compute_los_dome`は`DomeComputation`の薄い包み(単体テスト用。`#[cfg(test)]`)で、
+本体は`new(data, origin, params, ..., azimuth_step)`→`advance(data, count)`(次の方位から最大`count`個を計算。終わったら`true`)→`finish()`の**再開できる計算**。呼び出し側(UI)が`advance`を時間で区切って呼び、合間に画面へ処理を譲る。
+`azimuth_step`(mil)は6400を割り切る値で、出力の点数は`6400/azimuth_step`(`azimuth_deg = j·step·360/6400`)。**間引いた結果は全方位の結果の同じ方位の値と一致する**(テストで確認)。小分けにしても結果は変わらない(テストで確認)。
+**性能**: 観測点1つ=方位数×1000サンプルの`sample_heightmap`。全方位(6400)で640万回。UIは、ドーム1600方位・2D覆域3200方位・極座標図3200方位で計算する(6.9節)。
 **検証**(標高0mの平坦地形、原点=観測点): 全方位で電波の地平線距離(`sqrt(2·r_eff·h_obs)`相当)に一致、平坦地形の可視判定が電波の地平線に従う、東約16kmの標高1,500m尾根が背後を隠す、`min_visible_altitude`と可視判定の整合、
 2D覆域が高い対象で最大範囲まで届き尾根で止まる、平坦ならドームの全リングが最大観測範囲のスラントレンジ、`curvature_drop`が距離の2乗、方位の添字がmil。
 
@@ -1823,16 +1832,19 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 `add(lat,lon) -> id`(既定`height_m=10`・`max_range_m=50_000`で追加し選択する)、`remove(id)`(選択中なら`selected=None`)。観測点は緯度経度の絶対値で保持し、メッシュ原点とは独立。
 
 **定数**: 選択中=黄`[1,0.92,0.25,1]`、非選択=橙`[1,0.55,0.15,1]`、縁取り`[0.08,0.08,0.10,1]`、ドーム面`[0.3,0.9,1.0]`(アルファはシェーダー0.22)。ピン: `PIN_HEAD_CENTER_PX=26`・`PIN_HEAD_RADIUS_PX=10`・`PIN_OUTLINE_PX=2.5`・`PIN_DOT_RADIUS_PX=4`・`PIN_HEAD_SEGMENTS=24`。
-`DOME_RING_ELEVATIONS_DEG`(38個)=0〜10°を1°刻み / 12〜30°を2° / 33〜60°を3° / 64,68,72,76,80,84,87°。`DOME_AZIMUTH_STRIDE=2`、`DOME_APEX_SEGMENTS=48`、`DOME_SMOOTH_MEDIAN_HALF/MEAN_HALF=3/6`。
-2D覆域: 塗り`[0.35,0.9,0.4]`アルファ`0.32`、輪郭`[0.75,1.0,0.4,1]`太さ2.5px、`COVERAGE_SMOOTH_MEDIAN_HALF/MEAN_HALF=2/3`。
+`DOME_RING_ELEVATIONS_DEG`(38個)=0〜10°を1°刻み / 12〜30°を2° / 33〜60°を3° / 64,68,72,76,80,84,87°。`DOME_AZIMUTH_STEP=4`(1600方位)、`DOME_APEX_SEGMENTS=48`、
+`DOME_SMOOTH_MEDIAN_HALF/MEAN_HALF/MEAN_PASSES=1/3/2`、`DOME_ELEVATION_SMOOTH_PASSES=1`、`DOME_MIN_RING_STRIDE=2`・`DOME_MAX_RING_STRIDE=32`。
+2D覆域: 塗り`[0.35,0.9,0.4]`アルファ`0.32`、輪郭`[0.75,1.0,0.4,1]`太さ2.5px、`COVERAGE_AZIMUTH_STEP=2`(3200方位)、`COVERAGE_SMOOTH_MEDIAN_HALF/MEAN_HALF=1/2`。
 
-- **円環の平滑化 `smooth_circular(values, median_half, mean_half)`**: 端は反対側へつながる。①各iで前後`median_half`個の**中央値**(外れ値除去。段差の位置は保つ)→②その結果の前後`mean_half`個の**平均**(段差をなだらかに)
+- **円環の平滑化 `smooth_circular(values, median_half, mean_half, mean_passes)`**: 端は反対側へつながる。①各iで前後`median_half`個の**中央値**(外れ値除去。段差の位置は保つ)→②その結果の前後`mean_half`個の**平均**を`mean_passes`回(段差をなだらかに。重ねるほど折れ目が曲線になる)。
+  **仰角方向の平滑化 `smooth_across_rings`**: 方位ごとに、隣のリングと`[1,2,1]/4`(端のリングは外側を自分と同じ値とみなす)。**リングの間引き `ring_stride(el, N)`**: `DOME_MIN_RING_STRIDE`から、`stride·2 <= 1/cos(el)`かつ`N`を割り切る間、2倍にする(最大`DOME_MAX_RING_STRIDE`)。
+  **帯の三角形 `stitch_rings(lower, upper, push)`**: 上のリングの各辺`(u0,u1)`について、下のリングの対応する`ratio = n_lower/n_upper`本の辺ごとに`(l_a, l_b, u0)`、最後に`(u0, u1, l_next)`(`ratio=1`なら四角形を2枚の三角形に割るのと同じ。辺は、リングの辺が1回・それ以外が2回で、すき間がない=テストで確認)
 - **マーカー**: 観測点ごとに`anchor = mesh_transform.transform(lat, lon, ground + MARKER_M)`。すべて`DrawVertex::billboard`の三角形。ピンは頭の円(中心`(0,26)`から24枚の扇形)+頭の円への接線の先端三角形(`β = acos(r/(26 - tip_y))`, 接点`(±r·sin β, 26 - r·cos β)`)。
   積む順は①縁取り(`r=10+2.5`, `tip_y=-2.5·1.4`)→②本体(`r=10`, `tip_y=0`)→③中の点(縁取り色、半径4)
-- **3Dドーム `build_dome_surface_geometry`**(選択中の1つだけ): `rings = compute_los_dome(..., DOME_RING_ELEVATIONS_DEG)`。リングごとに`smooth_circular(全方位のrange, 3, 6)`(6400方位で平滑化してから2方位に1つへ間引き)。
+- **3Dドーム `dome_geometry(data, mesh_origin, marker, rings)`**(選択中の1つだけ。`rings`は`start_dome_computation`=`DomeComputation(.., DOME_RING_ELEVATIONS_DEG, DOME_AZIMUTH_STEP)`の結果): リングごとに`smooth_circular(range, 1, 3, 2)`→`smooth_across_rings`(1回)で平滑化してから、`ring_stride`で間引いた頂点を置く。
   頂点は`range`と仰角から`horizontal = range·cos(el)`、`(lat,lon) = local_transform.inverse(horizontal·sin az, horizontal·cos az)`、`h = observer_height + range·sin(el) + DOME_M`(`observer_height = ground + height_m`)。
-  隣接リング×隣接方位の四角形→三角形2枚(表裏とも見えるので巻き順は問わない)。最上段リングは、その平滑化半径の平均を高さとするアペックスへ、方位を`step_by(max(N/48,1))`に間引いた傘の三角形で閉じる(間引く理由は6.9節)
-- **2D覆域 `build_coverage_2d_geometry`**(選択中の1つだけ): `compute_coverage_area`の6400方位の水平距離を`smooth_circular(_, 2, 3)`。**覆域の高度ではなく地表に貼る**(`sample_heightmap + COVERAGE_AREA_M`。地図上の塗り分けオーバーレイであるため)。
+  隣接リングの間は`stitch_rings`で三角形にする(表裏とも見えるので巻き順は問わない)。最上段リングは、その平滑化半径の平均を高さとするアペックスへ、方位を`step_by(max(N/48,1))`に間引いた傘の三角形で閉じる(間引く理由は6.9節)
+- **2D覆域 `coverage_2d_geometry(data, mesh_origin, marker, points)`**(選択中の1つだけ。`points`は`start_coverage_computation`=`RangeComputation(AtAltitude, COVERAGE_AZIMUTH_STEP)`の結果): 3200方位の水平距離を`smooth_circular(_, 1, 2, 1)`。**覆域の高度ではなく地表に貼る**(`sample_heightmap + COVERAGE_AREA_M`。地図上の塗り分けオーバーレイであるため)。
   塗りは`[center, boundary[i], boundary[i+1]]`のファン(星形なので自己交差しない)、輪郭は閉じた太い線。**描画は深度テストなし**(`draw_screen`+絶対座標のuniform。理由は6.9節)。3Dと2Dでバッファ・パイプラインが別で、モード切替時に使わない方を空にする
 
 ### 9.11 作図(`terrain::drawing`・`drawing_geometry`・`draw_tool`)
@@ -1957,7 +1969,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 | 1 | `canvas_ref` | `ResizeObserver`で`apply_size`(0なら無視)→`resize`→`rebuild_drawings`(`Screen`の角が動く)→`render_now`(レンダラー無しなら`try_init`)。`visibilitychange`で`getBoundingClientRect`を取り直す(**非表示タブではResizeObserverがスロットリングされ、canvasが300×150のまま引き伸ばされるため**)。`on_cleanup`で`disconnect`・`remove_event_listener` |
 | 2 | `terrain_store.get()` | データが届いたら`try_init` |
 | 3 | `origin_state` | 原点変更(下記) |
-| 4 | `radar_markers.{markers, selected, coverage_altitude_m}` | `rebuild_markers`→`render_now` |
+| 4 | `radar_markers.{markers, selected, coverage_altitude_m}` | `rebuild_markers`(覆域は非同期で計算し、終わったら自動で描き直す)→`render_now` |
 | 5 | `drawings.items` | `rebuild_drawings`→`render_now` |
 | 5b | `tracks.{entries, show_*, selected}` | `rebuild_tracks`→`render_frame`(LODは予約しない) |
 | 6 | `recenter_request.count` | `count==0`は無視。`target()`が`Some`なら`ground_at_geodetic`の(東,北,上)を`camera.target`に、`None`なら`target.xy=0`・`target.z=target_up`。**`OriginState`には触れない** |
@@ -1971,7 +1983,11 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
   `wheel`=`zoom`。`contextmenu`=`prevent_default`。図形作成中なら`undo`。`ContextMenuState`と`MapMenuState`の**両方**があれば`position`(pick)と`track`(pick_track。あれば先に選択)を`MapMenuTarget`にしてメニューを出す(どちらもNoneなら出さない)。どちらか無ければ従来どおり観測点を追加。
   `dblclick`=`draw_tool.finish()`。`keydown`(window。ツール選択中のみ、`INPUT/TEXTAREA/SELECT`上は無視)=`Escape`→`cancel`、`Enter`→`finish`、`Backspace`→`undo`
 - **ピッキング(`picking.rs`)**: `pick_at_client`は`getBoundingClientRect`でcanvas内座標にして`pick::pick_lat_lon`。`pick_track_at_client`はCSS pxからcanvas内部解像度へ変換して`tracks::pick_track`(`PICK_RADIUS_PX`)
-- **オーバーレイの再構築(`overlay.rs`)**: `GeometryInputs`から`BuildContext`(`ground = sample_heightmap or 0`)を作る。`rebuild_markers`は3Dなら`build_dome_surface_geometry`→`update_dome`(`update_coverage_2d`は空)、2Dなら`build_coverage_2d_geometry(..., coverage_altitude_m)`。
+- **オーバーレイの再構築(`overlay.rs`)**: `GeometryInputs`から`BuildContext`(`ground = sample_heightmap or 0`)を作る。`rebuild_markers`はピン(`rebuild_marker_pins`。軽い)を作り直し、覆域は`coverage::refresh_coverage`に任せる。地形のレベル切り替えからは`rebuild_markers_for_terrain`(覆域は300ms待つ)。
+  **`refresh_coverage`**(`coverage.rs`): 選択中の観測点・モード・高度・地形(`terrain_signature`=観測点の最大観測範囲に重なるチャンクの`(tile, chunk, level)`のハッシュ)から`CoverageKey`を作る。
+  キャッシュ(`CoverageCache`)が同じキーなら、`show_coverage`でジオメトリを作って`update_dome`/`update_coverage_2d`(すでに同じキー・同じメッシュ原点で載っていれば何もしない)。
+  違えば、進行中に同じキーの計算があれば待ち、無ければ`generation`を増やして(古い計算を取り消し)`spawn_local`で計算する: 地形の切り替え起因なら`TERRAIN_DEBOUNCE_MS`(300ms)待ち、`run_in_slices(.., AZIMUTHS_PER_STEP=4)`で進め、
+  終わったら世代が同じときだけキャッシュ・ジオメトリを反映して`render_frame`。観測点・モード・高度が変わったら、前の覆域はすぐ消す(地形だけの変化なら計算が終わるまで残す)。観測点が選択されていなければ覆域を消して取り消す
   `rebuild_tracks`は`altitude_lines = show_altitude_lines && mode==3D`(2Dは縦の線が点になるので出さない)、`pick_anchors`はラベルの表示設定に関係なく保持
 - **航跡ラベル(`labels.rs`)**: HTML要素の重ね合わせ(WebGPUに文字を描く機能が無いため)。`set_labels`は数が変わったときだけ全消去して作り直し、同じなら**変わった文字だけ**更新。`update_labels`(毎フレーム)はアンカーを射影して、
   `visible = clip.w>0 && |ndc|<=1.1`なら`transform: translate(px, py)`(オフセット`(18, -16)`px)で置き、不可視なら`display:none`
@@ -2010,7 +2026,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 - **`OriginDialog(on_submit)`**: 緯度経度の入力欄(`dirty`=手で編集を始めたら`OriginState`受信による自動上書きを止める)。検証は`geodetic_bounds`の範囲(範囲外・数値でない・地形データ未取得は`設定`ボタンを無効化してメッセージを出す)。**送信はアプリの責務**(ライブラリは`on_submit`を呼ぶだけ)。
   非`Copy`値(接続)をムーブするクロージャは、開閉のたびに実行される内側で`clone()`してから作る(外側で1回だけ作ると2回目以降でムーブ済みエラー)
 - **`CoverageAltitudeDialog`**: 数値入力1つで`radar_markers.coverage_altitude_m`を更新する(再構築は`TerrainView`のEffect 4がシグナル経由で行う。通信なし)
-- **`LosView`**(見通し範囲タブ): 観測点の一覧(選択・アンテナ高(`max(v,0)`)・範囲(km。`max(v,1)*1000`)・削除)+極座標図(SVG `viewBox 300×300`、`PAD=26`、`RADIUS=124`)。選択中の観測点を原点として`compute_los`。
+- **`LosView`**(見通し範囲タブ): 観測点の一覧(選択・アンテナ高(`max(v,0)`)・範囲(km。`max(v,1)*1000`)・削除)+極座標図(SVG `viewBox 300×300`、`PAD=26`、`RADIUS=124`)。選択中の観測点を原点として`RangeComputation(Visible, 3200方位)`を`run_in_slices`で小分けにして非同期に計算する(`selected_marker`のMemoが変わったときだけ計算し直し、途中の計算は世代で取り消す。計算中は「見通し範囲を計算中...」)。
   各点は`r = clamp(range_m/max_range,0,1)*RADIUS`、`x = 150 + r·sin(az)`、`y = 150 - r·cos(az)`。距離グリッド円(0.25/0.5/0.75/1.0倍)・十字軸・N/E/S/Wのラベル・最大距離ラベルを描く。観測点が無ければ「メインパネル(中央の地図)を右クリックして、レーダー観測点を追加してください」
 - **`CrossSectionView`**(断面図タブ): 方位角スライダー(0..359)。`points = build_profile(data, origin, azimuth)`(原点=`OriginState`)。SVG `400×220`、`PAD_L=46`・`PAD_R=10`・`PAD_T=10`・`PAD_B=22`、`SKY_MARGIN_M=10_000`(Y軸の上端=最高標高+10km)。
   覆域(観測点が1つ以上のとき): `covered[i] = いずれかの観測点で is_visible(...)`の連続区間を地表トラックとして描く。上空の覆域は`boundary[i] = 全観測点の min_visible_altitude の最小値`から天井までの帯(どの観測点の範囲にも入らなければ`None`で区間を切る)

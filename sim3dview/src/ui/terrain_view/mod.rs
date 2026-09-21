@@ -12,6 +12,7 @@
 //! 右クリック/Backspaceで1つ戻す、Escで終了)。
 //! 地図の右クリックは、`MapMenuState`(と`ui::context_menu::ContextMenuState`)が提供されていれば、
 //! アプリが決めた項目の右クリックメニューを出す(提供されていなければ、その地点にレーダー観測点を追加する)。
+mod coverage;
 mod frame;
 mod labels;
 mod lod_driver;
@@ -98,6 +99,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         lod_pending: false,
         lod_soon_pending: false,
         fade_frame_pending: false,
+        coverage: Default::default(),
     }));
 
     // --- Effect 1: canvasのマウント + ResizeObserver(初回サイズ確定・以後のリサイズ追従) ---

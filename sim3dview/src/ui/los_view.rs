@@ -2,17 +2,25 @@
 //! 選択中のレーダーの見通し範囲(2D極座標図)の表示を行うタブコンポーネント。観測点自体は
 //! ここでは追加せず、`ui::terrain_view::TerrainView`上での右クリック(右クリックメニューがあればその項目)で追加する想定。
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use leptos::prelude::*;
 
-use crate::terrain::los::{compute_los, LosParams, LosPoint};
-use crate::terrain::markers::RadarMarkersState;
+use crate::terrain::los::{LosParams, LosPoint, RangeComputation, RangeKind};
+use crate::terrain::markers::{RadarMarker, RadarMarkersState};
 use crate::terrain::origin::Origin;
 use crate::terrain::store::TerrainStore;
+use crate::ui::util::run_in_slices;
 
 const VIEW_SIZE: f64 = 300.0;
 const PAD: f64 = 26.0;
 const RADIUS: f64 = (VIEW_SIZE - PAD * 2.0) / 2.0;
 const CENTER: f64 = VIEW_SIZE / 2.0;
+/// 極座標図の方位の刻み(mil)。2なら3,200方位(50km先で約98m間隔)。図の大きさ(300px)に対して十分細かく、計算量が半分になる。
+const CHART_AZIMUTH_STEP: usize = 2;
+/// 計算を1回に進める方位の数(`run_in_slices`の持ち時間の中で繰り返し呼ぶ)。
+const AZIMUTHS_PER_STEP: usize = 4;
 
 fn build_boundary_path(points: &[LosPoint], max_range_m: f64) -> String {
     let max_range = max_range_m.max(1.0);
@@ -118,24 +126,60 @@ pub fn LosView() -> impl IntoView {
             .into_any()
     };
 
+    // 選択中のレーダー(パラメータの編集も含めて、変わったときだけ計算し直す)。
+    let selected_marker = Memo::new(move |_| {
+        let id = radar_markers.selected.get()?;
+        radar_markers.markers.with(|list| list.iter().find(|m| m.id == id).copied())
+    });
+    // 見通し範囲の計算結果。計算は重いので、小分けにして非同期で進める(画面が固まらないように)。
+    let result: RwSignal<Option<(RadarMarker, Vec<LosPoint>)>> = RwSignal::new(None);
+    let generation = Rc::new(Cell::new(0u64));
+    Effect::new(move |_| {
+        let marker = selected_marker.get();
+        let data = terrain_store.get();
+        // 進行中の計算は取り消す(世代が変わったら止まる)。
+        let this_generation = generation.get() + 1;
+        generation.set(this_generation);
+        result.set(None);
+        let (Some(marker), Some(data)) = (marker, data) else {
+            return;
+        };
+        let generation = generation.clone();
+        wasm_bindgen_futures::spawn_local(async move {
+            let origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
+            let params = LosParams { observer_height_m: marker.height_m, max_range_m: marker.max_range_m };
+            let mut computation =
+                RangeComputation::new(&data, &origin, &params, RangeKind::Visible, CHART_AZIMUTH_STEP);
+            let finished = run_in_slices(
+                || computation.advance(&data, AZIMUTHS_PER_STEP),
+                || generation.get() != this_generation,
+            )
+            .await;
+            if finished {
+                result.set(Some((marker, computation.finish())));
+            }
+        });
+    });
+
     let chart = move || {
-        let Some(data) = terrain_store.get() else {
+        if terrain_store.get().is_none() {
             return view! { <p class="placeholder los-status">"地形データを読み込み中..."</p> }
                 .into_any();
-        };
-        let Some(selected_id) = radar_markers.selected.get() else {
+        }
+        let Some(selected) = selected_marker.get() else {
             return view! { <p class="placeholder los-status">"レーダーが選択されていません"</p> }
                 .into_any();
         };
-        let list = radar_markers.markers.get();
-        let Some(marker) = list.into_iter().find(|m| m.id == selected_id) else {
-            return view! { <p class="placeholder los-status">"レーダーが選択されていません"</p> }
-                .into_any();
+        // 選択やパラメータが変わった直後は、前の結果が残っていることがある(計算し直している間)ので、
+        // いまの選択の結果だけを使う。
+        let points = match result.get() {
+            Some((marker, points)) if marker == selected => points,
+            _ => {
+                return view! { <p class="placeholder los-status">"見通し範囲を計算中..."</p> }
+                    .into_any();
+            }
         };
-
-        let origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
-        let params = LosParams { observer_height_m: marker.height_m, max_range_m: marker.max_range_m };
-        let points = compute_los(&data, &origin, &params);
+        let marker = selected;
         if points.is_empty() {
             return view! { <p class="placeholder los-status">"計算できません"</p> }.into_any();
         }
