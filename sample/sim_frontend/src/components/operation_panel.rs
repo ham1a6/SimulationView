@@ -28,7 +28,6 @@ pub fn SimulationStatusPanel(conn: WsHandle) -> impl IntoView {
 
     view! {
         <div class="panel-section operation-panel">
-            <h2>"シミュレーションステータスパネル"</h2>
             <p>{status_text}</p>
             <div class="sim-controls">
                 <button class="sim-button" on:click=move |_| conn.send_command(&ClientCommand::resume())>

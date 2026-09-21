@@ -36,7 +36,6 @@ pub fn TopStatusPanel() -> impl IntoView {
 
     view! {
         <TabbedPanel
-            title="トップステータスパネル"
             active=active
             tabs=vec![
                 tab("各種情報", view! { <StatusPanel/> }),
@@ -50,7 +49,6 @@ pub fn TopStatusPanel() -> impl IntoView {
 pub fn BottomStatusPanel() -> impl IntoView {
     view! {
         <TabbedPanel
-            title="ボトムステータスパネル"
             tabs=vec![
                 tab("断面図", view! { <CrossSectionView/> }),
                 tab("見通し範囲", view! { <LosView/> }),

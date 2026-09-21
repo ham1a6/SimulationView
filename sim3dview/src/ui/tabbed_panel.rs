@@ -1,4 +1,4 @@
-//! 汎用タブパネル。パネル見出し(`title`)の下にタブバーを表示し、選択中タブの内容を表示する。
+//! 汎用タブパネル。タブバー(任意でパネル見出し`title`も)の下に、選択中タブの内容を表示する。
 //! 右パネル上段(トップステータスパネル)・下段(ボトムステータスパネル)が共通で使う。
 //! 後から同じ枠に別内容のタブを追加できるようにするための共通コンポーネントとして切り出してある。
 
@@ -16,7 +16,9 @@ pub fn tab(label: &'static str, view: impl IntoView + 'static) -> Tab {
 
 #[component]
 pub fn TabbedPanel(
-    #[prop(into)] title: String,
+    /// パネル見出し。省略(または空文字)なら見出しは出さず、タブバーだけを表示する。
+    #[prop(into, default = String::new())]
+    title: String,
     tabs: Vec<Tab>,
     /// 選択中のタブの番号(0始まり)。渡すと、呼び出し側からタブを切り替えられる
     /// (例: 何かを選択したら詳細のタブへ移る)。渡さなければ、パネルが自分で持つ(最初は0)。
@@ -29,7 +31,7 @@ pub fn TabbedPanel(
     view! {
         <div class="panel-section tabbed-panel">
             <div class="tabbed-panel-header">
-                <h2>{title}</h2>
+                {(!title.is_empty()).then(|| view! { <h2>{title}</h2> })}
                 <div class="tab-bar">
                     {labels
                         .into_iter()

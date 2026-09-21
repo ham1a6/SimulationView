@@ -11,7 +11,6 @@ use sim3dview::ui::terrain_view::TerrainView;
 pub fn MainPanel() -> impl IntoView {
     view! {
         <div class="map-view">
-            <div class="main-panel-title">"メインパネル"</div>
             <TerrainView preset=CameraPreset::Overview/>
         </div>
     }

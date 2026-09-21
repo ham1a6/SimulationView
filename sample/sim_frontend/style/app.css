@@ -99,24 +99,6 @@ body {
     height: 100%;
 }
 
-/* メインパネルの見出し。他パネルのh2と違い、canvas全面表示を崩さないよう
-   左上に控えめなオーバーレイラベルとして重ねる(右上の2D/3D切替ボタンと対称の位置)。 */
-.main-panel-title {
-    position: absolute;
-    top: 8px;
-    left: 8px;
-    z-index: 2;
-    background: rgba(20, 20, 20, 0.75);
-    color: var(--accent);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0.3rem 0.6rem;
-    font-size: 0.78rem;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    pointer-events: none;
-}
-
 .placeholder {
     color: #777;
     font-style: italic;

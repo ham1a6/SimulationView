@@ -71,7 +71,6 @@ pub fn VabPanel(
 
     view! {
         <div class="panel-section vab-panel">
-            <h2>"VABパネル"</h2>
             {move || {
                 let Some(cfg) = signals.vab_config.get() else {
                     return view! { <p class="placeholder">"(未受信)"</p> }.into_any();

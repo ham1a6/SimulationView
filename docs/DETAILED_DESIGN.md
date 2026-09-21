@@ -1278,6 +1278,10 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 (「操作パネル」「VAB」「地図」「各種情報パネル」「側面図パネル」)は、トップ/ボトムステータス
 パネルではタブラベルとして残るのみで、パネル自体の名前としては使わない。
 
+**画面上にはパネル名(見出し・ラベル)を表示しない**(後から「表示名を消してほしい」との要望を受けて
+全て削除した)。上記の名前は設計書・コード上の呼び名としてだけ残る。`TabbedPanel`の`title`は
+省略可能(省略/空文字なら見出しを出さずタブバーだけ)で、サンプルは指定しない。
+
 - CSS Gridで4列(左パネル固定 / メインパネル / リサイザー(6px) / 右パネル)を構成する
 - 左パネルは`display:grid; grid-template-rows: 1fr auto;`で上下2分割
   (シミュレーションステータスパネル/VABパネル)。VABパネル側は`auto`で内容の高さに
@@ -1377,14 +1381,15 @@ VABはまだ実ハードウェア非連動の開発用ダミー段階である�
 
 右パネル上下段(トップ/ボトムステータスパネル、`components/right_panel.rs`)は、
 汎用の`TabbedPanel`コンポーネントで実装する。パネル固有の名前(「各種情報」「側面図」等)は
-**タブのラベル**であり、パネル自体の見出し(タイトル)は位置に基づく汎用名
+**タブのラベル**であり、パネル自体の名前は位置に基づく汎用名
 (「トップステータスパネル」「ボトムステータスパネル」)にすることで、後から同じ枠に
-別内容のタブを追加できるようにしてある。
+別内容のタブを追加できるようにしてある。この名前は画面には出さない(`title`は省略可能で、
+サンプルは指定しない)。
 
 ```mermaid
 classDiagram
     class TabbedPanel {
-        +String title
+        +String title (省略可)
         +Vec~Tab~ tabs
     }
     class Tab {
@@ -1392,11 +1397,9 @@ classDiagram
         -view: AnyView
     }
     class TopStatusPanel {
-        title = "トップステータスパネル"
         tabs = [("各種情報", StatusPanel)]
     }
     class BottomStatusPanel {
-        title = "ボトムステータスパネル"
         tabs = [("断面図", CrossSectionView), ("見通し範囲", LosView)]
     }
     TabbedPanel o-- Tab
@@ -2069,7 +2072,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 
 ### 9.14 UI部品(`sim3dview::ui`)
 
-- **`TabbedPanel(title, tabs: Vec<Tab>, active: Option<RwSignal<usize>>)`** + `tab(label, view)`: `active`を渡すと呼び出し側からタブを切り替えられる。**全タブの中身を初回に1度だけ生成してDOMに残し、非選択は`display:none`で隠す**(切替で作り直さない)。タブが1個でもタブバーは表示する
+- **`TabbedPanel(title?, tabs: Vec<Tab>, active: Option<RwSignal<usize>>)`**(`title`は省略可。省略/空文字なら見出しを出さない) + `tab(label, view)`: `active`を渡すと呼び出し側からタブを切り替えられる。**全タブの中身を初回に1度だけ生成してDOMに残し、非選択は`display:none`で隠す**(切替で作り直さない)。タブが1個でもタブバーは表示する
 - **`FloatingPanel(open, title, modal=true, draggable=false, initial_position, children)`**: 中身は常時マウントし`display`だけ切り替える。`modal`は半透明バックドロップ(`.floating-panel-backdrop`)+中央表示で、背景クリックか✕で閉じる。
   `modal=false`(ウインドウ)はバックドロップなし(`.floating-window-layer`は`pointer-events:none`、パネルだけ`auto`)で✕でだけ閉じる。既定位置`(80,60)`。`draggable`はタイトルバーのポインタ操作で動かし、
   移動量を「右端が80px以上・左端が(幅-80)以下・上端が0以上・上端が(高さ-40)以下」に制限する(`KEEP_VISIBLE_X_PX=80`・`KEEP_VISIBLE_Y_PX=40`。タイトルバーを画面外に出して掴めなくなるのを防ぐ)。位置は閉じて開き直しても保つ。未実装: リサイズ・最小化・重なり順・位置の永続化
