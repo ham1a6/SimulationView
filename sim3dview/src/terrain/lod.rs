@@ -10,10 +10,11 @@
 //!   (`fetch::load_terrain`が起動時に全部取得して常駐する)。レベル1のグリッドが取得できた
 //!   タイルから、近い順にチャンク表示に切り替わる。予算が足りないタイルはレベル0のまま残る。
 //! - チャンクの頂点の合計は`DETAIL_VERTEX_BUDGET`以下に抑える(GPUメモリ・描画負荷の上限)。
-//!   まず全タイルのレベル1の分(下限)を確保し、残りを「見えていて近いチャンク」から順に配って
-//!   細かくする。
-//! - 視野の外は、予算が余っている間は現状のレベルを保つ(カメラを戻したときにすぐ細かく見える
-//!   ように)が、予算は見えているものより後回しにする。
+//!   まず見えているタイルのレベル1の分(下限)を確保し、残りを「レベルごとの周回」(全チャンクを
+//!   レベル2まで→3まで→…、各周は近い順)で配って細かくする。近くの少数のチャンクを最細まで
+//!   上げて予算を使い切ると、遠くが粗いまま残るため。
+//! - 視野の外のタイルは、見えているタイルへ配った後の残りで、下限と現状のレベルを保つ
+//!   (カメラを戻したときにすぐ細かく見えるように)。残りが足りなければ全体表示(レベル0)に戻る。
 //! - 理想より1レベル細かいだけなら下げない(距離の境目でレベルが行き来しないヒステリシス)。
 
 use std::collections::HashMap;
@@ -24,17 +25,18 @@ use super::camera::{Camera, Projection};
 use super::loader::{TerrainData, TileEntry, TileKey};
 use super::mesh::tile_vertex_count;
 use super::geodesy::EnuTransform;
-/// チャンクの頂点数の合計の上限(全タイルの下限=レベル1の分を含む)。全タイルのレベル1は
-/// 約1520万頂点(390タイル x 36チャンク x 1チャンク1085頂点)で、残りの約980万頂点を細かくする
-/// のに使う。最細(30m)のチャンクは1個で約36万頂点なので、下限から最細へ上げられるチャンクは
-/// 同時に約27個まで。GPUメモリは頂点(28バイト)とインデックスで合計約1.2GBになる。
+/// チャンクの頂点数の合計の上限(下限=レベル1の分を含む)。全タイルのレベル1は約1520万頂点
+/// (390タイル x 36チャンク x 1チャンク1085頂点)だが、見えていないタイルの下限は見えているタイルの
+/// 後回しなので、視野が狭ければ見えているチャンクを細かくする分が大きく残る。最細(30m)のチャンクは
+/// 1個で約36万頂点。GPUメモリは頂点(28バイト)とインデックスで合計約1.2GBになる。
 /// 以前は600万頂点(下限は近いタイルだけ)だった。
 pub const DETAIL_VERTEX_BUDGET: usize = 25_000_000;
 
 /// チャンクのレベル選択に使う: 画面(CSSピクセル)上で1セルがこのピクセル数以下になる最も粗い
-/// レベルを選ぶ。描画は2倍スーパーサンプリングなので、1ピクセルなら描画解像度では約2ピクセル分。
-/// 最細の30mは、1ピクセルが約62m未満、canvas高さ700pxで視点から約46km以内で使われる。
-const CHUNK_TARGET_CELL_PX: f32 = 1.0;
+/// レベルを選ぶ。描画は2倍スーパーサンプリングなので、0.7ピクセルなら描画解像度では約1.4ピクセル分。
+/// 小さいほど遠くまで細かいレベルを使う(1.0だと遠方が粗く、0.5だと近くの最細が予算で足りなくなる
+/// ため0.7)。最細の30mは、1ピクセルが約43m未満、canvas高さ700pxで視点から約32km以内で使われる。
+const CHUNK_TARGET_CELL_PX: f32 = 0.7;
 
 /// 緯度1度の長さ(メートル)。セルの大きさの見積もりに使う。
 const METERS_PER_DEGREE: f32 = 111_000.0;
@@ -284,23 +286,44 @@ fn evaluate_tile(
     TileInfo { key: tile.key, distance, visible, chunks }
 }
 
-/// 予算の配分。`infos`は優先度の高い順。戻り値は、下限を確保できたタイルのチャンクごとのレベル
-/// (確保できなかったタイルは含まれない=全体表示のまま)。
+/// 予算の配分。`infos`は優先度の高い順(見えているタイルが先)。戻り値は、下限を確保できたタイルの
+/// チャンクごとのレベル(確保できなかったタイルは含まれない=全体表示のまま)。
+///
+/// 見えているタイルを先に、見えていないタイルはその後の残りで扱う(それぞれ「下限の確保→レベルの周回」)。
+/// 見えていないタイルの下限まで先に確保すると、全タイル分の約1520万頂点が予算の大半を占め、見えている
+/// 遠方のチャンクを細かくする余裕が無くなるため。見えていないタイルは、予算が足りないとき全体表示に戻る
+/// (カメラを向け直すと、下限から順に取り直す)。
 fn allocate_levels(data: &TerrainData, infos: &[TileInfo], budget: usize) -> HashMap<TileKey, Vec<u8>> {
-    let chunk_count = data.chunk_count();
+    let split = infos.partition_point(|info| info.visible);
+    let (visible, hidden) = infos.split_at(split);
     let mut remaining = budget;
-    // まず、全タイルに、全チャンクをレベル1で載せる下限の分を、近い(見えている)タイルから順に確保する
-    // (足りなければそのタイルは全体表示のまま)。
-    let base_cost = chunk_count * chunk_vertex_cost(data, 1);
     let mut levels: HashMap<TileKey, Vec<u8>> = HashMap::new();
+    for group in [visible, hidden] {
+        allocate_group(data, group, &mut levels, &mut remaining);
+    }
+    levels
+}
+
+/// `allocate_levels`の1グループ分。まず全タイルに、全チャンクをレベル1で載せる下限の分を、近い順に
+/// 確保する(足りなければそのタイルは全体表示のまま)。次に、チャンクを近い順(見えているものが先)に、
+/// 目標レベルまで予算の許す限り上げる。
+fn allocate_group(
+    data: &TerrainData,
+    infos: &[TileInfo],
+    levels: &mut HashMap<TileKey, Vec<u8>>,
+    remaining: &mut usize,
+) {
+    let chunk_count = data.chunk_count();
+    let base_cost = chunk_count * chunk_vertex_cost(data, 1);
+    let mut granted: Vec<&TileInfo> = Vec::new();
     for info in infos {
-        if remaining >= base_cost {
-            remaining -= base_cost;
+        if *remaining >= base_cost {
+            *remaining -= base_cost;
             levels.insert(info.key, vec![1; chunk_count]);
+            granted.push(info);
         }
     }
 
-    // 次に、チャンクを近い順(見えているものが先)に、目標レベルまで予算の許す限り上げる。
     struct Upgrade {
         visible: bool,
         distance: f32,
@@ -308,9 +331,8 @@ fn allocate_levels(data: &TerrainData, infos: &[TileInfo], budget: usize) -> Has
         chunk: usize,
         target: usize,
     }
-    let mut upgrades: Vec<Upgrade> = infos
+    let mut upgrades: Vec<Upgrade> = granted
         .iter()
-        .filter(|info| levels.contains_key(&info.key))
         .flat_map(|info| {
             info.chunks.iter().enumerate().map(|(chunk, t)| Upgrade {
                 visible: t.visible,
@@ -322,20 +344,21 @@ fn allocate_levels(data: &TerrainData, infos: &[TileInfo], budget: usize) -> Has
         })
         .collect();
     upgrades.sort_by(|a, b| b.visible.cmp(&a.visible).then(a.distance.total_cmp(&b.distance)));
-    for up in upgrades {
-        let Some(entry) = levels.get_mut(&up.key) else { continue };
-        let mut level = 1usize;
-        while level < up.target {
-            let delta = chunk_vertex_cost(data, level + 1) - chunk_vertex_cost(data, level);
-            if delta > remaining {
-                break;
+    // レベルごとの周回: 1周目で全チャンクをレベル2まで、2周目でレベル3まで、…と上げる。1個ずつ最細まで
+    // 上げると、近くの少数の最細チャンク(1個で約36万頂点)が予算を使い切り、遠くのチャンクが
+    // 理想のレベルに届かず最低のレベル1のまま残るため。予算が尽きた周回で打ち切る(それより上の
+    // レベルは増分が大きく、どのチャンクも上げられない)。
+    let max_level = data.num_levels() - 1;
+    for level in 2..=max_level {
+        let delta = chunk_vertex_cost(data, level) - chunk_vertex_cost(data, level - 1);
+        for up in upgrades.iter().filter(|up| up.target >= level) {
+            if delta > *remaining {
+                return;
             }
-            remaining -= delta;
-            level += 1;
+            *remaining -= delta;
+            levels.get_mut(&up.key).expect("granted tile")[up.chunk] = level as u8;
         }
-        entry[up.chunk] = level as u8;
     }
-    levels
 }
 
 #[cfg(test)]
@@ -391,8 +414,9 @@ mod tests {
     fn ideal_level_picks_the_coarsest_level_fine_enough_for_the_pixel() {
         let d = data();
         assert_eq!(ideal_level(&d, 1.0e6, 1), 1);
-        assert_eq!(ideal_level(&d, 200.0, 1), 2); // 185m/セル
-        assert_eq!(ideal_level(&d, 50.0, 1), 4); // 61.7mは足りず、30.8m
+        assert_eq!(ideal_level(&d, 300.0, 1), 2); // 0.7*300=210mに185m/セルが収まる
+        assert_eq!(ideal_level(&d, 200.0, 1), 3); // 0.7*200=140mには185mは大きく、61.7m
+        assert_eq!(ideal_level(&d, 50.0, 1), 4); // 0.7*50=35mには61.7mは大きく、30.8m
         assert_eq!(ideal_level(&d, 1.0, 1), 4); // どれも満たさなければ最細
         assert_eq!(ideal_level(&d, 1.0e6, 2), 2); // `from`より粗くはしない
     }
@@ -461,6 +485,43 @@ mod tests {
         assert!(used <= budget, "used={used} budget={budget}");
         // 余りを近いチャンクへ回すので、下限だけよりは多く使っている。
         assert!(used > 9 * per_tile);
+    }
+
+    fn tile_info(key: TileKey, visible: bool, distance: f32, level: usize) -> TileInfo {
+        let chunks = (0..36).map(|_| ChunkTarget { distance, visible, level }).collect();
+        TileInfo { key, distance, visible, chunks }
+    }
+
+    #[test]
+    fn scarce_budget_raises_far_chunks_before_refining_near_ones() {
+        let d = data();
+        let base = 36 * chunk_vertex_cost(&d, 1);
+        let step = |level: usize| 36 * (chunk_vertex_cost(&d, level) - chunk_vertex_cost(&d, level - 1));
+        // 近いタイルは最細(4)、遠いタイルはレベル2が目標。2つ分の下限+両方のレベル2+近いタイルの
+        // レベル3へ約半分、の予算。
+        let infos = [tile_info((31, 131), true, 1_000.0, 4), tile_info((30, 130), true, 200_000.0, 2)];
+        let budget = 2 * base + 2 * step(2) + step(3) / 2;
+        let levels = allocate_levels(&d, &infos, budget);
+        assert!(levels[&(30, 130)].iter().all(|&l| l == 2), "遠いタイルが先に目標へ届く");
+        let near = &levels[&(31, 131)];
+        assert!(near.iter().all(|&l| l >= 2) && near.iter().any(|&l| l == 3), "{near:?}");
+        assert!(near.iter().all(|&l| l <= 3), "最細へはまだ上げない: {near:?}");
+    }
+
+    #[test]
+    fn tiles_outside_the_view_get_their_floor_only_after_visible_refinement() {
+        let d = data();
+        let base = 36 * chunk_vertex_cost(&d, 1);
+        let step = |level: usize| 36 * (chunk_vertex_cost(&d, level) - chunk_vertex_cost(&d, level - 1));
+        let infos = [tile_info((31, 131), true, 1_000.0, 3), tile_info((30, 130), false, 200_000.0, 1)];
+        // 見えているタイルをレベル3にしたあと、見えていないタイルの下限にはわずかに足りない予算。
+        let budget = base + step(2) + step(3) + base - 1;
+        let levels = allocate_levels(&d, &infos, budget);
+        assert!(levels[&(31, 131)].iter().all(|&l| l == 3));
+        assert!(!levels.contains_key(&(30, 130)), "見えていないタイルは全体表示に戻る");
+        // 余裕があれば、見えていないタイルも下限を確保する。
+        let levels = allocate_levels(&d, &infos, budget + 1);
+        assert!(levels[&(30, 130)].iter().all(|&l| l == 1));
     }
 
     #[test]
