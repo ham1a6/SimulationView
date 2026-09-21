@@ -6,7 +6,8 @@
 //! 大きさ・見え方が違うので揃えていない。
 //!
 //! シェーダー側にも、同じ目的の深度のバイアスがある(この一覧とは別に、対で調整する):
-//! `draw.wgsl`の`LINE_DEPTH_BIAS`(線を面より手前に)・`BILLBOARD_DEPTH_BIAS`(マーカーを距離に比例して手前に)、
+//! `draw.wgsl`の`LINE_DEPTH_BIAS`(線を面より手前に)・`BILLBOARD_DEPTH_BIAS`(マーカーを距離に比例して手前に)・`billboard_depth`(ビルボードを、足元の地面の面より手前に。
+//! 地面すれすれのシンボルの下半分が埋まらないように)、
 //! `terrain.wgsl`の`WATER_DEPTH_MARGIN_M`(水域の面を視線方向へずらす量)。
 
 /// 作図の図形・線(`AboveGround`)。

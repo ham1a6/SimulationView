@@ -43,6 +43,49 @@ const LINE_DEPTH_BIAS = 2.0e-5;
 const BILLBOARD_DEPTH_BIAS = 2.0e-3;
 // 向きつきビルボードで、進行方向の画面上の向きを求めるためにアンカーから進む距離(メートル)。
 const ORIENT_STEP_M = 200.0;
+// 地球の半径(メートル)。ENUの原点は地表なので、地球の中心は(0,0,-R)にある。ビルボードの足元の
+// 「局所の真上」(地面の向き)を、アンカーと地球の中心を結ぶ向きで見積もるのに使う(球で十分)。
+const EARTH_RADIUS_M = 6371000.0;
+// ビルボードを足元の地面の面へ寄せるとき、手前へ寄せる量の上限(深度の比)。視線が地面に対してほぼ
+// 水平だと、画面で少し下の画素が地面に当たる位置は視点側へ大きく動く。それに合わせて寄せ続けると、
+// 手前の山に隠れるはずのシンボルまで山の上に描かれるので、寄せすぎないようにする。
+const BILLBOARD_PLANE_MAX_PUSH = 1.3;
+
+// ビルボードの頂点(アンカーのクリップ座標c、アンカーから画面上でoffset_ndcだけずれた位置)の深度(0〜1)。
+// ビルボードの深度はアンカー1点の深度で一定なので、そのままだと、地面すれすれのシンボルの画面で足元より
+// 下の画素(視点に近い地面)が、シンボルより手前の地形・水面になって隠れてしまう(高度0mの船など)。
+// そこで、アンカーを通る地面の面(局所の水平面)のうち、その画素の視線が当たる点の深度までは手前へ寄せる。
+// 面の上の点のクリップ座標は、同次座標の線形性から、面の2方向の係数についての連立一次方程式で厳密に
+// 求まる(遠近の非線形性による近似の誤差が無い)。面に当たらない・視点の後ろなら、アンカーの深度のまま。
+fn billboard_depth(anchor: vec3<f32>, c: vec4<f32>, offset_ndc: vec2<f32>) -> f32 {
+    let depth = c.z / c.w;
+    let up = normalize(anchor + vec3<f32>(0.0, 0.0, EARTH_RADIUS_M));
+    let east = normalize(cross(vec3<f32>(0.0, 1.0, 0.0), up));
+    let north = cross(up, east);
+    // 面の上の方向east・northに、それぞれ1メートル進んだときのクリップ座標の変化。
+    let m1 = u.view_proj * vec4<f32>(east, 0.0);
+    let m2 = u.view_proj * vec4<f32>(north, 0.0);
+    // 面の点 anchor + s*east + r*north が、画面で offset_ndc だけずれた位置に射影される条件:
+    // (c.xy + s*m1.xy + r*m2.xy) = (c.xy/c.w + offset_ndc) * (c.w + s*m1.w + r*m2.w)
+    let t = c.xy / c.w + offset_ndc;
+    let a11 = m1.x - t.x * m1.w;
+    let a12 = m2.x - t.x * m2.w;
+    let a21 = m1.y - t.y * m1.w;
+    let a22 = m2.y - t.y * m2.w;
+    let b = offset_ndc * c.w;
+    let det = a11 * a22 - a12 * a21;
+    if (abs(det) <= 1.0e-4 * (abs(a11 * a22) + abs(a12 * a21))) {
+        return depth;
+    }
+    let s = (b.x * a22 - a12 * b.y) / det;
+    let r = (a11 * b.y - a21 * b.x) / det;
+    let hit = c + m1 * s + m2 * r;
+    if (!(hit.w > 0.0)) {
+        return depth;
+    }
+    let hit_depth = hit.z / hit.w;
+    return max(depth, min(hit_depth, depth * BILLBOARD_PLANE_MAX_PUSH));
+}
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
@@ -64,8 +107,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         }
         let right = vec2<f32>(forward.y, -forward.x);
         let offset_px = right * in.aux.x + forward * in.aux.y;
-        let ndc = c.xy / c.w + offset_px / half;
-        out.clip_position = vec4<f32>(ndc * c.w, min(c.z * (1.0 + BILLBOARD_DEPTH_BIAS), c.w), c.w);
+        let offset_ndc = offset_px / half;
+        let depth = min(billboard_depth(in.position, c, offset_ndc) * (1.0 + BILLBOARD_DEPTH_BIAS), 1.0);
+        out.clip_position = vec4<f32>((c.xy / c.w + offset_ndc) * c.w, depth * c.w, c.w);
         return out;
     }
     if (in.params.z > 0.5) {
@@ -73,8 +117,9 @@ fn vs_main(in: VertexInput) -> VertexOutput {
         // 大きさが拡大・縮小・回転で変わらず、常に画面の正面を向く。
         out.color = in.color;
         let c = u.view_proj * vec4<f32>(in.position, 1.0);
-        let ndc = c.xy / c.w + in.aux.xy / (u.viewport.xy * 0.5);
-        out.clip_position = vec4<f32>(ndc * c.w, min(c.z * (1.0 + BILLBOARD_DEPTH_BIAS), c.w), c.w);
+        let offset_ndc = in.aux.xy / (u.viewport.xy * 0.5);
+        let depth = min(billboard_depth(in.position, c, offset_ndc) * (1.0 + BILLBOARD_DEPTH_BIAS), 1.0);
+        out.clip_position = vec4<f32>((c.xy / c.w + offset_ndc) * c.w, depth * c.w, c.w);
         return out;
     }
     let width_px = in.params.x;
