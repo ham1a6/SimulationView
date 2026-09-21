@@ -207,6 +207,12 @@ view! { <LosView/> } // RadarMarkersState・TerrainStore contextが必要
 選択中観測点の探知可能領域を表示する対象の海抜高度を編集するフローティングパネルです
 (`RadarMarkersState`のみ参照、通信は一切行いません)。
 
+**複数の覆域の同時表示**: 覆域(3Dドーム・2D領域)は、既定では選択中の観測点だけです。`RadarMarkersState::show_all_coverage`を`true`にすると
+(`LosView`の「すべての観測点の覆域を同時に表示」チェックボックスと同じ)、**すべての観測点の覆域を同時に**出します。観測点ごとに色が違います(`coverage_colors(id)`)。
+
+**断面図の中心**: `ui::cross_section_view::CrossSectionView`は、選択中の航跡のシンボル(`TracksState::selected`。`TracksState`を`provide_context`していれば)の位置を中心に、
+方位角の直線に沿った断面を出します。何も選択されていなければ基準位置(`OriginState`)が中心です。片側の長さを選べ、「進行方向」ボタンで方位角をシンボルの進行方向に合わせられます。
+
 ## 作図(図形・線)
 
 `terrain::drawing::DrawingState`を`provide_context`し、`add`/`update`/`remove`/`clear`で図形を出し入れします

@@ -336,6 +336,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             let _ = radar_markers.markers.get();
             let _ = radar_markers.selected.get();
             let _ = radar_markers.coverage_altitude_m.get();
+            let _ = radar_markers.show_all_coverage.get();
             rebuild_markers(&state, radar_markers);
             render_now(&state);
         });

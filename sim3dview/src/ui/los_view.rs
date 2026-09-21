@@ -8,7 +8,7 @@ use std::rc::Rc;
 use leptos::prelude::*;
 
 use crate::terrain::los::{LosParams, LosPoint, RangeComputation, RangeKind};
-use crate::terrain::markers::{RadarMarker, RadarMarkersState};
+use crate::terrain::markers::{coverage_colors, RadarMarker, RadarMarkersState};
 use crate::terrain::origin::Origin;
 use crate::terrain::store::TerrainStore;
 use crate::ui::util::run_in_slices;
@@ -21,6 +21,13 @@ const CENTER: f64 = VIEW_SIZE / 2.0;
 const CHART_AZIMUTH_STEP: usize = 2;
 /// 計算を1回に進める方位の数(`run_in_slices`の持ち時間の中で繰り返し呼ぶ)。
 const AZIMUTHS_PER_STEP: usize = 4;
+
+/// 観測点の覆域の色の見本(左半分=3Dドーム、右半分=2D覆域)のCSS。
+fn swatch_style(marker_id: u64) -> String {
+    let (dome, area, _) = coverage_colors(marker_id);
+    let rgb = |c: [f32; 3]| format!("rgb({:.0},{:.0},{:.0})", c[0] * 255.0, c[1] * 255.0, c[2] * 255.0);
+    format!("background: linear-gradient(90deg, {} 50%, {} 50%)", rgb(dome), rgb(area))
+}
 
 fn build_boundary_path(points: &[LosPoint], max_range_m: f64) -> String {
     let max_range = max_range_m.max(1.0);
@@ -68,6 +75,7 @@ pub fn LosView() -> impl IntoView {
                 };
                 view! {
                     <div class=row_class on:click=move |_| radar_markers.selected.set(Some(id))>
+                        <span class="los-swatch" title="覆域の色(左=3D、右=2D)" style=swatch_style(id)></span>
                         <span class="los-marker-label">
                             {format!("緯度{:.4} 経度{:.4}", m.lat_deg, m.lon_deg)}
                         </span>
@@ -230,6 +238,15 @@ pub fn LosView() -> impl IntoView {
         <div class="los-view">
             <div class="los-chart">{chart}</div>
             <div class="los-controls">
+                <label class="los-option">
+                    <input
+                        id="los-show-all-coverage"
+                        type="checkbox"
+                        prop:checked=move || radar_markers.show_all_coverage.get()
+                        on:change=move |ev| radar_markers.show_all_coverage.set(event_target_checked(&ev))
+                    />
+                    "すべての観測点の覆域を同時に表示"
+                </label>
                 <div class="los-marker-list">{list_view}</div>
             </div>
         </div>

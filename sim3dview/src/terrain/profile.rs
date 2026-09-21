@@ -1,5 +1,6 @@
-//! 断面図(cross-section)生成。断面図パネル(`ui::cross_section_view`)で、原点を起点に
-//! 指定した方位角方向へ地表をサンプリングし、(距離, 標高)の点列を作る(2D表示用)。
+//! 断面図(cross-section)生成。断面図パネル(`ui::cross_section_view`)で、中心の点(選択中のシンボルの位置、
+//! 何も選択されていなければ原点)を通る、指定した方位角の直線に沿って地表をサンプリングし、
+//! (距離, 標高)の点列を作る(2D表示用)。距離は中心が0で、方位角の向きが正、その反対が負。
 //! `max_valid_distance`は`terrain::los`(見通し範囲)とも共有している。
 
 use super::loader::TerrainData;
@@ -52,21 +53,43 @@ pub(super) fn max_valid_distance(
 }
 
 /// 原点から方位角(度、北=0・東=90・時計回り)方向へ、地形データの範囲内(最大で
-/// `SEARCH_UPPER_BOUND_M`)まで地表をサンプリングする。原点変更・方位角変更のたびに呼び直す想定。
+/// `SEARCH_UPPER_BOUND_M`)まで地表をサンプリングする(片側だけ)。原点変更・方位角変更のたびに呼び直す想定。
+/// (片側だけの断面は、単体テストで`build_profile_span`との一致を確かめるために残してある。)
+#[cfg(test)]
 pub fn build_profile(data: &TerrainData, origin: &Origin, azimuth_deg: f64) -> Vec<ProfilePoint> {
-    let transform = EnuTransform::new(origin, &data.metadata.ellipsoid);
+    build_profile_span(data, origin, azimuth_deg, 0.0, SEARCH_UPPER_BOUND_M)
+}
+
+/// `center`を通る、方位角(度、北=0・東=90・時計回り)の直線に沿って、地形データの範囲内で、
+/// 方位角の向きに`forward_m`、その反対に`back_m`まで(それぞれ地形データの端で打ち切る)地表をサンプリングする。
+/// 点の`distance_m`は中心が0で、方位角の向きが正・反対が負(先頭が`-back`、末尾が`+forward`)。
+/// 断面図で、選択中のシンボルの位置を中心にするために使う。
+pub fn build_profile_span(
+    data: &TerrainData,
+    center: &Origin,
+    azimuth_deg: f64,
+    back_m: f64,
+    forward_m: f64,
+) -> Vec<ProfilePoint> {
+    let transform = EnuTransform::new(center, &data.metadata.ellipsoid);
     let az_rad = azimuth_deg.to_radians();
     let dir_east = az_rad.sin();
     let dir_north = az_rad.cos();
 
-    let max_distance = max_valid_distance(data, &transform, dir_east, dir_north);
-    if max_distance <= 0.0 {
+    let forward = max_valid_distance(data, &transform, dir_east, dir_north).min(forward_m.max(0.0));
+    let back = if back_m > 0.0 {
+        max_valid_distance(data, &transform, -dir_east, -dir_north).min(back_m)
+    } else {
+        0.0
+    };
+    let total = forward + back;
+    if total <= 0.0 {
         return Vec::new();
     }
 
     (0..=NUM_SAMPLES)
         .map(|i| {
-            let distance = max_distance * (i as f64) / (NUM_SAMPLES as f64);
+            let distance = -back + total * (i as f64) / (NUM_SAMPLES as f64);
             let (lat, lon) = transform.inverse(dir_east * distance, dir_north * distance);
             let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0);
             ProfilePoint { distance_m: distance, elevation_m: elevation, lat_deg: lat, lon_deg: lon }
@@ -107,6 +130,37 @@ mod tests {
         let data = TerrainData::synthetic(0, 100, 30, 30, |_, _| 0);
         let t = transform(15.0, 115.0);
         assert_eq!(max_valid_distance(&data, &t, 1.0, 0.0), SEARCH_UPPER_BOUND_M);
+    }
+
+    /// 中心を通る断面: 中心の位置が距離0になり、方位角の向きが正・反対が負。片側が地形データの端に近ければ、その側だけ短くなる。
+    #[test]
+    fn centered_profile_passes_through_the_center_and_stops_at_the_data_edge() {
+        let data = TerrainData::synthetic(30, 120, 1, 1, east_slope);
+        // 東端(経度121度)まで約24km、西端まで約72kmの点。東西に±100km取ろうとしても、データの端で切れる。
+        let center = Origin { lat_deg: 30.5, lon_deg: 120.75 };
+        let p = build_profile_span(&data, &center, 90.0, 100_000.0, 100_000.0);
+        assert_eq!(p.len(), NUM_SAMPLES + 1);
+        let (first, last) = (p[0].distance_m, p[NUM_SAMPLES].distance_m);
+        assert!((first + 72_000.0).abs() < 2_000.0, "西端 {first}");
+        assert!((last - 24_000.0).abs() < 1_000.0, "東端 {last}");
+        // 距離0の点は、中心の標高(東へ1度で600m上がる斜面の、経度120.75度=450m)。
+        let at_center = p.iter().min_by(|a, b| a.distance_m.abs().total_cmp(&b.distance_m.abs())).unwrap();
+        assert!(at_center.distance_m.abs() < (last - first) / NUM_SAMPLES as f64);
+        assert!((at_center.elevation_m - 450.0).abs() < 25.0, "{}", at_center.elevation_m);
+        // 距離は単調増加で等間隔。
+        let step = p[1].distance_m - p[0].distance_m;
+        assert!(p.windows(2).all(|w| ((w[1].distance_m - w[0].distance_m) - step).abs() < 1e-6));
+        // 東へ進むほど高い。
+        assert!(p.windows(2).all(|w| w[1].elevation_m >= w[0].elevation_m));
+        // 範囲を狭くすると、その範囲で切れる。
+        let narrow = build_profile_span(&data, &center, 90.0, 10_000.0, 5_000.0);
+        assert!((narrow[0].distance_m + 10_000.0).abs() < 1e-6);
+        assert!((narrow[NUM_SAMPLES].distance_m - 5_000.0).abs() < 1e-6);
+        // 片側だけ(back=0)は、従来の`build_profile`と同じ。
+        let one_way = build_profile_span(&data, &center, 90.0, 0.0, SEARCH_UPPER_BOUND_M);
+        let old = build_profile(&data, &center, 90.0);
+        assert_eq!(one_way.len(), old.len());
+        assert!(one_way.iter().zip(&old).all(|(a, b)| a.distance_m == b.distance_m));
     }
 
     #[test]

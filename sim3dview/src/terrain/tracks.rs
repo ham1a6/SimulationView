@@ -179,6 +179,12 @@ impl TracksState {
         self.entries.with(|entries| entries.iter().find(|e| e.track.id == id).map(|e| e.track.clone()))
     }
 
+    /// `selected_track`と同じだが、**リアクティブに追跡しない**(位置の更新のたびに再計算したくない、重い処理から読む用)。
+    pub fn selected_track_untracked(&self) -> Option<Track> {
+        let id = self.selected.get_untracked()?;
+        self.entries.with_untracked(|entries| entries.iter().find(|e| e.track.id == id).map(|e| e.track.clone()))
+    }
+
     /// トラックを選択する(`None`で解除)。
     pub fn select(&self, id: Option<TrackId>) {
         if self.selected.get_untracked() != id {

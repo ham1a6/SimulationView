@@ -171,6 +171,78 @@
     accent-color: var(--accent);
 }
 
+/* 断面の中心(選択中のシンボル/基準位置)と、片側の長さ、進行方向ボタンの行。 */
+.cross-section-center-row {
+    flex-wrap: wrap;
+    justify-content: space-between;
+}
+
+.cross-section-center {
+    flex: 1 1 auto;
+    font-size: 0.78rem;
+    color: #ccc;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cross-section-range-label {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-size: 0.75rem;
+    color: #999;
+}
+
+.cross-section-range-label select {
+    background: var(--bg-panel);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.15rem 0.3rem;
+    font-size: 0.75rem;
+}
+
+.cross-section-heading-btn {
+    background: transparent;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.2rem 0.5rem;
+    cursor: pointer;
+    font-size: 0.72rem;
+    white-space: nowrap;
+}
+
+.cross-section-heading-btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
+
+/* 断面の中心(距離0)の縦線と、選択中のシンボル(中心の真上に、高度の位置で)。 */
+.cs-center {
+    stroke: var(--border);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+}
+
+.cs-symbol {
+    fill: var(--accent-2, #e3ab5c);
+    stroke: var(--bg-panel);
+    stroke-width: 1;
+}
+
+.cs-symbol-line {
+    stroke: var(--accent-2, #e3ab5c);
+    stroke-width: 1;
+    stroke-dasharray: 2 2;
+}
+
+.cs-symbol-label {
+    fill: var(--fg);
+    font-size: 9px;
+}
+
 .cross-section-azimuth-value {
     flex: 0 0 auto;
     min-width: 3.5ch;
@@ -272,6 +344,29 @@
 .los-marker-row-selected {
     border-color: var(--accent);
     background: rgba(255, 200, 60, 0.08);
+}
+
+/* 覆域の色の見本(左=3Dドーム、右=2D覆域)。複数の覆域を同時に出すとき、どの覆域がどの観測点かを見分ける。 */
+.los-swatch {
+    flex: 0 0 auto;
+    align-self: center;
+    width: 1.1rem;
+    height: 0.7rem;
+    border-radius: 2px;
+    border: 1px solid var(--border);
+}
+
+.los-option {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: 0.75rem;
+    color: #bbb;
+    cursor: pointer;
+}
+
+.los-option input[type="checkbox"] {
+    accent-color: var(--accent);
 }
 
 .los-marker-label {

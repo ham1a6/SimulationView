@@ -47,6 +47,9 @@ pub struct RadarMarkersState {
     /// 個々のレーダーのパラメータ(アンテナ高・最大観測範囲)とは別に、表示側の設定
     /// として1つだけ持つ(複数レーダーがあっても「今見たい高度」は1つのため)。
     pub coverage_altitude_m: RwSignal<f64>,
+    /// 覆域を、選択中の観測点だけでなく**すべての観測点について同時に**表示するか(既定は選択中のみ)。
+    /// 観測点ごとに色が違う(`coverage_colors`)。
+    pub show_all_coverage: RwSignal<bool>,
 }
 
 impl RadarMarkersState {
@@ -56,6 +59,7 @@ impl RadarMarkersState {
             selected: RwSignal::new(None),
             next_id: RwSignal::new(1),
             coverage_altitude_m: RwSignal::new(1000.0),
+            show_all_coverage: RwSignal::new(false),
         }
     }
 
@@ -89,7 +93,25 @@ const SELECTED_MARKER_COLOR: [f32; 4] = [1.0, 0.92, 0.25, 1.0];
 const MARKER_COLOR: [f32; 4] = [1.0, 0.55, 0.15, 1.0];
 /// ピンの縁取りと中の点の色。
 const MARKER_OUTLINE_COLOR: [f32; 4] = [0.08, 0.08, 0.1, 1.0];
-const DOME_SURFACE_COLOR: [f32; 3] = [0.3, 0.9, 1.0];
+
+/// 観測点ごとの覆域の色(3Dドームの色, 2D覆域の塗りの色)。複数の覆域を同時に出すとき(`show_all_coverage`)に見分けるため、
+/// 観測点の`id`で決める。1番目の観測点は、これまでどおりドームが水色・2Dが緑。
+const COVERAGE_PALETTE: [([f32; 3], [f32; 3]); 6] = [
+    ([0.30, 0.90, 1.00], [0.35, 0.90, 0.40]), // 水色 / 緑
+    ([1.00, 0.55, 0.90], [1.00, 0.70, 0.25]), // 桃色 / 橙
+    ([1.00, 0.95, 0.40], [0.45, 0.70, 1.00]), // 黄 / 青
+    ([0.60, 1.00, 0.40], [1.00, 0.50, 0.70]), // 黄緑 / 桃
+    ([1.00, 0.65, 0.30], [0.30, 0.90, 0.95]), // 橙 / 水色
+    ([0.70, 0.55, 1.00], [0.95, 0.90, 0.30]), // 紫 / 黄
+];
+
+/// 観測点`id`の覆域の色: (3Dドームの色, 2D覆域の塗りの色, 2D覆域の輪郭線の色)。
+pub fn coverage_colors(marker_id: u64) -> ([f32; 3], [f32; 3], [f32; 4]) {
+    let (dome, area) = COVERAGE_PALETTE[(marker_id.max(1) as usize - 1) % COVERAGE_PALETTE.len()];
+    // 輪郭線は、塗りの色を白へ寄せた不透明色。
+    let outline = [0.5 * area[0] + 0.5, 0.5 * area[1] + 0.5, 0.5 * area[2] + 0.5, 1.0];
+    (dome, area, outline)
+}
 
 /// ピンの頭の円の中心の高さ(先端から、画面のpx)と半径・縁取りの太さ・中の点の半径。
 const PIN_HEAD_CENTER_PX: f32 = 26.0;
@@ -137,13 +159,11 @@ const DOME_MIN_RING_STRIDE: usize = 2;
 /// 間引かないと最上部の細い三角形が大量に重なり、無駄が多く筋が出る。
 const DOME_MAX_RING_STRIDE: usize = 32;
 
-/// 2D地図モードでの覆域表示(指定した海抜高度での探知可能領域)の塗り色(RGB)と不透明度。
-/// 3Dの覆域ドーム(`DOME_SURFACE_COLOR`)とは見た目で区別できる色にする。
-const COVERAGE_AREA_COLOR: [f32; 3] = [0.35, 0.9, 0.4];
+/// 2D地図モードでの覆域表示(指定した海抜高度での探知可能領域)の塗りの不透明度。色は観測点ごと(`coverage_colors`)で、
+/// 3Dの覆域ドームとは別の色にして、見た目で区別できるようにする。
 const COVERAGE_AREA_ALPHA: f32 = 0.32;
-/// 覆域表示(2D)の境界線の色と太さ(画面のpx)。塗りは半透明で控えめなので、境界だけは不透明な太い線で描き、
+/// 覆域表示(2D)の境界線の太さ(画面のpx)。塗りは半透明で控えめなので、境界だけは不透明な太い線で描き、
 /// 領域の輪郭が一目で分かるようにする(`los_view.rs`の2D極座標図が塗り+輪郭線の両方を持つのと同じ考え方)。
-const COVERAGE_OUTLINE_COLOR: [f32; 4] = [0.75, 1.0, 0.4, 1.0];
 const COVERAGE_OUTLINE_WIDTH_PX: f32 = 2.5;
 /// 2Dの覆域の境界の平滑化。ドームと同じ角度の幅(ドームは4mil刻みでメディアン±1・平均±3を2回、ここは2mil刻みなので
 /// メディアン±2・平均±6を2回。約±0.45度のメディアンと、約±0.68度の平均を2回)にする。
@@ -377,6 +397,7 @@ pub fn dome_geometry(
     let observer_height =
         sample_heightmap(data, marker.lat_deg, marker.lon_deg).unwrap_or(0.0) as f64 + marker.height_m;
     let smoothed = smooth_dome_ranges(rings);
+    let (dome_color, _, _) = coverage_colors(marker.id);
 
     // ドーム上の頂点(リングごと・方位ごと。高いリングは間引く)を、地形メッシュのENU座標へ変換しておく。
     // パッチが各頂点を複数回使うので、先に1回ずつだけ計算する。
@@ -395,7 +416,7 @@ pub fn dome_geometry(
                     let (lat, lon) =
                         local_transform.inverse(horizontal * az_rad.sin(), horizontal * az_rad.cos());
                     let absolute_height = observer_height + range_m * el_rad.sin() + DOME_M;
-                    TerrainVertex::unlit(mesh_transform.transform(lat, lon, absolute_height), DOME_SURFACE_COLOR)
+                    TerrainVertex::unlit(mesh_transform.transform(lat, lon, absolute_height), dome_color)
                 })
                 .collect()
         })
@@ -416,7 +437,7 @@ pub fn dome_geometry(
         marker.lon_deg,
         observer_height + avg_range + DOME_M,
     );
-    let apex = TerrainVertex::unlit(apex_pos, DOME_SURFACE_COLOR);
+    let apex = TerrainVertex::unlit(apex_pos, dome_color);
     let steps: Vec<usize> = (0..top.len()).step_by((top.len() / DOME_APEX_SEGMENTS).max(1)).collect();
     for k in 0..steps.len() {
         out.extend([top[steps[k]], top[steps[(k + 1) % steps.len()]], apex]);
@@ -469,7 +490,8 @@ pub fn coverage_2d_geometry(
         })
         .collect();
 
-    let fill = [COVERAGE_AREA_COLOR[0], COVERAGE_AREA_COLOR[1], COVERAGE_AREA_COLOR[2], COVERAGE_AREA_ALPHA];
+    let (_, area_color, outline_color) = coverage_colors(marker.id);
+    let fill = [area_color[0], area_color[1], area_color[2], COVERAGE_AREA_ALPHA];
     let center = position_at(marker.lat_deg, marker.lon_deg);
     let n = boundary.len();
     for i in 0..n {
@@ -478,7 +500,7 @@ pub fn coverage_2d_geometry(
             out.push(DrawVertex::surface(position, fill, None));
         }
     }
-    append_line_strip(&mut out, &boundary, true, COVERAGE_OUTLINE_COLOR, COVERAGE_OUTLINE_WIDTH_PX);
+    append_line_strip(&mut out, &boundary, true, outline_color, COVERAGE_OUTLINE_WIDTH_PX);
     out
 }
 
@@ -645,6 +667,26 @@ mod tests {
             // 地球の丸みで、最大観測範囲30kmの端は数十m下がる。球面から大きく外れる頂点(筋・突起)は無い。
             assert!((distance - 30_000.0).abs() < 400.0, "distance={distance}");
         }
+    }
+
+    #[test]
+    fn each_marker_gets_its_own_coverage_color() {
+        // 1番目は、これまでどおり(ドームが水色・2Dが緑)。
+        let (dome1, area1, _) = coverage_colors(1);
+        assert_eq!(dome1, [0.30, 0.90, 1.00]);
+        assert_eq!(area1, [0.35, 0.90, 0.40]);
+        // 隣り合う観測点は色が違い、パレットを使い切ったら最初に戻る。
+        let colors: Vec<_> = (1..=6).map(|id| coverage_colors(id).0).collect();
+        for i in 0..colors.len() {
+            for j in i + 1..colors.len() {
+                assert_ne!(colors[i], colors[j], "{i} と {j}");
+            }
+        }
+        assert_eq!(coverage_colors(7).0, dome1);
+        // 輪郭線は不透明で、塗りより明るい。
+        let (_, area, outline) = coverage_colors(2);
+        assert_eq!(outline[3], 1.0);
+        assert!(outline[0] >= area[0] && outline[1] >= area[1] && outline[2] >= area[2]);
     }
 
     #[test]
