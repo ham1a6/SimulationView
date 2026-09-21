@@ -1,4 +1,5 @@
 <!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+
 <title>Sim3dViewのしくみ</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,ital@9..144,400,600,700,900,600i&family=Source+Sans+3:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
@@ -338,6 +339,7 @@
       <a href="#camera">12. カメラ: 反転Zと視点操作</a>
       <a href="#los">13. 見通し・覆域の計算</a>
       <a href="#lod">14. 地形LOD: 30mまでの描画</a>
+      <a href="#lod-fade">14.11 レベルの切り替えをなめらかに</a>
       <a href="#wide">15. 広域の地図: 丸み・クリック・原点</a>
       <div class="part">第6部 ライブラリ活用ガイド</div>
       <a href="#lib-features">16. できること(機能マップ)</a>
@@ -366,6 +368,8 @@
       <a href="#all-ref">35. 早見表</a>
       <div class="part">第9部 追加機能</div>
       <a href="#markers-cov">36. 観測点のピンと、覆域の作り直し</a>
+      <a href="#billboard-depth">36.4 ビルボードの深度</a>
+      <a href="#cov-async">36.5 覆域の計算を軽くする</a>
       <a href="#drawing">37. 作図: 図形・線</a>
       <a href="#draw-editor">37.7 図形の対話作成</a>
       <a href="#tracks">38. 航跡表示</a>
@@ -385,7 +389,20 @@
         C++との対比を手すりにしながら読み進めれば、最後には自分のコードが読めるようになるはずです。
       </p>
       <details class="changes" open>
-        <summary>最新版で変わったこと(ライブラリの内部整理・単体テスト・OSSへの置き換え)</summary>
+        <summary>最新版で変わったこと(シンボルの埋まり・LODのクロスフェード・覆域の軽量化とドームの平滑化)</summary>
+        <ul>
+          <li><strong>高度0m付近のシンボルが、地面や水面に埋まらなくなりました。</strong>カメラを浅い角度に倒すと、地面すれすれの船や車両のシンボルの<strong>下半分</strong>が、手前の地形・水面に隠れていました。
+            原因はビルボードの深度が足元1点で一定だったこと。いまは、その画素の視線が地面に当たる点の深度まで手前へ寄せます(36.4節)。</li>
+          <li><strong>地形のレベルの切り替えが、なめらかになりました。</strong>チャンクのレベルが変わるとき、古いメッシュを350ms残し、新旧を<strong>画素ごとのディザ</strong>で補い合う割合で重ねて描きます(<strong>クロスフェード</strong>)。
+            細かさ・陰影の違いが一瞬で切り替わって境目が目立つのを、時間をかけて混ぜて和らげます(14.11節)。</li>
+          <li><strong>覆域を出したままの操作が、重くなくなりました。</strong>ズームのたびに約1秒ずつ固まっていたのを、計算の<strong>小分け(非同期)・キャッシュ・方位の間引き</strong>で、約70msまで減らしました(36.5節)。
+            あわせて<strong>ドームの平滑化</strong>を、方位方向に加えて仰角方向にも入れ、高いリングほど頂点を間引いて、頂点数も約71万→約16万にしました(36.2節)。</li>
+          <li><strong>遠方の地形が、より細かくなりました。</strong>レベル選択の目標を「1セル1ピクセル以下」から<strong>0.7ピクセル以下</strong>にし、頂点の予算は<strong>レベルごとの周回</strong>(全チャンクをL2まで→L3まで→…)で配る方式にしました(14.2・14.3・14.9節)。</li>
+          <li>節番号は変わっていません。新しい内容は、14.11・36.4・36.5の各小節にあり、14.2・14.3・14.9・36.1・36.2・13節の該当箇所を直しています。</li>
+        </ul>
+      </details>
+      <details class="changes">
+        <summary>1つ前の版で変わったこと(ライブラリの内部整理・単体テスト・OSSへの置き換え)</summary>
         <ul>
           <li><strong>ライブラリのソースを、責務ごとに分けました。</strong>1,100行を超えていた描画(<code>renderer.rs</code>)と、1,400行を超えていた地図コンポーネント(<code>terrain_view.rs</code>)を、それぞれディレクトリにして小さなファイルに分割し、座標変換・標高・取得・メッシュ・LODの置き場所も整理しました。<strong>見た目や動きは変わりません</strong>(6.6節)。</li>
           <li><strong>単体テストが37件から104件になり、<code>cargo test -p sim3dview</code>がブラウザなしで動きます。</strong>合成した地形で、丸みを含む標高・LODの予算・反転Z・電波の地平線・視錐台カリングなどを検めます。WGSLシェーダーも<code>naga</code>で検証します(6.6節)。</li>
@@ -396,7 +413,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>1つ前の版で変わったこと(図形の対話作成・動かせるウインドウ・右クリックメニュー・VABのページ数)</summary>
+        <summary>2つ前の版で変わったこと(図形の対話作成・動かせるウインドウ・右クリックメニュー・VABのページ数)</summary>
         <ul>
           <li><strong>UIから図形を作れるようになりました。</strong>作図ウインドウでツール(円・矩形・多角形・扇形・折れ線・球・直方体・円柱・円錐)を選び、<strong>地図をクリックして置きます</strong>。カーソルの動きに合わせて作成中の図形が追従し、置いた図形は一覧から選んで<strong>数値で編集</strong>できます(位置・大きさ・高度・色・名前)。作った図形は<strong>ブラウザに保存</strong>され、リロードしても残ります(37.7節)。</li>
           <li><strong>フローティングウインドウが、背後を操作できる「ウインドウ」と、ドラッグ移動に対応しました。</strong><code>FloatingPanel</code>に<code>modal</code>・<code>draggable</code>・<code>initial_position</code>を足し、既定は従来どおりのモーダルです。作図エディタはこれで、地図の上に浮かせています(28.5節)。</li>
@@ -406,7 +423,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>2つ前の版で変わったこと(航跡表示・作図・覆域の見た目)</summary>
+        <summary>3つ前の版で変わったこと(航跡表示・作図・覆域の見た目)</summary>
         <ul>
           <li><strong>シミュレーションから受け取った位置を、航空機・艦船・車両などのシンボルで表示できるようになりました。</strong>向きつきのアイコン・ラベル(名前・高度・速度)・航跡(軌跡)・高度線までが1セットです。新しい通信メッセージ<code>TrackList</code>(0x07)が増え、sim_serverにはデモのシナリオ(7つのトラック)が入りました(38節)。</li>
           <li><strong>ライブラリに「作図」機能が加わりました。</strong>円・矩形・多角形・扇形・球・直方体・円柱・円錐・折れ線を、塗り・枠線・不透明度つきで描けます。置き場所は<strong>絶対座標(緯度経度)・カメラからの相対・画面のピクセル</strong>の3通りから選べます。カメラに固定したものは、地形とは別の2つ目の描画パスで描きます(37節)。</li>
@@ -416,7 +433,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>3つ前の版で変わったこと(地形の表示の高速化)</summary>
+        <summary>4つ前の版で変わったこと(地形の表示の高速化)</summary>
         <ul>
           <li><strong>地形が、地図の品質を変えずに速く出るようになりました。</strong>ページを開いてから俯瞰の見た目が整うまでが、<strong>約6.8秒→約2.9秒</strong>(同じPC上のサーバー、実測)。全タイルのL1の取得が終わるのは5.3秒→2.2秒です(14.4・14.9節)。</li>
           <li>原因は通信ではなく<strong>スケジューリング</strong>でした。1件の取得は中央値11msなのに、取得の補充が150msのデバウンス経由(16件が約0.19秒周期)、メッシュ反映が「1回60万頂点+150ms待ち」で、別々の下限を作っていました。両方を直し、反映の区切りは頂点数から<strong>時間の目安(12ms)</strong>にしました。</li>
@@ -425,7 +442,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>4つ前の版で変わったこと(画面部品カタログ・sampleの全処理)</summary>
+        <summary>5つ前の版で変わったこと(画面部品カタログ・sampleの全処理)</summary>
         <ul>
           <li><strong>第7部「画面部品カタログ」(23〜30節)を追加しました。</strong>sampleが実装している画面の部品を、<strong>実機の画像つきでもれなく</strong>説明しています。メニューバー、シミュレーションステータスパネル、VABパネル、メインパネル(3D/2D・回転・中心点・観測点・陰影)、右パネル(各種情報・断面図・見通し範囲)、原点設定・覆域高度設定のダイアログ、地図クリックでの原点指定、リサイザーです。</li>
           <li>各部品に、「画面のどこか(番号つきの画像)」「置き方」「足し方のコード」「必要なcontext」を付けました。画像はクリックで拡大できます。</li>
@@ -435,7 +452,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>5つ前の版で変わったこと(陰影・水域レイヤー・LOD下限)</summary>
+        <summary>6つ前の版で変わったこと(陰影・水域レイヤー・LOD下限)</summary>
         <ul>
           <li><strong>地形に陰影(ヒルシェード)が付きました。</strong>標高の色だけでは見分けにくかった30mの尾根や谷が、はっきり見えます。表示メニューの「陰影表示」でON/OFFできます(11節。<code>HillshadeState</code>は18・19節)。</li>
           <li><strong>水域レイヤーが加わりました。</strong>いったん撤去した水色の海を、方式を変えて戻しました。メッシュではなく、<strong>WGS84楕円体(海抜0m)と視線の交点をシェーダーで直接求める</strong>ので、地球の丸みが厳密で、範囲の限りもありません(11節)。水面越しに遠くの陸地の裏側が透ける問題は、水域が<strong>深度を書く</strong>ことで直しました。</li>
@@ -446,7 +463,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>6つ前の版(地形LODの導入)で変わったこと</summary>
+        <summary>7つ前の版(地形LODの導入)で変わったこと</summary>
         <ul>
           <li><strong>地図の描画が「地形LOD」になりました。</strong>1枚の2048×2048メッシュをやめ、1度タイル+6×6チャンクの多段解像度にして、拡大すると<strong>元データの30m</strong>まで細かくなります(9・14節)。</li>
           <li>前処理・配信・読み込みが作り直されました。タイルごとにストリーミング処理し、サーバーは<strong>HTTP Range</strong>で必要なチャンクだけ返します(9・7・20節)。</li>
@@ -2390,6 +2407,13 @@ fn fs_water(in: DownsampleOutput) -&gt; WaterOutput {
         </tbody>
       </table>
       </div>
+      <div class="callout warn">
+        <div class="label">⚠️ この時間は、全部を同期で計算していた頃の値</div>
+        <p>
+          この表は、全方位(6400方位)を1回で計算して返していた頃のものです。その後、覆域を出したままズームすると(地形のレベルが切り替わるたびに全部を作り直すので)約1秒ずつ固まることが分かり、
+          計算を<strong>小分けにして非同期で進める</strong>・<strong>結果をキャッシュする</strong>・<strong>方位を間引く</strong>ように変えました(36.5節)。いまのUIは、ドーム1,600方位・2D覆域3,200方位・極座標図3,200方位で計算します。
+        </p>
+      </div>
       <ul>
         <li><strong>座標の逆変換を前計算</strong>: <code>EnuTransform</code>が、原点の三角関数・曲率半径を作るときに1回だけ求める(以前は呼び出しのたびに求め直していた)。<code>compute_los</code>で約3割減</li>
         <li><strong>2D覆域の計算を共有</strong>: 塗りと輪郭線が別々に<code>compute_coverage_area</code>を呼んでいたのを1回にまとめた</li>
@@ -2474,14 +2498,14 @@ fn fs_water(in: DownsampleOutput) -&gt; WaterOutput {
       </div>
       <p>
         レンダラーは、この<code>MeshKey</code>ごとに頂点バッファとインデックスバッファを持ちます(<code>HashMap&lt;MeshKey, MeshGpu&gt;</code>)。
-        描画は、視錐台の外を除いた全メッシュを順に<code>draw_indexed</code>するだけです(14.10)。全タイルがチャンクなので多くて1万数千回になりますが、頂点の総量のほうがずっと重要です。
+        描画は、視錐台の外を除いた全メッシュを順に<code>draw_indexed</code>するだけです(14.10)。全タイルがチャンクなので多くて1万数千回になりますが、頂点の総量のほうがずっと重要です。レベルの切り替え中のメッシュだけは、専用のパイプラインで、新旧を混ぜながら描きます(14.11)。
       </p>
 
       <h3>14.2 どの距離で、どのレベルになるのか</h3>
       <p>
-        ルールは1つです。<strong>画面上で1セルが1ピクセル以下になる、最も粗いレベルを選ぶ</strong>(<code>CHUNK_TARGET_CELL_PX = 1.0</code>)。
+        ルールは1つです。<strong>画面上で1セルが0.7ピクセル以下になる、最も粗いレベルを選ぶ</strong>(<code>CHUNK_TARGET_CELL_PX = 0.7</code>)。
         1ピクセルが表す実寸は、透視投影なら <code>2 × 距離 × tan(縦画角/2) ÷ canvasの高さ</code> です。遠いほど1ピクセルが大きい=粗いセルで足りる、という当たり前を式にしたものです。
-        描画は2倍スーパーサンプリングなので、1ピクセルは描画解像度では約2ピクセル分です。以前は2ピクセル(<code>TARGET_CELL_PX = 2.0</code>)で、そのぶん粗く済ませていました。
+        描画は2倍スーパーサンプリングなので、1ピクセルは描画解像度では約2ピクセル分です。目標は2.0→1.0→0.7と下げてきました(小さいほど遠くまで細かいレベルを使います。1.0だと遠方が粗く、0.5だと近くの最細が予算で足りなくなるため0.7)。
       </p>
       <pre class="code"><span class="fname">sim3dview/src/terrain/lod.rs(実際のコード、抜粋)</span><span class="cm">/// 1セルが画面上でCHUNK_TARGET_CELL_PX以下になる最も粗いレベル。どれも満たさなければ最細。</span>
 <span class="kw">fn</span> ideal_level(data: &amp;<span class="ty">TerrainData</span>, pixel_m: f32, from: usize) -&gt; usize {
@@ -2490,15 +2514,15 @@ fn fs_water(in: DownsampleOutput) -&gt; WaterOutput {
         .find(|&amp;k| cell_size_m(data, k) &lt;= <span class="ty">CHUNK_TARGET_CELL_PX</span> * pixel_m)
         .unwrap_or(max_level)
 }</pre>
-<figure><svg viewBox="0 0 660 178" role="img" aria-label="カメラから地表までの距離ごとに、どのレベルが選ばれるかを示した帯。約46km以内は31m、138km、462kmで粗くなり、462kmより遠くは下限の617m(L1)"><g font-size="11"><rect x="48.0" y="52" width="346.7" height="38" class="l4" stroke="currentColor" stroke-opacity=".5"/><text x="221.3" y="76" text-anchor="middle" font-weight="700" font-size="13">L4</text><rect x="394.7" y="52" width="62.1" height="38" class="l3" stroke="currentColor" stroke-opacity=".5"/><text x="425.8" y="76" text-anchor="middle" font-weight="700" font-size="13">L3</text><rect x="456.8" y="52" width="68.3" height="38" class="l2" stroke="currentColor" stroke-opacity=".5"/><text x="491.0" y="76" text-anchor="middle" font-weight="700" font-size="13">L2</text><rect x="525.1" y="52" width="82.9" height="38" class="l1" stroke="currentColor" stroke-opacity=".5"/><text x="566.6" y="76" text-anchor="middle" font-weight="700" font-size="13">L1</text><line x1="48.0" y1="90" x2="48.0" y2="98" stroke="currentColor" opacity=".6"/><text x="48.0" y="112" text-anchor="start" font-size="10.5" opacity=".8">100m</text><line x1="178.2" y1="90" x2="178.2" y2="98" stroke="currentColor" opacity=".6"/><text x="178.2" y="112" text-anchor="middle" font-size="10.5" opacity=".8">1km</text><line x1="308.4" y1="90" x2="308.4" y2="98" stroke="currentColor" opacity=".6"/><text x="308.4" y="112" text-anchor="middle" font-size="10.5" opacity=".8">10km</text><line x1="438.6" y1="90" x2="438.6" y2="98" stroke="currentColor" opacity=".6"/><text x="438.6" y="112" text-anchor="middle" font-size="10.5" opacity=".8">100km</text><line x1="568.8" y1="90" x2="568.8" y2="98" stroke="currentColor" opacity=".6"/><text x="568.8" y="112" text-anchor="middle" font-size="10.5" opacity=".8">1,000km</text><line x1="608.0" y1="90" x2="608.0" y2="98" stroke="currentColor" opacity=".6"/><text x="608.0" y="112" text-anchor="end" font-size="10.5" opacity=".8">2,000km</text><line x1="394.7" y1="44" x2="394.7" y2="52" stroke="currentColor" opacity=".7"/><text x="394.7" y="38" text-anchor="middle" font-size="10.5" font-weight="700">46km</text><line x1="456.8" y1="44" x2="456.8" y2="52" stroke="currentColor" opacity=".7"/><text x="456.8" y="38" text-anchor="middle" font-size="10.5" font-weight="700">138km</text><line x1="525.1" y1="44" x2="525.1" y2="52" stroke="currentColor" opacity=".7"/><text x="525.1" y="38" text-anchor="middle" font-size="10.5" font-weight="700">462km</text><line x1="517.0" y1="44" x2="517.0" y2="130" stroke="var(--danger)" stroke-dasharray="4 3"/><text x="517.0" y="146" text-anchor="middle" fill="var(--danger)" font-size="10.5" font-weight="700">初期の距離 400km</text><text x="328.0" y="166" text-anchor="middle" font-size="10.5" opacity=".75">カメラから地表(注視点付近)までの距離 → 対数目盛り</text><text x="48" y="20" font-size="10.5" opacity=".75">切り替わる距離(canvas高さ700px・縦画角50°・目標1ピクセルの場合)</text></g></svg><figcaption>        距離は「カメラから、そのメッシュの最も近い点まで」。目標を2ピクセルから1ピクセルにしたので、30mが使われる範囲は約23kmから約46kmへ、他の切り替えも2倍遠くへ動いた。遠くはL1で止まる(L0は使わない)。      </figcaption></figure>
+<figure><svg viewBox="0 0 660 178" role="img" aria-label="カメラから地表までの距離ごとに、どのレベルが選ばれるかを示した帯。約66km以内は31m、197km、660kmで粗くなり、660kmより遠くは下限の617m(L1)"><g font-size="11"><rect x="48.0" y="52" width="366.8" height="38" class="l4" stroke="currentColor" stroke-opacity=".5"/><text x="231.4" y="76" text-anchor="middle" font-weight="700" font-size="13">L4</text><rect x="414.8" y="52" width="62.1" height="38" class="l3" stroke="currentColor" stroke-opacity=".5"/><text x="445.9" y="76" text-anchor="middle" font-weight="700" font-size="13">L3</text><rect x="477.0" y="52" width="68.3" height="38" class="l2" stroke="currentColor" stroke-opacity=".5"/><text x="511.1" y="76" text-anchor="middle" font-weight="700" font-size="13">L2</text><rect x="545.3" y="52" width="62.7" height="38" class="l1" stroke="currentColor" stroke-opacity=".5"/><text x="576.7" y="76" text-anchor="middle" font-weight="700" font-size="13">L1</text><line x1="48.0" y1="90" x2="48.0" y2="98" stroke="currentColor" opacity=".6"/><text x="48.0" y="112" text-anchor="start" font-size="10.5" opacity=".8">100m</text><line x1="178.2" y1="90" x2="178.2" y2="98" stroke="currentColor" opacity=".6"/><text x="178.2" y="112" text-anchor="middle" font-size="10.5" opacity=".8">1km</text><line x1="308.4" y1="90" x2="308.4" y2="98" stroke="currentColor" opacity=".6"/><text x="308.4" y="112" text-anchor="middle" font-size="10.5" opacity=".8">10km</text><line x1="438.6" y1="90" x2="438.6" y2="98" stroke="currentColor" opacity=".6"/><text x="438.6" y="112" text-anchor="middle" font-size="10.5" opacity=".8">100km</text><line x1="568.8" y1="90" x2="568.8" y2="98" stroke="currentColor" opacity=".6"/><text x="568.8" y="112" text-anchor="middle" font-size="10.5" opacity=".8">1,000km</text><line x1="608.0" y1="90" x2="608.0" y2="98" stroke="currentColor" opacity=".6"/><text x="608.0" y="112" text-anchor="end" font-size="10.5" opacity=".8">2,000km</text><line x1="414.8" y1="44" x2="414.8" y2="52" stroke="currentColor" opacity=".7"/><text x="414.8" y="38" text-anchor="middle" font-size="10.5" font-weight="700">66km</text><line x1="477.0" y1="44" x2="477.0" y2="52" stroke="currentColor" opacity=".7"/><text x="477.0" y="38" text-anchor="middle" font-size="10.5" font-weight="700">197km</text><line x1="545.3" y1="44" x2="545.3" y2="52" stroke="currentColor" opacity=".7"/><text x="545.3" y="38" text-anchor="middle" font-size="10.5" font-weight="700">660km</text><line x1="517.0" y1="44" x2="517.0" y2="130" stroke="var(--danger)" stroke-dasharray="4 3"/><text x="517.0" y="146" text-anchor="middle" fill="var(--danger)" font-size="10.5" font-weight="700">初期の距離 400km</text><text x="328.0" y="166" text-anchor="middle" font-size="10.5" opacity=".75">カメラから地表(注視点付近)までの距離 → 対数目盛り</text><text x="48" y="20" font-size="10.5" opacity=".75">切り替わる距離(canvas高さ700px・縦画角50°・目標0.7ピクセルの場合)</text></g></svg><figcaption>距離は「カメラから、そのメッシュの最も近い点まで」。目標を1.0から0.7ピクセルにしたので、30mが使われる範囲は、目標2.0のとき約23km、1.0のとき約46km、0.7のいま約66kmと、ほかの切り替えも含めて遠くへ動いた(同じ距離でも、より細かいレベルが選ばれる)。遠くはL1で止まる(L0は使わない)。ただしこれは予算を考えない理想で、実際は頂点の予算の中で近い順に配る(14.3)。</figcaption></figure>
       <div class="table-wrap">
       <table>
         <thead><tr><th>カメラからの距離(目安)</th><th>選ばれるレベル</th><th>セルの大きさ</th><th>見え方</th></tr></thead>
         <tbody>
-          <tr><td>〜46km(近い)</td><td><strong>L4</strong></td><td><strong>約31m</strong></td><td>元データの解像度。富士山の火口まで見える</td></tr>
-          <tr><td>46〜138km</td><td>L3</td><td>約62m</td><td>山地の起伏・海岸線</td></tr>
-          <tr><td>138〜462km</td><td>L2</td><td>約185m</td><td>都道府県〜地方スケール</td></tr>
-          <tr><td>462km〜(遠い)</td><td>L1(下限)</td><td>約617m</td><td>全域の俯瞰。2,000kmまで引いても、これより粗くならない</td></tr>
+          <tr><td>〜66km(近い)</td><td><strong>L4</strong></td><td><strong>約31m</strong></td><td>元データの解像度。富士山の火口まで見える</td></tr>
+          <tr><td>66〜197km</td><td>L3</td><td>約62m</td><td>山地の起伏・海岸線</td></tr>
+          <tr><td>197〜660km</td><td>L2</td><td>約185m</td><td>都道府県〜地方スケール</td></tr>
+          <tr><td>660km〜(遠い)</td><td>L1(下限)</td><td>約617m</td><td>全域の俯瞰。2,000kmまで引いても、これより粗くならない</td></tr>
         </tbody>
       </table>
       </div>
@@ -2545,17 +2569,19 @@ fn fs_water(in: DownsampleOutput) -&gt; WaterOutput {
         </tbody>
       </table>
       </div>
-      <p>配り方は2段階です。</p>
+      <p>配り方は「下限の確保」と「レベルの周回」の2段階で、これを<strong>見えているタイルが先、見えていないタイルはその残り</strong>の順に、それぞれ行います。</p>
       <ol>
-        <li>まず<strong>全タイルに、全36チャンクをL1で載せる下限の分</strong>(約3.9万頂点/タイル)を、近い(見えている)タイルから順に確保する。予算が足りなければ、そのタイルは全体表示(L0)のまま</li>
-        <li>その後、<strong>見えていて、カメラに近いチャンクから順に</strong>、目標レベルまで残りの予算の許す限り1段ずつ上げる。近いところが先に細かくなり、足りなくなった遠いチャンクは、目標より粗いまま残る</li>
+        <li><strong>下限</strong>: 全36チャンクをL1で載せる分(約3.9万頂点/タイル)を、近い順に確保する。予算が足りなければ、そのタイルは全体表示(L0)のまま</li>
+        <li><strong>周回</strong>: 目標がL2以上のチャンクを近い順にL2まで、次に目標がL3以上のものをL3まで、…と上げる。1周ごとに、全チャンクを同じレベルへそろえてから次へ進む</li>
       </ol>
       <div class="callout">
-        <div class="label">💡 なぜ「近い順」にレベルを上げるのか</div>
+        <div class="label">💡 なぜ「レベルごとの周回」なのか</div>
         <p>
-          全チャンクを同時に少しずつ上げると、予算が尽きたときに「どこも中途半端」になります。近い順に上げきれば、
-          予算が尽きた時点で「近くは最細、遠くはそれなり」という、人の目に自然な状態で止まります。
-          視野の外は、見えているものより<strong>後回し</strong>にします(カメラを戻したときにすぐ細かく見えるよう、余っていれば現状を保ちます)。
+          以前は「近いチャンクから順に、目標まで一気に」上げていました。ところがL4のチャンクは約36万頂点、L2は約1万頂点です。
+          近くを最細まで上げると予算が尽き、遠くは(理想のレベルがあるのに)L1のまま残りました。合成地形での集計では、視野内の50〜600kmのチャンクの多くがそうでした。
+          周回にすると、遠くをL2〜L3にしてから、近くを最細にします。トレードオフとして、近くの最細(30m)は、(視点距離30kmの合成地形での見積りで)24個中23個から16個になり、残りは62mです。
+          見えていないタイルの下限まで先に確保していたのも改めました(全タイル分の約1,520万頂点が予算の大半を占めるため)。
+          予算が足りない視野では、見えていないタイルが全体表示へ戻り、カメラを向け直すと下限から順に取り直します。
         </p>
       </div>
 
@@ -2599,7 +2625,7 @@ fn fs_water(in: DownsampleOutput) -&gt; WaterOutput {
             <text x="662" y="94" font-size="10" text-anchor="start" opacity=".7">済</text>
             <rect x="586" y="104" width="128" height="62" rx="8" fill="none" stroke="var(--accent-2)" stroke-width="1.5"/>
             <text x="650" y="130" font-weight="700" fill="var(--accent-2-ink)">メッシュ生成</text>
-            <text x="650" y="148" font-size="10" opacity=".8">set_mesh で差し替え</text>
+            <text x="650" y="148" font-size="10" opacity=".8">set_mesh_faded で差し替え</text>
 
             <path d="M586,45 C560,100 520,120 470,128" fill="none" stroke="currentColor" stroke-dasharray="4 3" marker-end="url(#arrow14)"/>
             <text x="548" y="118" font-size="10" text-anchor="middle" opacity=".7">未</text>
@@ -2766,19 +2792,21 @@ transform.ecef_to_enu(x, y, z)       <span class="cm">// 原点を引いて、�
         <thead><tr><th>項目</th><th>値</th><th>意味・変えるとどうなるか</th></tr></thead>
         <tbody>
           <tr><td><code>DETAIL_VERTEX_BUDGET</code></td><td>2,500万</td><td>チャンクの頂点の上限(全タイルの下限L1の約1,520万を含む)。<strong>重ければ下げる</strong>と、最細の範囲が狭くなる</td></tr>
-          <tr><td><code>CHUNK_TARGET_CELL_PX</code></td><td>1.0</td><td>チャンクのレベル選択で、1セルを何ピクセル以下にするか。大きくすると全体に粗く・軽くなる(2.0だと30mは約23km以内)</td></tr>
+          <tr><td><code>CHUNK_TARGET_CELL_PX</code></td><td>0.7</td><td>チャンクのレベル選択で、1セルを何ピクセル以下にするか。大きくすると全体に粗く・軽くなる(1.0だと30mは約46km以内、2.0だと約23km)。小さくすると遠くまで細かいが、近くの最細が予算で足りなくなる</td></tr>
           <tr><td><code>LOD_DEBOUNCE_MS</code></td><td>150</td><td>カメラ操作が止まってから更新するまでの待ち(取得の完了・反映の続きには使わない)</td></tr>
           <tr><td><code>LOD_CONTINUE_MS</code></td><td>8</td><td>取得の完了・反映の続きから、次の更新までの待ち。短いほど速いが、入力や描画に譲る間が減る</td></tr>
           <tr><td><code>UPLOAD_TIME_BUDGET_MS</code></td><td>12</td><td>1回の更新でメッシュを作る時間の目安。大きくすると速いが、画面が固まる長さが伸びる(<strong>固まるなら下げる</strong>)</td></tr>
           <tr><td><code>MAX_UPLOAD_VERTICES_PER_ROUND</code></td><td>60万</td><td>1回の更新で作るメッシュの頂点数の安全上限(時間の目安が次の1個の重さを予測できないための保険)</td></tr>
           <tr><td><code>MAX_CONCURRENT_TILE_FETCHES</code></td><td>16</td><td>同時取得数の上限。取得が終わるたびに補充するので、ブラウザの接続数(HTTP/1.1で通常6)を埋められれば足りる</td></tr>
           <tr><td><code>DETAIL_CACHE_LIMIT_BYTES</code></td><td>300MB</td><td>取得済みグリッドを残す上限</td></tr>
+          <tr><td><code>FADE_DURATION_MS</code></td><td>350</td><td>レベルの切り替えのクロスフェードにかける時間(14.11)。長いと混ざる時間が伸び、短いと従来の急な切り替えに近づく</td></tr>
+          <tr><td><code>MAX_FADE_ENTRIES</code></td><td>2,048</td><td>同時にクロスフェードさせるメッシュ(新旧を別々に数える)の上限。割合の表の大きさで、超える分はすぐ切り替える</td></tr>
         </tbody>
       </table>
       </div>
       <p>
         ページを開いてから、最初の地図は約0.5秒、全タイルのL1への切り替えが収束して画面が最後に変わるのは約2.9秒です(同じPC上のサーバー、ヘッドレスEdge、キャッシュなしの実測。その後は追加のメッシュ更新がありません)。遅い回線では、転送量(俯瞰で約45MB)のぶん延びます。
-        同じ拡大操作で比べると、30mのチャンクは、以前の約23km以内から約46km以内へ広がりました。
+        同じ拡大操作で比べると、30mのチャンクは、以前の約23km以内から約46km以内へ広がりました(目標を0.7ピクセルにしたいまの理想は約66km以内ですが、頂点の予算を、レベルごとの周回で遠くにも配るので、実際に最細になるのは近い一部です)。
         GPUの描画のフレームレートは、Browserペインが非表示の環境では測れていません(常駐頂点は約2,500万、GPUメモリは約1.2GB)。
         カメラ操作が重ければ、まず予算を下げます。
       </p>
@@ -2805,6 +2833,96 @@ all_outside &amp;= outside;
 <span class="kw">if</span> all_outside == <span class="ty">0</span> { <span class="kw">return</span> <span class="kw">false</span>; }   <span class="cm">// どの面でも全部は外でない = 描く</span></pre>
       <p>
         これはGPUのクリッピングと同じ条件なので、描画を省いても<strong>見た目は変わりません</strong>(見えているものを外と判定することはなく、外なのに外でないと判定することはある、保守的な判定)。
+      </p>
+
+      <h3 id="lod-fade">14.11 レベルの切り替えを、なめらかにする(クロスフェード)</h3>
+      <p>
+        ここまでの仕組みでは、チャンクのレベルが変わる(カメラの動き・取得の完了)たびに、古いメッシュを消して新しいメッシュに<strong>一瞬で</strong>差し替えていました。
+        細かさや陰影(法線が細かいほど、ヒルシェードの濃淡が細かくなる)の違いが一度に切り替わるので、レベルの境目が目立ちます。
+        そこで、古いメッシュを<strong>350ms</strong>だけ残し、新旧を混ぜながら入れ替えるようにしました(<code>FADE_DURATION_MS</code>)。
+      </p>
+
+      <h4>半透明ではなく、画素ごとの「疎密」で混ぜる</h4>
+      <p>
+        素直な混ぜ方は、新旧を半透明で重ねることです。でも半透明は、描く順に依存し、深度を書けず、奥のメッシュが透けます(覆域ドームで苦労したのと同じです。36節)。
+        そこで<strong>ディザ</strong>を使います。画素ごとに0〜1の値(<code>dither_noise</code>。画素の位置から求める、隣どうしで値が散るパターン)を出し、
+        新しい側は「値 &lt; 割合」の画素だけ、古い側は「残りの画素」だけを描きます(<code>discard</code>)。
+        どちらか一方しか描かないので、<strong>不透明のまま</strong>で、深度は普通に書け、描く順にも依存せず、新旧が同じ画素で深度を奪い合うこともありません。
+      </p>
+      <figure>
+        <svg viewBox="0 0 700 214" role="img" aria-label="ディザによるクロスフェード。割合25%・50%・75%のとき、新しいメッシュ(青緑)が描く画素と、古いメッシュ(黄土色)が描く画素が、重ならず隙間もなく分け合っている"><g font-size="12"><text x="20" y="26" font-weight="700">新しい側の割合 25%</text><rect x="20" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="30" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="40" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="50" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="60" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="70" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="80" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="90" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="100" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="110" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="120" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="130" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="140" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="150" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="160" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="170" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="180" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="190" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="20" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="30" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="40" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="50" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="60" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="70" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="80" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="90" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="100" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="110" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="120" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="130" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="140" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="150" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="160" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="170" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="180" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="190" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="20" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="30" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="40" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="50" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="60" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="70" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="80" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="90" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="100" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="110" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="120" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="130" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="140" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="150" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="160" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="170" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="180" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="190" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="20" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="30" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="40" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="50" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="60" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="70" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="80" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="90" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="100" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="110" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="120" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="130" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="140" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="150" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="160" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="170" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="180" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="190" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="20" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="30" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="40" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="50" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="60" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="70" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="80" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="90" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="100" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="110" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="120" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="130" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="140" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="150" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="160" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="170" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="180" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="190" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="20" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="30" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="40" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="50" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="60" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="70" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="80" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="90" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="100" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="110" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="120" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="130" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="140" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="150" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="160" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="170" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="180" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="190" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="20" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="30" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="40" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="50" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="60" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="70" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="80" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="90" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="100" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="110" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="120" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="130" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="140" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="150" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="160" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="170" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="180" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="190" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><text x="20" y="132" font-size="11" opacity=".8">新 32画素 / 旧 94画素(合計126)</text><text x="234" y="26" font-weight="700">新しい側の割合 50%</text><rect x="234" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="244" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="254" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="264" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="274" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="284" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="294" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="304" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="314" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="324" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="334" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="344" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="354" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="364" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="374" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="384" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="394" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="404" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="234" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="244" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="254" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="264" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="274" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="284" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="294" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="304" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="314" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="324" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="334" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="344" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="354" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="364" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="374" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="384" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="394" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="404" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="234" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="244" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="254" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="264" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="274" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="284" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="294" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="304" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="314" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="324" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="334" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="344" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="354" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="364" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="374" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="384" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="394" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="404" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="234" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="244" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="254" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="264" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="274" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="284" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="294" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="304" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="314" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="324" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="334" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="344" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="354" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="364" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="374" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="384" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="394" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="404" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="234" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="244" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="254" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="264" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="274" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="284" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="294" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="304" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="314" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="324" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="334" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="344" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="354" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="364" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="374" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="384" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="394" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="404" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="234" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="244" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="254" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="264" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="274" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="284" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="294" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="304" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="314" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="324" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="334" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="344" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="354" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="364" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="374" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="384" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="394" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="404" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="234" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="244" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="254" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="264" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="274" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="284" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="294" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="304" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="314" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="324" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="334" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="344" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="354" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="364" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="374" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="384" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="394" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="404" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><text x="234" y="132" font-size="11" opacity=".8">新 65画素 / 旧 61画素(合計126)</text><text x="448" y="26" font-weight="700">新しい側の割合 75%</text><rect x="448" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="458" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="468" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="478" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="488" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="498" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="508" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="518" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="528" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="538" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="548" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="558" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="568" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="578" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="588" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="598" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="608" y="44" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="618" y="44" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="448" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="458" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="468" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="478" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="488" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="498" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="508" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="518" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="528" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="538" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="548" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="558" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="568" y="54" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="578" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="588" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="598" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="608" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="618" y="54" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="448" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="458" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="468" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="478" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="488" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="498" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="508" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="518" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="528" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="538" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="548" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="558" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="568" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="578" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="588" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="598" y="64" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="608" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="618" y="64" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="448" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="458" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="468" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="478" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="488" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="498" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="508" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="518" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="528" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="538" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="548" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="558" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="568" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="578" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="588" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="598" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="608" y="74" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="618" y="74" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="448" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="458" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="468" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="478" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="488" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="498" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="508" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="518" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="528" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="538" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="548" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="558" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="568" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="578" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="588" y="84" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="598" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="608" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="618" y="84" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="448" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="458" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="468" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="478" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="488" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="498" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="508" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="518" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="528" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="538" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="548" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="558" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="568" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="578" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="588" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="598" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="608" y="94" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="618" y="94" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="448" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="458" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="468" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="478" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="488" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="498" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="508" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="518" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="528" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="538" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="548" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="558" y="104" width="9" height="9" fill="var(--accent-2)" opacity=".75"/><rect x="568" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="578" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="588" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="598" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="608" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><rect x="618" y="104" width="9" height="9" fill="var(--accent)" opacity=".9"/><text x="448" y="132" font-size="11" opacity=".8">新 95画素 / 旧 31画素(合計126)</text><rect x="20" y="158" width="12" height="12" fill="var(--accent)" opacity=".9"/><text x="38" y="169">新しいメッシュが描く画素(<tspan class="mono-label">noise &lt; 割合</tspan>)</text><rect x="20" y="180" width="12" height="12" fill="var(--accent-2)" opacity=".75"/><text x="38" y="191">古いメッシュが描く画素(残りの画素)。どちらか一方だけ描くので、重ならず、隙間もない</text></g></svg>
+        <figcaption>割合が0から1へ進むにつれて、新しい側の画素が増え、古い側の画素が減る。新旧は同じ画素を分け合うので、重なりも隙間もない(画素の位置から求めた疎密のパターンで、実際の値。表示は拡大した18×7画素)。描画は2倍スーパーサンプリングで平均されるので、途中でも粒は目立たない。</figcaption>
+      </figure>
+      <pre class="code"><span class="fname">sim3dview/src/terrain/terrain.wgsl(実際のコード、抜粋)</span><span class="cm">// メッシュごとの値は、instance_indexで引く表に入れる。x: 表示する画素の割合、y: 1なら反転(古い側)</span>
+@vertex
+<span class="kw">fn</span> vs_fade(<span class="kw">in</span>: VertexInput, @builtin(instance_index) instance: <span class="ty">u32</span>) -&gt; FadeVertexOutput {
+    <span class="kw">let</span> base = shade_vertex(<span class="kw">in</span>);
+    <span class="kw">var</span> out: FadeVertexOutput;
+    out.clip_position = base.clip_position;
+    out.color = base.color;
+    out.fade = fades.entries[instance].xy;
+    <span class="kw">return</span> out;
+}
+
+@fragment
+<span class="kw">fn</span> fs_fade(<span class="kw">in</span>: FadeVertexOutput) -&gt; @location(0) <span class="ty">vec4</span>&lt;<span class="ty">f32</span>&gt; {
+    <span class="kw">let</span> noise = dither_noise(<span class="kw">in</span>.clip_position.xy);   <span class="cm">// 画素の位置から0〜1の疎密のパターン</span>
+    <span class="cm">// 新しい側は noise &lt; 割合 の画素、古い側は残りの画素</span>
+    <span class="kw">let</span> is_new = noise &lt; <span class="kw">in</span>.fade.x;
+    <span class="kw">let</span> inverted = <span class="kw">in</span>.fade.y &gt; 0.5;
+    <span class="kw">if</span> (is_new == inverted) { <span class="kw">discard</span>; }
+    <span class="kw">return</span> <span class="ty">vec4</span>&lt;<span class="ty">f32</span>&gt;(<span class="kw">in</span>.color, 1.0);
+}</pre>
+      <div class="callout cpp">
+        <div class="label">🔧 C++erの視点</div>
+        <p>
+          ゲームの世界では<strong>スクリーンドア透明</strong>(stipple)やディザ透明と呼ばれる古典的な技で、LODの切り替え(LODのディザ・フェード)にもよく使われます。
+          <code>discard</code>は「この画素は描かない」という指示で、C++でいえば<code>continue</code>に近いものです。ただし<code>discard</code>を含むシェーダーはGPUが早期の深度テストで画素を捨てにくくなるので、
+          <strong>切り替え中のメッシュだけ</strong>専用のパイプライン(<code>terrain_fade</code>)で描き、普段の地形(<code>terrain</code>)には使いません。
+        </p>
+      </div>
+
+      <h4>メッシュごとの割合は「表」に入れて、first_instanceで引く</h4>
+      <p>
+        割合はメッシュごとに違い、時間とともに変わります。メッシュごとにバッファやbind groupを作ると、チャンクが1万数千個あるので重くなります。
+        そこで割合を<strong>1つのuniformの表</strong>(<code>FadeTable</code>。<code>vec4</code>を2,048個)にまとめ、描画のときに<strong>インスタンスの番号</strong>として表の番号を渡します。
+        頂点シェーダーは<code>@builtin(instance_index)</code>で自分の割合を引きます(インスタンス描画は使っていないので、<code>draw_indexed</code>の最後の引数は「表の番号」を渡すためだけに使っている)。
+      </p>
+      <pre class="code"><span class="fname">sim3dview/src/terrain/renderer/mod.rs(実際のコード、抜粋)</span><span class="cm">// クロスフェード中のメッシュ(新旧)。割合の表の何番目かを first_instance で渡す</span>
+render_pass.set_pipeline(&amp;self.pipelines.terrain_fade);
+render_pass.set_bind_group(0, &amp;self.camera_bind_group, &amp;[]);
+render_pass.set_bind_group(1, &amp;self.fade_bind_group, &amp;[]);
+<span class="kw">for</span> (index, draw) <span class="kw">in</span> fade_draws.iter().enumerate() {
+    render_pass.set_vertex_buffer(0, draw.mesh.vertex_buffer.slice(..));
+    render_pass.set_index_buffer(draw.mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+    render_pass.draw_indexed(0..draw.mesh.num_indices, 0, index <span class="kw">as</span> <span class="ty">u32</span>..index <span class="kw">as</span> <span class="ty">u32</span> + 1);
+}</pre>
+      <h4>状態と、時間の進め方</h4>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>操作</th><th>意味</th></tr></thead>
+        <tbody>
+          <tr><td><code>set_mesh_faded(key, mesh)</code></td><td>古いメッシュを消える側に、新しいメッシュを出てくる側に登録する(同じキーが無くても、新しいメッシュだけが混ざりながら出てくる)</td></tr>
+          <tr><td><code>remove_mesh_faded(key)</code></td><td>取り除くメッシュを、混ざりながら消す(タイル全体→チャンクの切り替えで、全体1枚を消す)</td></tr>
+          <tr><td><code>set_mesh</code> / <code>remove_mesh</code></td><td>すぐに切り替える(起動時の初回配置・原点変更)</td></tr>
+          <tr><td><code>is_fading()</code></td><td>クロスフェード中か。中は時間が進むので、<code>render_frame</code>が<code>requestAnimationFrame</code>で描き直し続ける(でないと途中の割合で止まる)</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>
+        状態の管理(<code>Fades</code>)は、GPUに触れない純粋なロジックとして<code>renderer/fade.rs</code>に切り出し、単体テストがあります(割合が0→1へなめらかに進む、途中でさらに差し替わったら前の古い側を捨てる、など)。
+        割合は時間の経過を<code>smoothstep</code>にしたもので、<code>render</code>のたびに、終わったものを片付けてから(古いメッシュはここで解放)、そのフレームの割合を表へ書きます。
+      </p>
+      <div class="callout warn">
+        <div class="label">⚠️ これで消えるのは「急な切り替え」で、レベルの違いそのものではない</div>
+        <p>
+          混ぜるのは切り替えの瞬間だけです。落ち着いた後のレベルの違い(細かさ・スカートの段差・チャンクの縁の法線の食い違い)は残ります。
+          それが目立つなら、<code>CHUNK_TARGET_CELL_PX</code>を下げる・予算を増やす、または縁の法線を隣のチャンクと揃える対応が次の候補です。
+          また、段階的に細かくなる途中(L1→L2→L3)でさらに差し替わったときは、前の古い側は捨て、いま出ている側が改めて消える側になるので、途中の1段は混ざらずに切り替わります。
+        </p>
+      </div>
+      <p>
+        確かめ方: <code>FADE_DURATION_MS</code>を一時的に8秒にすると、混ざっている最中を目で確かめられます。起動直後のタイル全体→チャンクの切り替えでは、約1,760個のメッシュが同時に混ざり、割合が0→1に進んで、終わると描き直しが止まることを確認しました。
       </p>
     </section>
 
@@ -5392,7 +5510,8 @@ stateDiagram-v2
       <h2><span class="num">36</span> 観測点のピンと、覆域の作り直し</h2>
       <p class="section-lede">
         13節の見通し・覆域の見た目を、3つ直しました。観測点のマーカーを<strong>画面サイズ固定のピン</strong>に、3Dの覆域ドームを<strong>なめらか</strong>に、
-        2Dの覆域を<strong>均一に塗る</strong>ように。「どこまで見えるか」の計算は変えていません。変えたのは「どう描くか」です。
+        2Dの覆域を<strong>均一に塗る</strong>ように。「どこまで見えるか」の計算は変えていません。変えたのは「どう描くか」です(36.1〜36.3)。
+        その後、地面すれすれのシンボルが埋まる問題(36.4)と、覆域を出している間の操作の重さ(36.5)を直し、ドームの平滑化を強めました(36.2)。
       </p>
 
       <h3>36.1 四角い枠から、画面サイズ固定の「ピン」へ</h3>
@@ -5430,6 +5549,7 @@ stateDiagram-v2
         深度は、アンカーの深度を<strong>距離の0.2%だけ手前</strong>へ寄せてテストします(<code>BILLBOARD_DEPTH_BIAS</code>)。地面に立てる印なので、
         粗いLODの地形メッシュとの高さのずれ(遠いほど大きい)で地面に埋まって消えないように、距離に比例して寄せています。
         400km先なら約800m、5km先なら約10m。それより手前にある山の陰には、ちゃんと隠れます。
+        ただし、地面すれすれのシンボルの、画面で足元より下の画素はこれでは足りませんでした。その対策は36.4節です。
         描画は作図(37節)と同じ<code>draw.wgsl</code>・同じパイプラインなので、以前の専用の線パイプライン(<code>line_pipeline</code>)は廃止しました。
       </p>
 
@@ -5445,11 +5565,14 @@ stateDiagram-v2
         <svg viewBox="0 0 680 282" role="img" aria-label="旧実装の、遮蔽のない方角での仰角リングごとの半径の誤差。28段のリングで0〜187m、80度で最大"><g font-size="11"><line x1="56" y1="204.0" x2="664" y2="204.0" stroke="currentColor" opacity=".5"/><text x="50" y="208.0" text-anchor="end" opacity=".75">0 m</text><line x1="56" y1="159.0" x2="664" y2="159.0" stroke="currentColor" opacity=".15"/><text x="50" y="163.0" text-anchor="end" opacity=".75">50 m</text><line x1="56" y1="114.0" x2="664" y2="114.0" stroke="currentColor" opacity=".15"/><text x="50" y="118.0" text-anchor="end" opacity=".75">100 m</text><line x1="56" y1="69.0" x2="664" y2="69.0" stroke="currentColor" opacity=".15"/><text x="50" y="73.0" text-anchor="end" opacity=".75">150 m</text><line x1="56" y1="24.0" x2="664" y2="24.0" stroke="currentColor" opacity=".15"/><text x="50" y="28.0" text-anchor="end" opacity=".75">200 m</text><rect x="60.1" y="204.0" width="13.5" height="0.6" fill="var(--danger)" opacity=".8"/><text x="66.9" y="219" text-anchor="middle" opacity=".8" class="mono-label" font-size="10">0°</text><rect x="81.8" y="165.8" width="13.5" height="38.2" fill="var(--danger)" opacity=".8"/><rect x="103.6" y="186.4" width="13.5" height="17.6" fill="var(--danger)" opacity=".8"/><rect x="125.3" y="175.6" width="13.5" height="28.4" fill="var(--danger)" opacity=".8"/><rect x="147.0" y="178.6" width="13.5" height="25.4" fill="var(--danger)" opacity=".8"/><rect x="168.7" y="195.2" width="13.5" height="8.8" fill="var(--danger)" opacity=".8"/><text x="175.4" y="219" text-anchor="middle" opacity=".8" class="mono-label" font-size="10">5°</text><rect x="190.4" y="180.4" width="13.5" height="23.6" fill="var(--danger)" opacity=".8"/><rect x="212.1" y="179.2" width="13.5" height="24.8" fill="var(--danger)" opacity=".8"/><rect x="233.8" y="191.8" width="13.5" height="12.2" fill="var(--danger)" opacity=".8"/><rect x="255.6" y="172.6" width="13.5" height="31.4" fill="var(--danger)" opacity=".8"/><rect x="277.3" y="167.1" width="13.5" height="36.9" fill="var(--danger)" opacity=".8"/><text x="284.0" y="219" text-anchor="middle" opacity=".8" class="mono-label" font-size="10">10°</text><rect x="299.0" y="197.2" width="13.5" height="6.8" fill="var(--danger)" opacity=".8"/><rect x="320.7" y="190.3" width="13.5" height="13.7" fill="var(--danger)" opacity=".8"/><rect x="342.4" y="191.7" width="13.5" height="12.3" fill="var(--danger)" opacity=".8"/><rect x="364.1" y="201.3" width="13.5" height="2.7" fill="var(--danger)" opacity=".8"/><rect x="385.8" y="170.8" width="13.5" height="33.2" fill="var(--danger)" opacity=".8"/><text x="392.6" y="219" text-anchor="middle" opacity=".8" class="mono-label" font-size="10">20°</text><rect x="407.6" y="195.1" width="13.5" height="8.9" fill="var(--danger)" opacity=".8"/><rect x="429.3" y="177.1" width="13.5" height="26.9" fill="var(--danger)" opacity=".8"/><rect x="451.0" y="164.2" width="13.5" height="39.8" fill="var(--danger)" opacity=".8"/><rect x="472.7" y="155.7" width="13.5" height="48.3" fill="var(--danger)" opacity=".8"/><rect x="494.4" y="202.7" width="13.5" height="1.3" fill="var(--danger)" opacity=".8"/><text x="501.1" y="219" text-anchor="middle" opacity=".8" class="mono-label" font-size="10">30°</text><rect x="516.1" y="195.6" width="13.5" height="8.4" fill="var(--danger)" opacity=".8"/><rect x="537.8" y="201.4" width="13.5" height="2.6" fill="var(--danger)" opacity=".8"/><text x="544.6" y="219" text-anchor="middle" opacity=".8" class="mono-label" font-size="10">40°</text><rect x="559.6" y="197.2" width="13.5" height="6.8" fill="var(--danger)" opacity=".8"/><rect x="581.3" y="148.9" width="13.5" height="55.1" fill="var(--danger)" opacity=".8"/><text x="588.0" y="219" text-anchor="middle" opacity=".8" class="mono-label" font-size="10">50°</text><rect x="603.0" y="204.0" width="13.5" height="0.6" fill="var(--danger)" opacity=".8"/><text x="609.7" y="219" text-anchor="middle" opacity=".8" class="mono-label" font-size="10">60°</text><rect x="624.7" y="201.3" width="13.5" height="2.7" fill="var(--danger)" opacity=".8"/><text x="631.4" y="219" text-anchor="middle" opacity=".8" class="mono-label" font-size="10">70°</text><rect x="646.4" y="36.0" width="13.5" height="168.0" fill="var(--danger)" opacity=".8"/><text x="653.1" y="219" text-anchor="middle" opacity=".8" class="mono-label" font-size="10">80°</text><text x="645.1" y="30.0" text-anchor="end" font-weight="700" fill="var(--danger)">80°: 187 m</text><line x1="56" y1="204" x2="664" y2="204" stroke="var(--accent)" stroke-width="2.2"/><text x="70" y="84" fill="var(--accent-ink)" font-weight="700">いま: すべて 0 m(上限ちょうど)</text><text x="360" y="242" text-anchor="middle" opacity=".8">仰角リング(度)</text><text x="14" y="114" opacity=".8" transform="rotate(-90 14 114)" text-anchor="middle">半径の誤差(m)</text></g></svg>
         <figcaption>旧28段のリングの、遮蔽のない方角での半径の誤差(最大観測範囲50kmの場合の計算値。<code>50000 − floor(50000·cos/50)·50/cos</code>)。いまは上限ちょうどを返すので、すべて0。</figcaption>
       </figure>
-      <p>対策は3つです。</p>
+      <p>対策は次のとおりです。</p>
       <ul>
         <li><strong>上限までは丸めない</strong>: 遮蔽されずに上限(最大観測範囲×cos仰角)まで届いたリングは、サンプル位置ではなく上限ちょうどを返す(<code>los.rs</code>の<code>finalize</code>)。</li>
-        <li><strong>方位方向に平滑化</strong>: 各リングの半径を円環として、前後3方位の<strong>メディアン</strong>(1〜数方位だけの外れ値を除く。段差の位置は保つ)→前後6方位の<strong>平均</strong>(段差をなだらかに)。
-          遮蔽されない方角の半径(最大観測範囲)は変わらず、遮蔽の境目が数十〜数百mの幅でなだらかになるだけです。</li>
+        <li><strong>方位方向に平滑化</strong>: 各リングの半径を円環として、前後1方位(4mil刻みの1つ分)の<strong>メディアン</strong>(1〜数方位だけの外れ値を除く。段差の位置は保つ)→前後3方位の<strong>平均を2回</strong>(段差をなだらかに。平均を重ねると重みが山形になり、折れ目が曲線になる)。
+          遮蔽されない方角の半径(最大観測範囲)は変わらず、遮蔽の境目が数百m〜1kmの幅でなだらかになるだけです。以前は6400方位でメディアン±3→平均±6(約±0.34度)の1回でした。</li>
+        <li><strong>仰角方向にも平滑化</strong>(新しく追加): 方位ごとに、隣のリングと<code>[1, 2, 1] / 4</code>で平均する(端のリングは外側を自分と同じ値とみなす)。リングごとの段が階段状に見えるのを消す。</li>
+        <li><strong>頂点を間引く</strong>(新しく追加): 計算・平滑化は4mil刻み(1,600方位)。面を張るときは2方位に1つにし、さらに<strong>高いリングほど間引く</strong>(円周が短いので、<code>1/cos(仰角)</code>以下の2のべき乗個おき。最大32)。
+          間引きの違うリングの間は、上のリングの1辺に下のリングの複数の頂点を扇状につなぐ(<code>stitch_rings</code>)ので、すき間もT字の継ぎ目もできません。</li>
         <li><strong>リングを増やす</strong>: 28段→38段(0〜10度は1度刻み、〜30度は2度、〜60度は3度、以降は4度刻みで最上段は87度)。</li>
       </ul>
       <pre class="code"><span class="fname">sim3dview/src/terrain/los.rs(実際のコード、抜粋)</span><span class="kw">let</span> <span class="kw">mut</span> finalize = |k: usize, reach: usize| {
@@ -5461,33 +5584,38 @@ stateDiagram-v2
         ring_slant_ranges[k][az_i] = <span class="kw">if</span> ring_cos[k] &gt; 1e-6 { d / ring_cos[k] } <span class="kw">else</span> { d };
     }
 };</pre>
-      <pre class="code"><span class="fname">sim3dview/src/terrain/markers.rs(実際のコード、抜粋)</span><span class="cm">// 円環上の値(方位角ごとの半径など)を平滑化する: 前後median_half個ずつのメディアン</span>
-<span class="cm">// (外れ値の除去。段差の位置は保つ)→前後mean_half個ずつの平均(段差をなだらかにする)。</span>
-<span class="kw">fn</span> smooth_circular(values: &amp;[f64], median_half: usize, mean_half: usize) -&gt; <span class="ty">Vec</span>&lt;f64&gt; {
-    <span class="kw">let</span> n = values.len();
-    <span class="kw">let</span> at = |v: &amp;[f64], i: isize| v[i.rem_euclid(n <span class="kw">as</span> isize) <span class="kw">as</span> usize];   <span class="cm">// 端は反対側へつながる</span>
-    <span class="kw">let</span> (mh, ah) = (median_half <span class="kw">as</span> isize, mean_half <span class="kw">as</span> isize);
-    <span class="kw">let</span> medians: <span class="ty">Vec</span>&lt;f64&gt; = (0..n <span class="kw">as</span> isize)
-        .map(|i| {
-            <span class="kw">let</span> <span class="kw">mut</span> window: <span class="ty">Vec</span>&lt;f64&gt; = (-mh..=mh).map(|d| at(values, i + d)).collect();
-            window.sort_by(f64::total_cmp);
-            window[window.len() / 2]
-        })
-        .collect();
-    (0..n <span class="kw">as</span> isize)
-        .map(|i| (-ah..=ah).map(|d| at(&amp;medians, i + d)).sum::&lt;f64&gt;() / (2 * ah + 1) <span class="kw">as</span> f64)
-        .collect()
+      <pre class="code"><span class="fname">sim3dview/src/terrain/markers.rs(実際のコード、抜粋)</span><span class="cm">// 円環上の値(方位角ごとの半径など)を平滑化する: 前後median_half個のメディアン(外れ値の除去。</span>
+<span class="cm">// 段差の位置は保つ)→前後mean_half個の平均をmean_passes回(段差をなだらかな曲線にする)</span>
+<span class="kw">fn</span> smooth_circular(values: &amp;[<span class="ty">f64</span>], median_half: <span class="ty">usize</span>, mean_half: <span class="ty">usize</span>, mean_passes: <span class="ty">usize</span>) -&gt; <span class="ty">Vec</span>&lt;<span class="ty">f64</span>&gt; {
+    <span class="kw">let</span> <span class="kw">mut</span> smoothed = median_circular(values, median_half);   <span class="cm">// 端は反対側へつながる</span>
+    <span class="kw">for</span> _ <span class="kw">in</span> 0..mean_passes {
+        smoothed = mean_circular(&amp;smoothed, mean_half);
+    }
+    smoothed
+}
+
+<span class="cm">// 隣り合う2リングの間の帯。下のリングの頂点が多い分は、上の1辺に複数の三角形を扇状に付ける</span>
+<span class="kw">fn</span> stitch_rings&lt;V: Copy&gt;(lower: &amp;[V], upper: &amp;[V], <span class="kw">mut</span> push: <span class="kw">impl</span> FnMut(V, V, V)) {
+    <span class="kw">let</span> ratio = lower.len() / upper.len();
+    <span class="kw">for</span> j <span class="kw">in</span> 0..upper.len() {
+        <span class="kw">let</span> (u0, u1) = (upper[j], upper[(j + 1) % upper.len()]);
+        <span class="kw">for</span> i <span class="kw">in</span> 0..ratio {
+            push(lower[j * ratio + i], lower[(j * ratio + i + 1) % lower.len()], u0);
+        }
+        push(u0, u1, lower[((j + 1) * ratio) % lower.len()]);   <span class="cm">// 上の辺を閉じる</span>
+    }
 }</pre>
       <div class="table-wrap">
       <table>
         <thead><tr><th>項目</th><th>前</th><th>いま</th></tr></thead>
         <tbody>
           <tr><td>仰角リング</td><td>28段(最大10度刻み)</td><td>38段(最大4度刻み、最上段87度)</td></tr>
-          <tr><td>方位(計算)</td><td>6400(1mil)</td><td>6400(変えない)</td></tr>
-          <tr><td>方位(描画)</td><td>6400</td><td>3200(平滑化した後なので、間引いても形は変わらない)</td></tr>
-          <tr><td>頂点数</td><td>約100万(約24MB)</td><td>約71万(約20MB)</td></tr>
-          <tr><td>半径の平滑化</td><td>なし</td><td>メディアン±3 → 平均±6(方位)</td></tr>
+          <tr><td>方位(計算)</td><td>6400(1mil)</td><td>1600(4mil。全方位の結果の同じ方位の値と一致する)</td></tr>
+          <tr><td>方位(描画)</td><td>6400</td><td>800(2方位に1つ)から、高いリングほどさらに間引く(最大32方位おき)</td></tr>
+          <tr><td>頂点数</td><td>約100万(約24MB)</td><td>約16万(約4.4MB)</td></tr>
+          <tr><td>半径の平滑化</td><td>なし</td><td>方位: メディアン±1 → 平均±3を2回。仰角: [1,2,1]/4</td></tr>
           <tr><td>最上段を閉じる傘</td><td>方位を160milごとに間引き(約40三角形)</td><td>48三角形(アペックスの高さは最上段の半径の平均)</td></tr>
+          <tr><td>(途中の版: 38段・3200方位)</td><td colspan="2">頂点数は約71万(約20MB)。半径の平滑化は方位方向のメディアン±3 → 平均±6の1回だけ</td></tr>
         </tbody>
       </table>
       </div>
@@ -5495,7 +5623,7 @@ stateDiagram-v2
         <div class="label">💡 それでも残る切れ込みは、本物</div>
         <p>
           山が細く遮る方角(数十mil以上の幅)は、平滑化してもドームが凹んだまま残ります。それは実際の見通しの形です。平滑化の幅を広げれば消せますが、
-          そのぶん実際の遮蔽から離れます。ここは見た目と正しさのつり合いで、いまの値(±3/±6)にしています。
+          そのぶん実際の遮蔽から離れます。ここは見た目と正しさのつり合いで、いまの値(方位はメディアン±1→平均±3を2回、仰角は[1,2,1]/4)にしています。
         </p>
       </div>
 
@@ -5525,6 +5653,136 @@ stateDiagram-v2
         <p>
           上の画像は、観測点が富士山の山頂近くにあるので、覆域の海抜高度を6,000mにしています。既定の1,000mでは、観測点(約3,800m)より低い高度の対象は、
           すぐ足元の斜面に遮られるので、覆域は空になります(物理的に正しい結果です)。「覆域が出ない」ときは、まず高度設定(28節)を疑ってください。
+        </p>
+      </div>
+    
+      <h3 id="billboard-depth">36.4 地面すれすれで、シンボルの下半分が埋まる: ビルボードの深度</h3>
+      <p>
+        高度0mの船(<code>SHIP1</code>)のシンボルが、カメラを浅い角度に倒すと、<strong>下半分だけ水面に隠れて欠ける</strong>ことが分かりました。
+        地上車両も、地形に沿って似た欠け方をします。原因はビルボードの深度です。ビルボードは画面サイズ固定の四角形で、頂点は同じ深度(足元1点の深度)を持ちます。
+        画面で足元より下の画素は、視線がもっと手前で地面や水面に当たるので、その深度がシンボルより手前になって、地面が勝ちます。36.1節の「距離の0.2%だけ手前へ」では、浅い角度ほど足りません。
+        (水面は交点より1km奥へずらした深度を書きますが、それでも足元の画素の水面はシンボルより手前です。)
+      </p>
+      <figure>
+        <svg viewBox="0 0 700 250" role="img" aria-label="横から見た図。カメラ(左上)から浅い角度で地面を見る。ビルボードの四角形は視線に垂直で、足元(アンカー)を中心に上下に伸びる。下の端は地面の下にあり、その画素の視線は手前の点Pで地面に当たる"><defs><marker id="arrowbb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--accent)"/></marker></defs><g font-size="12"><line x1="30" y1="170" x2="680" y2="170" stroke="currentColor" opacity=".7" stroke-width="1.5"/><text x="34" y="190" opacity=".75">地面(足元を通る水平な面)</text><circle cx="70" cy="60" r="5" fill="currentColor"/><text x="82" y="54" font-weight="700">カメラ</text><line x1="70" y1="60" x2="520" y2="170" stroke="currentColor" opacity=".55" stroke-dasharray="5 4"/><line x1="70" y1="60" x2="509" y2="214" stroke="var(--danger)" opacity=".7" stroke-dasharray="5 4"/><line x1="509" y1="214" x2="531" y2="126" stroke="var(--accent-2)" stroke-width="5" stroke-linecap="round" opacity=".55"/><line x1="514" y1="192" x2="509" y2="214" stroke="var(--danger)" stroke-width="5" stroke-linecap="round"/><text x="546" y="132" fill="var(--accent-2-ink)" font-weight="700">シンボル(ビルボード)</text><text x="546" y="150" font-size="11" opacity=".8">視線に垂直な四角形。深度は足元1点で一定</text><circle cx="520" cy="170" r="5" fill="var(--accent-2)"/><text x="528" y="164" fill="var(--accent-2-ink)" font-weight="700">アンカー(足元)</text><circle cx="384" cy="170" r="5" fill="var(--danger)"/><text x="330" y="158" fill="var(--danger)" font-weight="700" text-anchor="middle">P</text><text x="20" y="226" fill="var(--danger)" font-size="11.5" font-weight="700">下の端の画素の視線は、手前のPで地面に当たる</text><text x="20" y="244" fill="var(--danger)" font-size="11.5">→ Pの方がシンボルより手前なので、地面が勝って下半分が隠れる</text><line x1="509" y1="214" x2="392" y2="176" stroke="var(--accent)" stroke-width="1.6" marker-end="url(#arrowbb)"/><text x="350" y="116" fill="var(--accent-ink)" font-weight="700" text-anchor="middle">いま: 下の端の深度を、Pまで手前へ寄せる</text><line x1="350" y1="122" x2="370" y2="160" stroke="var(--accent)" stroke-width="1" opacity=".6"/></g></svg>
+        <figcaption>横から見た図。ビルボードの四角形は視線に垂直なので、下の端は地面の下にある。その画素の視線は、足元より手前の点Pで地面に当たる。Pの深度までシンボルを寄せると、下半分が地面に負けない。</figcaption>
+      </figure>
+      <p>
+        そこで、頂点ごとに<strong>足元を通る局所の水平面</strong>を考え、<strong>その画素の視線が面に当たる点の深度</strong>までは、シンボルを手前へ寄せます(<code>billboard_depth</code>)。
+        面の上の点が、画面でずれた位置に射影される条件は、同次座標が線形なので<strong>2×2の連立一次方程式</strong>になり、遠近の近似なしで厳密に解けます(逆行列は使いません)。
+        面に当たらない・視点の後ろなら、深度は足元のままです。シンボル・選択の輪・観測点のピンに共通で効きます。
+      </p>
+      <pre class="code"><span class="fname">sim3dview/src/terrain/draw.wgsl(実際のコード、抜粋)</span><span class="kw">fn</span> billboard_depth(anchor: <span class="ty">vec3</span>&lt;<span class="ty">f32</span>&gt;, c: <span class="ty">vec4</span>&lt;<span class="ty">f32</span>&gt;, offset_ndc: <span class="ty">vec2</span>&lt;<span class="ty">f32</span>&gt;) -&gt; <span class="ty">f32</span> {
+    <span class="kw">let</span> depth = c.z / c.w;
+    <span class="cm">// 足元の局所の「真上」(地球の中心とアンカーを結ぶ向き)と、その面の2方向</span>
+    <span class="kw">let</span> up = normalize(anchor + <span class="ty">vec3</span>&lt;<span class="ty">f32</span>&gt;(0.0, 0.0, EARTH_RADIUS_M));
+    <span class="kw">let</span> east = normalize(cross(<span class="ty">vec3</span>&lt;<span class="ty">f32</span>&gt;(0.0, 1.0, 0.0), up));
+    <span class="kw">let</span> north = cross(up, east);
+    <span class="kw">let</span> m1 = u.view_proj * <span class="ty">vec4</span>&lt;<span class="ty">f32</span>&gt;(east, 0.0);    <span class="cm">// 面の上でeastへ1m進んだときのクリップ座標の変化</span>
+    <span class="kw">let</span> m2 = u.view_proj * <span class="ty">vec4</span>&lt;<span class="ty">f32</span>&gt;(north, 0.0);
+    <span class="cm">// 面の点 anchor + s*east + r*north が、画面で offset_ndc だけずれた位置に射影される条件は</span>
+    <span class="cm">// s, r の連立一次方程式(同次座標は線形なので、遠近の近似なしで厳密に解ける)</span>
+    <span class="kw">let</span> t = c.xy / c.w + offset_ndc;
+    <span class="kw">let</span> a11 = m1.x - t.x * m1.w;  <span class="kw">let</span> a12 = m2.x - t.x * m2.w;
+    <span class="kw">let</span> a21 = m1.y - t.y * m1.w;  <span class="kw">let</span> a22 = m2.y - t.y * m2.w;
+    <span class="kw">let</span> b = offset_ndc * c.w;
+    <span class="kw">let</span> det = a11 * a22 - a12 * a21;
+    <span class="kw">let</span> s = (b.x * a22 - a12 * b.y) / det;
+    <span class="kw">let</span> r = (a11 * b.y - a21 * b.x) / det;
+    <span class="kw">let</span> hit = c + m1 * s + m2 * r;                    <span class="cm">// 視線が面に当たる点のクリップ座標</span>
+    <span class="kw">let</span> hit_depth = hit.z / hit.w;
+    <span class="cm">// 手前(反転Zでは大きい方)を採る。寄せすぎないよう上限は深度の1.3倍</span>
+    <span class="kw">return</span> max(depth, min(hit_depth, depth * BILLBOARD_PLANE_MAX_PUSH));
+}</pre>
+      <ul>
+        <li><strong>寄せすぎない</strong>: 視線が地面とほぼ水平だと、画素がわずかに違うだけで、視線が面に当たる位置は視点側へ大きく動きます。それに合わせて寄せ続けると、手前の山に隠れるはずのシンボルまで、山の上に描かれてしまいます。
+          そこで寄せる量は深度の1.3倍までにしています(<code>BILLBOARD_PLANE_MAX_PUSH</code>)。</li>
+        <li><strong>面より手前の起伏には、従来どおり隠れる</strong>: 寄せるのは足元の水平面までなので、その手前に立つ本物の山には隠れます。</li>
+        <li><strong>地球の丸み</strong>: 面の向きは、アンカーと地球の中心(ENUの原点の<code>−R</code>)を結ぶ向きで見積もります(球で十分です)。遠方でも、面が地表と同じ向きになります。</li>
+      </ul>
+      <div class="callout warn">
+        <div class="label">⚠️ 確かめるときの落とし穴: 水平線の向こうは、隠れて正しい</div>
+        <p>
+          最初の再現では、視点が地表すれすれ(ほぼ水平)で、船は水平線の向こう(地球の丸みの陰)にありました。そのときシンボルの上端だけが空に出るのは、物理的に正しい姿です。
+          「埋まる」の確認は、水平線の内側(視点をやや高くして、船が水面の上に見えるくらい)の角度で、修正の前後を同じカメラで比べます。実際にそうして、修正前は下半分が欠け、修正後は全体が見えることを確かめました。
+        </p>
+      </div>
+
+      <h3 id="cov-async">36.5 覆域を出している間の操作を、重くしない</h3>
+      <p>
+        覆域を出したままズームやカメラ操作をすると、画面が固まりました。開発ビルドで測ると、<strong>観測点を追加すると約2秒</strong>、覆域を出したままズームすると<strong>約1.05秒の固まりが10秒間に22回</strong>でした
+        (観測点なしでは固まりなし)。計測には、<code>MessageChannel</code>のメッセージの間隔を使いました(<code>setInterval</code>は、非表示のペインだと約1秒に間引かれるので、最初の計測は無効でした)。
+      </p>
+      <p>
+        原因は2つです。(1)覆域の計算(6400方位×1000サンプル=640万回の標高補間)を、毎回<strong>同期で全部</strong>やっていた。
+        (2)地形のレベルが切り替わる(14.4節の<code>changed</code>)たびに、覆域を作り直していた。だからズームやカメラ操作でLODが動くたびに、約1秒固まりました。
+        極座標図(見通し範囲タブ)も、同期で計算していました。
+      </p>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>対策</th><th>中身</th></tr></thead>
+        <tbody>
+          <tr><td><strong>小分けにして非同期で進める</strong></td><td>計算を再開できる形(<code>RangeComputation</code>・<code>DomeComputation</code>の<code>advance(data, count)</code>)にし、UIが<strong>8msずつ</strong>進めて、合間に描画・入力に処理を譲る(<code>run_in_slices</code>)。新しい要求が来たら、古い計算は<strong>世代</strong>(<code>generation</code>)が変わって止まる。極座標図も同じ方式</td></tr>
+          <tr><td><strong>結果をキャッシュ</strong></td><td>キー(<code>CoverageKey</code>)が同じなら、計算せずジオメトリの作り直しだけ。原点変更・選択し直し・観測点の範囲の外のチャンクの切り替えでは、計算しない</td></tr>
+          <tr><td><strong>地形の変化は少し待つ</strong></td><td>レベルの切り替えで計算し直すときは、300ms待ってまとめる(切り替えは続けて何度も起きる)。計算が終わるまでは、地形だけが変わったなら前の覆域を出し続け、観測点・モード・高度が変わったなら消す</td></tr>
+          <tr><td><strong>方位を間引く</strong></td><td>ドーム1,600方位(4mil)、2D覆域3,200方位(2mil)、極座標図3,200方位。ドームは平滑化するので、1milで計算しても細かい凹凸は消える。間引いた結果は、全方位の結果の同じ方位の値と<strong>一致する</strong>(テストで確認)。小分けにしても結果は変わらない(これもテスト)</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <pre class="code"><span class="fname">sim3dview/src/ui/util.rs(実際のコード)</span><span class="cm">// 重い計算を小分けにして進める。stepは少しだけ進めて、終わったらtrueを返す関数</span>
+<span class="kw">pub</span> <span class="kw">async</span> <span class="kw">fn</span> run_in_slices(<span class="kw">mut</span> step: <span class="kw">impl</span> FnMut() -&gt; <span class="ty">bool</span>, cancelled: <span class="kw">impl</span> Fn() -&gt; <span class="ty">bool</span>) -&gt; <span class="ty">bool</span> {
+    <span class="kw">loop</span> {
+        <span class="kw">let</span> start = js_sys::Date::now();
+        <span class="kw">loop</span> {
+            <span class="kw">if</span> cancelled() { <span class="kw">return</span> false; }      <span class="cm">// 結果が要らなくなった(世代が変わった)</span>
+            <span class="kw">if</span> step() { <span class="kw">return</span> true; }
+            <span class="kw">if</span> js_sys::Date::now() - start &gt;= SLICE_BUDGET_MS { break; }   <span class="cm">// 8ms使ったら</span>
+        }
+        gloo_timers::future::TimeoutFuture::new(0).<span class="kw">await</span>;   <span class="cm">// 描画・入力に処理を譲る</span>
+    }
+}</pre>
+      <p>
+        キャッシュのキーに含める「地形」は、観測点の最大観測範囲(緯度経度の範囲)に重なるチャンクの、レベルの組のハッシュです(<code>terrain_signature</code>)。標高のサンプリング結果が変わるのは、
+        その範囲のチャンクのレベルが変わったときだけなので、遠くのチャンクが切り替わっても、計算し直しません。
+      </p>
+      <pre class="code"><span class="fname">sim3dview/src/ui/terrain_view/coverage.rs(実際のコード、抜粋)</span><span class="cm">// 覆域の計算結果が使い回せる条件。メッシュの原点は含まない(結果は観測点を中心とした値なので)</span>
+<span class="kw">struct</span> CoverageKey {
+    marker: RadarMarker,
+    mode: ViewMode,
+    altitude_bits: u64,      <span class="cm">// 2Dの覆域高度(3Dは0)</span>
+    terrain: u64,            <span class="cm">// 観測点の最大観測範囲に重なるチャンクの(タイル, チャンク, レベル)のハッシュ</span>
+}</pre>
+      <figure class="diagram">
+        <pre class="mermaid">
+flowchart TD
+  A["観測点・モード・高度・地形が変わった"] --> B{"CoverageKey が キャッシュと同じ?"}
+  B -- "はい" --> C["ジオメトリだけ作り直す (計算しない)"]
+  B -- "いいえ" --> D["世代を+1 (古い計算を取り消す)"]
+  D --> E["地形の変化なら300ms待つ"]
+  E --> F["run_in_slices 8msずつ計算し、描画・入力に譲る"]
+  F --> G["終わったら世代を確かめて キャッシュ + ジオメトリ + 描き直し"]
+        </pre>
+        <figcaption>覆域の更新の流れ(<code>refresh_coverage</code>)。ピンは軽いので、毎回すぐ作り直す。</figcaption>
+      </figure>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>操作(開発ビルドの実機)</th><th>前</th><th>いま</th></tr></thead>
+        <tbody>
+          <tr><td>覆域を出したままズーム(10秒間)</td><td>約1.05秒の固まり × 22回</td><td>最大約70ms × 2回</td></tr>
+          <tr><td>観測点の追加</td><td>約2秒</td><td>約120ms</td></tr>
+          <tr><td>ドームの頂点数</td><td>約71万</td><td>約16万</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>
+        3Dドーム・2D覆域・極座標図の表示も、実機で確かめました(極座標図は計算中「見通し範囲を計算中...」と出て、終わると図に変わります)。
+        観測点が高い山の中にあると、2D覆域(高度1,000m)は全方位で遮蔽されて空になり、何も出ません。故障ではありません(36.3節の警告と同じ理由です)。
+      </p>
+      <div class="callout">
+        <div class="label">💡 まだ重ければ</div>
+        <p>
+          開発ビルド(<code>trunk serve</code>。最適化なし)は、リリースビルドより計算が数倍遅いです。さらに軽くするなら、<code>[profile.dev.package.sim3dview] opt-level</code>の引き上げ、
+          <code>SAMPLES_PER_RAY</code>(1000)の見直し、覆域の計算結果の永続化(観測点の一覧はlocalStorageに保存されない)が候補です。
         </p>
       </div>
     </section>
@@ -6174,7 +6432,7 @@ cd sample/sim_frontend &amp;&amp; trunk serve        # 開発サーバー(ポー
     </section>
 
     <footer>
-      Sim3dView 技術解説ノート — 2026-09-21時点のコード(コミット 9a26cce)に基づく。
+      Sim3dView 技術解説ノート — 2026-09-21時点のコード(コミット 7b6a859)に基づく。
       BASIC_DESIGN.md / DETAILED_DESIGN.md と合わせて読むことを想定しています。
     </footer>
   </main>
