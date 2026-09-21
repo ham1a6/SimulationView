@@ -1836,6 +1836,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 `DOME_SMOOTH_MEDIAN_HALF/MEAN_HALF/MEAN_PASSES=1/3/2`、`DOME_ELEVATION_SMOOTH_PASSES=1`、`DOME_MIN_RING_STRIDE=2`・`DOME_MAX_RING_STRIDE=32`。
 2D覆域: 塗り`[0.35,0.9,0.4]`アルファ`0.32`、輪郭`[0.75,1.0,0.4,1]`太さ2.5px、`COVERAGE_AZIMUTH_STEP=2`(3200方位)、`COVERAGE_SMOOTH_MEDIAN_HALF/MEAN_HALF/MEAN_PASSES=2/6/2`(ドームと同じ角度の幅。ドームは4mil刻みで1/3/2)。
 
+- **平滑化は表示用のジオメトリを作るときだけ**(`dome_geometry`・`coverage_2d_geometry`の中)。計算結果(`DomeRing`・`LosPoint`)は生の値のままキャッシュし、極座標図・断面図には掛けない(だから平滑化の設定を変えても、覆域の計算は要らない)。窓幅は、方位の刻みが違ってもドームと2D覆域で同じ角度になるように決める(メディアン約±0.23度、平均2回で三角形の重みの広がり約±1.35度)。間引き(頂点・`azimuth_step`)は、平滑化した後の並びから取る。
 - **円環の平滑化 `smooth_circular(values, median_half, mean_half, mean_passes)`**: 端は反対側へつながる。①各iで前後`median_half`個の**中央値**(外れ値除去。段差の位置は保つ)→②その結果の前後`mean_half`個の**平均**を`mean_passes`回(段差をなだらかに。重ねるほど折れ目が曲線になる)。
   **仰角方向の平滑化 `smooth_across_rings`**: 方位ごとに、隣のリングと`[1,2,1]/4`(端のリングは外側を自分と同じ値とみなす)。**リングの間引き `ring_stride(el, N)`**: `DOME_MIN_RING_STRIDE`から、`stride·2 <= 1/cos(el)`かつ`N`を割り切る間、2倍にする(最大`DOME_MAX_RING_STRIDE`)。
   **帯の三角形 `stitch_rings(lower, upper, push)`**: 上のリングの各辺`(u0,u1)`について、下のリングの対応する`ratio = n_lower/n_upper`本の辺ごとに`(l_a, l_b, u0)`、最後に`(u0, u1, l_next)`(`ratio=1`なら四角形を2枚の三角形に割るのと同じ。辺は、リングの辺が1回・それ以外が2回で、すき間がない=テストで確認)
