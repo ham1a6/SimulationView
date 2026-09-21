@@ -150,9 +150,9 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
                     let whole = mesh::build_whole_tile_mesh(&terrain, tile, &transform);
                     let mut s = state.borrow_mut();
                     if let Some(renderer) = s.renderer.as_mut() {
-                        renderer.set_mesh(whole_key, &whole);
+                        renderer.set_mesh_faded(whole_key, &whole);
                         for c in 0..chunk_count {
-                            renderer.remove_mesh((key.0, key.1, c as u8));
+                            renderer.remove_mesh_faded((key.0, key.1, c as u8));
                         }
                     }
                     s.resident.insert(key, TileLayout::Whole);
@@ -188,13 +188,13 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
                             if let Some(m) = mesh::build_chunk_mesh(&terrain, tile, c, available[c], &transform)
                             {
                                 if let Some(renderer) = s.renderer.as_mut() {
-                                    renderer.set_mesh((key.0, key.1, c as u8), &m);
+                                    renderer.set_mesh_faded((key.0, key.1, c as u8), &m);
                                 }
                                 terrain.set_chunk_level(key, c, available[c]);
                             }
                         }
                         if let Some(renderer) = s.renderer.as_mut() {
-                            renderer.remove_mesh(whole_key);
+                            renderer.remove_mesh_faded(whole_key);
                         }
                         let levels: Vec<u8> = available.iter().map(|&l| l as u8).collect();
                         s.resident.insert(key, TileLayout::Chunks(levels.clone()));
@@ -232,7 +232,7 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
                     if let Some(m) = mesh::build_chunk_mesh(&terrain, tile, c, new_level, &transform) {
                         let mut s = state.borrow_mut();
                         if let Some(renderer) = s.renderer.as_mut() {
-                            renderer.set_mesh((key.0, key.1, c as u8), &m);
+                            renderer.set_mesh_faded((key.0, key.1, c as u8), &m);
                         }
                         drop(s);
                         terrain.set_chunk_level(key, c, new_level);

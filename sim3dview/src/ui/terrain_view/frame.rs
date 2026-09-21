@@ -115,14 +115,26 @@ pub(super) fn keep_camera_above_ground(state: &Rc<RefCell<ViewState>>) {
 /// 現在の状態で1フレーム描くだけ(LODの更新は予約しない)。
 pub(super) fn render_frame(state: &Rc<RefCell<ViewState>>) {
     keep_camera_above_ground(state);
-    let s = state.borrow();
-    if let Some(renderer) = s.renderer.as_ref() {
+    let mut s = state.borrow_mut();
+    let s = &mut *s;
+    let mut fading = false;
+    if let Some(renderer) = s.renderer.as_mut() {
         let camera = s.camera.to_camera(renderer.aspect_ratio());
         if let Err(e) = renderer.render(&camera) {
             log::error!("[terrain] render failed: {e}");
         }
+        fading = renderer.is_fading();
     }
-    update_labels(&s);
+    update_labels(s);
+    // 地形のレベル切り替えのクロスフェード中は、時間が進むので次のフレームも描く(1つだけ予約する)。
+    if fading && !s.fade_frame_pending {
+        s.fade_frame_pending = true;
+        let state = state.clone();
+        request_animation_frame(move || {
+            state.borrow_mut().fade_frame_pending = false;
+            render_frame(&state);
+        });
+    }
 }
 
 /// 1フレーム描き、カメラなどが変わった可能性があるのでLODの更新を予約する。

@@ -95,6 +95,11 @@ pub(super) fn terrain_shader(device: &wgpu::Device) -> wgpu::ShaderModule {
 /// メインパスで使うパイプライン一式(縮小パスのパイプラインは`targets::Downsample`)。
 pub(super) struct Pipelines {
     pub terrain: wgpu::RenderPipeline,
+    /// 解像度レベルの切り替え中のメッシュ(クロスフェード。`fade`)。地形と同じだが、メッシュごとの割合の表
+    /// (`fade_bind_group_layout`)を`instance_index`で引き、ディザで`discard`する。
+    pub terrain_fade: wgpu::RenderPipeline,
+    /// クロスフェードの割合の表(`terrain.wgsl`の`FadeTable`)のbind groupレイアウト。
+    pub fade_bind_group_layout: wgpu::BindGroupLayout,
     pub water: wgpu::RenderPipeline,
     pub dome: wgpu::RenderPipeline,
     /// 作図: 不透明(深度を書く)・半透明(深度は書かずにアルファブレンド)・画面座標(深度テストなし)。
@@ -141,6 +146,29 @@ impl Pipelines {
                 wgpu::BlendState::REPLACE,
                 (true, wgpu::CompareFunction::Greater),
             ),
+        );
+        // クロスフェード中のメッシュ。地形と同じ設定で、フラグメントがディザで`discard`する
+        // (`discard`を持つシェーダーは早期深度テストが効きにくいので、切り替え中のメッシュだけに使う)。
+        let fade_bind_group_layout = uniform_layout(device, "fade_bind_group_layout", wgpu::ShaderStages::VERTEX);
+        let fade_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("terrain_fade_pipeline_layout"),
+            bind_group_layouts: &[Some(camera_bind_group_layout), Some(&fade_bind_group_layout)],
+            immediate_size: 0,
+        });
+        let terrain_fade = create_pipeline(
+            device,
+            &PipelineSpec {
+                label: "terrain_fade_pipeline",
+                layout: &fade_layout,
+                shader: terrain_shader,
+                vs_entry: "vs_fade",
+                fs_entry: "fs_fade",
+                vertex_layout: Some(terrain_vertex_layout()),
+                format,
+                blend: wgpu::BlendState::REPLACE,
+                depth: Some((true, wgpu::CompareFunction::Greater)),
+                samples: SAMPLE_COUNT,
+            },
         );
         // 水域レイヤー。画面いっぱいの三角形(頂点バッファなし)を、地形メッシュより先に描く。深度テストは
         // しない(常に描く)が、フラグメントシェーダーが楕円体との交点の深度(`WATER_DEPTH_MARGIN_M`だけ
@@ -206,6 +234,16 @@ impl Pipelines {
         let draw_blend = draw("draw_blend_pipeline", (false, wgpu::CompareFunction::Greater));
         let draw_screen = draw("draw_screen_pipeline", (false, wgpu::CompareFunction::Always));
 
-        Self { terrain, water, dome, draw_opaque, draw_blend, draw_screen, draw_bind_group_layout }
+        Self {
+            terrain,
+            terrain_fade,
+            fade_bind_group_layout,
+            water,
+            dome,
+            draw_opaque,
+            draw_blend,
+            draw_screen,
+            draw_bind_group_layout,
+        }
     }
 }

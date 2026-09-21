@@ -54,6 +54,8 @@ pub(super) struct ViewState {
     pub(super) lod_pending: bool,
     /// 取得の完了・メッシュ反映の続きによる、短い待ちのLOD更新の予約中か(`schedule_lod_soon`)。
     pub(super) lod_soon_pending: bool,
+    /// 地形メッシュのクロスフェード(`TerrainRenderer::is_fading`)の描き直しを予約中か。
+    pub(super) fade_frame_pending: bool,
 }
 
 /// 画面に重ねている航跡ラベル1つ分(HTML要素と、その元のデータ)。

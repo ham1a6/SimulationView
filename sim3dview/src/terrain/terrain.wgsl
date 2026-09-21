@@ -48,8 +48,7 @@ fn hillshade(normal_xy: vec2<f32>) -> f32 {
     return (AMBIENT + (1.0 - AMBIENT) * lambert) / flat_level;
 }
 
-@vertex
-fn vs_main(in: VertexInput) -> VertexOutput {
+fn shade_vertex(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.clip_position = camera.view_proj * vec4<f32>(in.position, 1.0);
     // 陰影は頂点ごとに求めて色に掛け、面の内側は補間する(明るさは法線について線形なので、
@@ -58,8 +57,61 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
+@vertex
+fn vs_main(in: VertexInput) -> VertexOutput {
+    return shade_vertex(in);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(in.color, 1.0);
+}
+
+// 解像度レベルの切り替え中のメッシュ(クロスフェード)用。新旧のメッシュを、画面の画素ごとの
+// 疎密(ディザ)で互いに補う割合で重ねて描き、いきなり切り替わらず、混ざりながら入れ替わって見せる。
+// 半透明ではなく`discard`なので、深度は通常どおり書け、描く順にも依存しない(新旧は画素ごとに
+// どちらか一方だけが描かれる)。
+// メッシュごとの値は、`instance_index`で引く表(`fades`)に入れる(頂点バッファ・bind groupを
+// メッシュごとに増やさない。描画側が`first_instance`に表の番号を渡す)。
+// x: 表示する画素の割合(0〜1)、y: 1なら、表示する画素を反転する(x=新しい側の割合に対する、古い側)。
+struct FadeTable {
+    entries: array<vec4<f32>, 2048>,
+};
+@group(1) @binding(0)
+var<uniform> fades: FadeTable;
+
+struct FadeVertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) color: vec3<f32>,
+    @location(1) @interpolate(flat) fade: vec2<f32>,
+};
+
+@vertex
+fn vs_fade(in: VertexInput, @builtin(instance_index) instance: u32) -> FadeVertexOutput {
+    let base = shade_vertex(in);
+    var out: FadeVertexOutput;
+    out.clip_position = base.clip_position;
+    out.color = base.color;
+    out.fade = fades.entries[instance].xy;
+    return out;
+}
+
+// 画素の位置から0〜1の疎密のパターンを作る(interleaved gradient noise。周期が短く、隣の画素と
+// 値が散るので、割合が同じなら画面全体に均一な粒になる)。
+fn dither_noise(pixel: vec2<f32>) -> f32 {
+    return fract(52.9829189 * fract(dot(pixel, vec2<f32>(0.06711056, 0.00583715))));
+}
+
+@fragment
+fn fs_fade(in: FadeVertexOutput) -> @location(0) vec4<f32> {
+    let noise = dither_noise(in.clip_position.xy);
+    // 新しい側は noise < 割合 の画素、古い側は残りの画素。
+    // (比較を`select`の引数に直接書くと、`<`と`>`がテンプレートの括弧と読まれる)
+    let is_new = noise < in.fade.x;
+    let inverted = in.fade.y > 0.5;
+    if (is_new == inverted) {
+        discard;
+    }
     return vec4<f32>(in.color, 1.0);
 }
 

@@ -7,6 +7,7 @@
 //! 描画先のテクスチャと縮小は`targets`、パイプラインの生成は`pipelines`、作図等の頂点バッチは`overlay`、
 //! 視錐台カリングは`frustum`。
 
+mod fade;
 mod frustum;
 mod overlay;
 mod pipelines;
@@ -17,6 +18,7 @@ use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
 
+use self::fade::{fade_progress, Fades, MAX_FADE_ENTRIES};
 use self::frustum::{is_outside_frustum, position_bounds};
 use self::overlay::{DrawSpace, VertexBatch};
 use self::pipelines::{terrain_shader, Pipelines};
@@ -42,6 +44,17 @@ struct MeshGpu {
     bounds: ([f32; 3], [f32; 3]),
 }
 
+/// このフレームでクロスフェードするメッシュ1個(`fade_draws`)。`entry`は割合の表の値(`terrain.wgsl`の`FadeTable`)。
+struct FadeDraw<'a> {
+    mesh: &'a MeshGpu,
+    entry: [f32; 4],
+}
+
+/// 現在時刻(ミリ秒)。クロスフェードの経過時間に使う。
+fn now_ms() -> f64 {
+    js_sys::Date::now()
+}
+
 pub struct TerrainRenderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -49,6 +62,10 @@ pub struct TerrainRenderer {
     config: wgpu::SurfaceConfiguration,
     pipelines: Pipelines,
     meshes: HashMap<MeshKey, MeshGpu>,
+    /// 解像度レベルの切り替え中のメッシュ(クロスフェード。`fade`)と、その割合の表(`terrain.wgsl`の`FadeTable`)。
+    fades: Fades<MeshGpu>,
+    fade_buffer: wgpu::Buffer,
+    fade_bind_group: wgpu::BindGroup,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     /// スーパーサンプリングの内部解像度の深度・MSAA・解決先。canvasの大きさが変わるたびに作り直す。
@@ -157,6 +174,14 @@ impl TerrainRenderer {
             uniform_bind_group(&device, "camera_bind_group", &camera_bind_group_layout, &camera_buffer);
 
         let pipelines = Pipelines::new(&device, config.format, &shader, &camera_bind_group_layout);
+        let fade_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("fade_buffer"),
+            size: (MAX_FADE_ENTRIES * std::mem::size_of::<[f32; 4]>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let fade_bind_group =
+            uniform_bind_group(&device, "fade_bind_group", &pipelines.fade_bind_group_layout, &fade_buffer);
         let draw_world = DrawSpace::new(&device, &pipelines.draw_bind_group_layout, "draw_world_uniform");
         let draw_view = DrawSpace::new(&device, &pipelines.draw_bind_group_layout, "draw_view_uniform");
         let draw_screen = DrawSpace::new(&device, &pipelines.draw_bind_group_layout, "draw_screen_uniform");
@@ -168,6 +193,9 @@ impl TerrainRenderer {
             config,
             pipelines,
             meshes: HashMap::new(),
+            fades: Fades::new(),
+            fade_buffer,
+            fade_bind_group,
             camera_buffer,
             camera_bind_group,
             targets,
@@ -238,11 +266,10 @@ impl TerrainRenderer {
         self.num_dome_vertices = vertices.len() as u32;
     }
 
-    /// メッシュ1個を登録する。同じキーが既にあれば(解像度レベルの切り替え)置き換える。
-    pub fn set_mesh(&mut self, key: MeshKey, mesh: &TerrainMesh) {
+    /// メッシュ1個のGPUバッファを作る。三角形が1つも無い(全部海)なら`None`。
+    fn upload_mesh(&self, mesh: &TerrainMesh) -> Option<MeshGpu> {
         if mesh.indices.is_empty() {
-            self.meshes.remove(&key);
-            return;
+            return None;
         }
         let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("terrain_mesh_vertex_buffer"),
@@ -255,26 +282,83 @@ impl TerrainRenderer {
             contents: bytemuck::cast_slice(&mesh.indices),
             usage: wgpu::BufferUsages::INDEX,
         });
-        self.meshes.insert(
-            key,
-            MeshGpu {
-                vertex_buffer,
-                index_buffer,
-                num_indices: mesh.indices.len() as u32,
-                bounds: position_bounds(&mesh.vertices),
-            },
-        );
+        Some(MeshGpu {
+            vertex_buffer,
+            index_buffer,
+            num_indices: mesh.indices.len() as u32,
+            bounds: position_bounds(&mesh.vertices),
+        })
+    }
+
+    /// メッシュ1個を登録する。同じキーが既にあれば(解像度レベルの切り替え)、すぐに置き換える。
+    pub fn set_mesh(&mut self, key: MeshKey, mesh: &TerrainMesh) {
+        self.fades.cancel(key);
+        match self.upload_mesh(mesh) {
+            Some(gpu) => {
+                self.meshes.insert(key, gpu);
+            }
+            None => {
+                self.meshes.remove(&key);
+            }
+        }
+    }
+
+    /// `set_mesh`と同じだが、古いメッシュを`FADE_DURATION_MS`だけ残し、新旧を混ぜながら入れ替える
+    /// (クロスフェード)。同じキーが無ければ(タイル全体→チャンクの切り替えなど、別のキーが同時に
+    /// `remove_mesh_faded`されるとき)、新しいメッシュだけが混ざりながら出てくる。
+    /// 描画のたびに時間が進むので、`is_fading`の間は描き直し続けること。
+    pub fn set_mesh_faded(&mut self, key: MeshKey, mesh: &TerrainMesh) {
+        if !self.fades.has_room() {
+            self.set_mesh(key, mesh);
+            return;
+        }
+        let now = now_ms();
+        let old = self.meshes.remove(&key);
+        match self.upload_mesh(mesh) {
+            Some(gpu) => {
+                self.meshes.insert(key, gpu);
+                self.fades.replace(key, old, now);
+            }
+            None => {
+                // 新しいメッシュに三角形が無い(全部海)。古いメッシュだけが消えていく。
+                self.fades.cancel(key);
+                if let Some(old) = old {
+                    self.fades.remove(key, old, now);
+                }
+            }
+        }
     }
 
     /// メッシュ1個を取り除く(GPUバッファは解放される)。
     pub fn remove_mesh(&mut self, key: MeshKey) {
+        self.fades.cancel(key);
         self.meshes.remove(&key);
+    }
+
+    /// `remove_mesh`と同じだが、`FADE_DURATION_MS`かけて混ざりながら消す(`set_mesh_faded`と対で使う)。
+    pub fn remove_mesh_faded(&mut self, key: MeshKey) {
+        if !self.fades.has_room() {
+            self.remove_mesh(key);
+            return;
+        }
+        if let Some(old) = self.meshes.remove(&key) {
+            self.fades.remove(key, old, now_ms());
+        } else {
+            self.fades.cancel(key);
+        }
+    }
+
+    /// クロスフェード中か。中は時間が進むので、描き直し続ける(でないと途中の状態で止まる)。
+    pub fn is_fading(&self) -> bool {
+        self.fades.is_active()
     }
 
     /// 原点変更時など、頂点数は変わらないまま座標(位置)だけを更新したいときに使う。
     /// DETAILED_DESIGN.md 3.3節: 原点を変更したら頂点バッファを再計算・再アップロードする
     /// (タイルデータの再フェッチは不要)。登録されていないキーは何もしない。
     pub fn update_mesh_vertices(&mut self, key: MeshKey, vertices: &[TerrainVertex]) {
+        // 頂点位置が変わるので、クロスフェード中の古い側(古い原点のまま)は続けずに終わらせる。
+        self.fades.cancel(key);
         if let Some(mesh) = self.meshes.get_mut(&key) {
             self.queue.write_buffer(&mesh.vertex_buffer, 0, bytemuck::cast_slice(vertices));
             mesh.bounds = position_bounds(vertices);
@@ -315,9 +399,13 @@ impl TerrainRenderer {
     /// 頂点位置を新しい原点のENU座標で作り直すとき(初期化・原点変更)に、同時に呼ぶこと。
     pub fn set_ellipsoid_origin(&mut self, transform: &super::geodesy::EnuTransform) {
         self.ellipsoid = transform.ellipsoid_shader_params();
+        // 頂点位置を作り直す(古い原点のメッシュは使えなくなる)ので、クロスフェード中のものは終わらせる。
+        self.fades.clear();
     }
 
-    pub fn render(&self, camera: &Camera) -> Result<(), String> {
+    pub fn render(&mut self, camera: &Camera) -> Result<(), String> {
+        let now = now_ms();
+        self.fades.finish(now);
         let [eye, forward, right, up] = camera.water_ray_basis();
         let (ellipsoid_m, ellipsoid_g) = self.ellipsoid;
         let camera_uniform = CameraUniform {
@@ -373,7 +461,12 @@ impl TerrainRenderer {
                 label: Some("terrain_encoder"),
             });
 
-        self.encode_main_pass(&mut encoder, camera, has_overlay);
+        let fade_draws = self.fade_draws(camera, now);
+        let entries: Vec<[f32; 4]> = fade_draws.iter().map(|d| d.entry).collect();
+        if !entries.is_empty() {
+            self.queue.write_buffer(&self.fade_buffer, 0, bytemuck::cast_slice(&entries));
+        }
+        self.encode_main_pass(&mut encoder, camera, has_overlay, &fade_draws);
         if has_overlay {
             self.encode_overlay_pass(&mut encoder);
         }
@@ -387,9 +480,43 @@ impl TerrainRenderer {
         Ok(())
     }
 
+    /// このフレームでクロスフェードするメッシュ(視錐台に入るもの)と、割合の表の値。並びが表の番号になる。
+    fn fade_draws(&self, camera: &Camera, now_ms: f64) -> Vec<FadeDraw<'_>> {
+        let mut draws = Vec::new();
+        if !self.fades.is_active() {
+            return draws;
+        }
+        let view_proj = camera.view_proj_matrix();
+        if self.fades.has_incoming() {
+            for (key, mesh) in &self.meshes {
+                let Some(progress) = self.fades.incoming_progress(key, now_ms) else { continue };
+                if !is_outside_frustum(&view_proj, mesh.bounds) {
+                    // x=新しい側が出る割合、y=0(反転なし)。
+                    draws.push(FadeDraw { mesh, entry: [progress, 0.0, 0.0, 0.0] });
+                }
+            }
+        }
+        for outgoing in self.fades.outgoing() {
+            if !is_outside_frustum(&view_proj, outgoing.mesh.bounds) {
+                // 古い側は、新しい側が出ない残りの画素(y=1で反転)。
+                let progress = fade_progress(outgoing.start_ms, now_ms);
+                draws.push(FadeDraw { mesh: &outgoing.mesh, entry: [progress, 1.0, 0.0, 0.0] });
+            }
+        }
+        // 割合の表に収まる分だけ(`MAX_FADE_ENTRIES`。超える分は`has_room`で始めさせないが、念のため)。
+        draws.truncate(MAX_FADE_ENTRIES);
+        draws
+    }
+
     /// メインのパス: 水域→地形→絶対座標の作図・ドーム・マーカー・航跡。MSAAカラーへ描き、
     /// (カメラ固定の作図が無ければ)そのままスーパーサンプリングの解決先へ解決する。
-    fn encode_main_pass(&self, encoder: &mut wgpu::CommandEncoder, camera: &Camera, has_overlay: bool) {
+    fn encode_main_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        camera: &Camera,
+        has_overlay: bool,
+        fade_draws: &[FadeDraw],
+    ) {
         let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("terrain_render_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -432,13 +559,29 @@ impl TerrainRenderer {
         // 視錐台の外のメッシュは描かない(全タイルをチャンクで常駐させているので、画面外の
         // 大量の頂点を毎フレーム処理しないため)。
         let view_proj = camera.view_proj_matrix();
-        for mesh in self.meshes.values() {
-            if is_outside_frustum(&view_proj, mesh.bounds) {
+        let any_incoming = self.fades.has_incoming();
+        for (key, mesh) in &self.meshes {
+            if is_outside_frustum(&view_proj, mesh.bounds)
+                // 出てくる途中のメッシュは、次のクロスフェード用の描画でまとめて描く。
+                || (any_incoming && self.fades.incoming_progress(key, 0.0).is_some())
+            {
                 continue;
             }
             render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
             render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
+        }
+        // クロスフェード中のメッシュ(新旧)。割合の表の何番目かを`first_instance`で渡す(`terrain.wgsl`の`vs_fade`)。
+        if !fade_draws.is_empty() {
+            render_pass.set_pipeline(&self.pipelines.terrain_fade);
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.fade_bind_group, &[]);
+            for (index, draw) in fade_draws.iter().enumerate() {
+                let mesh = draw.mesh;
+                render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..mesh.num_indices, 0, index as u32..index as u32 + 1);
+            }
         }
 
         // 絶対座標の作図。不透明なものは覆域ドームより先に(深度を書く)、半透明なものはドームの後に描く。

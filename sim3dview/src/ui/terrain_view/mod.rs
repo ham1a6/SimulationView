@@ -97,6 +97,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         failed: HashSet::new(),
         lod_pending: false,
         lod_soon_pending: false,
+        fade_frame_pending: false,
     }));
 
     // --- Effect 1: canvasのマウント + ResizeObserver(初回サイズ確定・以後のリサイズ追従) ---

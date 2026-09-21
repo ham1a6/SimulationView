@@ -944,7 +944,7 @@ ENU座標系(東=X, 北=Y, 上=Z)は右手系(East×North=Up)。wgpu/glamの一�
 
 シェーダー(`terrain.wgsl`・`draw.wgsl`)の**全文は`sim3dview/src/terrain/terrain.wgsl`・`draw.wgsl`、uniform・頂点のバイトレイアウトは9.9節**。
 `terrain.wgsl`は、カメラの`view_proj`と陰影のON/OFFフラグをuniform(`@group(0) @binding(0)`)で受け取り、頂点位置を変換して、頂点色に陰影を掛けて出力する。
-エントリポイントは、地形本体(`vs_main`/`fs_main`)・覆域ドーム用の固定半透明(`fs_dome`)・水域(`vs_fullscreen`/`fs_water`)・縮小(`fs_downsample`)。
+エントリポイントは、地形本体(`vs_main`/`fs_main`)・レベル切り替え中のクロスフェード(`vs_fade`/`fs_fade`。6.10節)・覆域ドーム用の固定半透明(`fs_dome`)・水域(`vs_fullscreen`/`fs_water`)・縮小(`fs_downsample`)。
 
 **陰影(ヒルシェード)**: 色が標高のグラデーションだけだと、30mの細かい起伏(尾根・谷・斜面の向き)が見分けにくいため、地形の法線と固定の光源から明るさを求めて頂点色に掛ける
 (表示メニューの「陰影表示」でON/OFF、既定ON)。
@@ -1013,7 +1013,7 @@ flowchart LR
 **3D描画とジオメトリの方針**(定数・頂点構成は9.10節)
 
 - **マーカー**: 画面サイズ固定のピン(縁取り+本体+中の点。選択中は黄色、非選択はオレンジ)。観測点の位置(地表+25m)をアンカーに、画面のpxでずらすビルボード(`DrawVertex::billboard`)なので、拡大・縮小・回転しても同じ大きさで正面を向く。
-  作図(6.11節)と同じ`draw_blend_pipeline`・絶対座標のuniformで、深度テストあり(アンカーの深度をクリップ空間で距離の0.2%手前へ寄せ、粗いLODの地形に埋まって消えないようにしている。遠くの山の陰には隠れる)。
+  作図(6.11節)と同じ`draw_blend_pipeline`・絶対座標のuniformで、深度テストあり(アンカーの深度をクリップ空間で距離の0.2%手前へ寄せ、粗いLODの地形に埋まって消えないようにしている。遠くの山の陰には隠れる。地面すれすれの画素の扱いは6.12節「ビルボードの深度」)。
   以前は地表の四角い枠(`LineList`)だったが、ズームで大きさが変わって位置が分かりにくいため置き換えた
 - **覆域ドーム**: 選択中の観測点についてのみ(複数を重ねると見づらいため)、仰角0°〜87°の38段の緯度リングを、隣接リング×隣接方位ごとの四角形パッチでつないだ半透明の面(ワイヤーフレームではなくSurfaceを持つ多面体)。
   専用の`dome_pipeline`(アルファブレンド有効・深度書き込み無効。地形やマーカーの奥に透けて見えるように)で描く。色は半透明の水色固定(`fs_dome`)
@@ -1063,6 +1063,13 @@ flowchart LR
   観測点・見通し計算・クリック判定・注視点の高さが一致する。細かいレベルに切り替わった直後は、注視点の高さと観測点・覆域を合わせ直す
 - **継ぎ目**: 解像度の違う隣のメッシュ同士は縁のノードの高さが食い違い、隙間から背景の黒が見える。各メッシュの縁から下向きの壁(スカート。深さはレベル0が800m、以降400/250/150/100m)を付けて隠す。
   同じレベルのチャンク同士は縁のノードを共有するので継ぎ目は一致する
+- **レベル切り替えのクロスフェード**: チャンクのレベルが変わる・タイル全体とチャンクが入れ替わるとき、古いメッシュを消して新しいメッシュを出すだけだと、細かさ・陰影の違いが一瞬で切り替わって境目が目立つ。
+  そこで古いメッシュを`FADE_DURATION_MS`(350ms)だけ残し、新旧を**画素ごとの疎密(ディザ)で互いに補う割合**で重ねて描く(`renderer/fade.rs`が状態と割合、`terrain.wgsl`の`vs_fade`/`fs_fade`が描画)。
+  新しい側は「疎密のパターン < 割合」の画素、古い側は残りの画素だけを描く(半透明ではなく`discard`)ので、深度は通常どおり書け、描く順にも依存せず、新旧が同じ画素で深度を奪い合うこともない。割合は時間の経過を`smoothstep`にしたもの。
+  メッシュごとの割合は`FadeTable`(uniform、`vec4`×2048)に入れ、描画側が`draw_indexed`の`first_instance`に表の番号を渡して、頂点シェーダーが`instance_index`で引く(メッシュごとにバッファ・bind groupを作らない)。
+  クロスフェード中のメッシュだけ専用パイプライン(`terrain_fade`)で描く(`discard`を持つシェーダーは早期深度テストが効きにくいので、普段の地形には使わない)。
+  API: `set_mesh_faded`・`remove_mesh_faded`(`set_mesh`・`remove_mesh`はすぐに切り替える。起動時の初回配置・原点変更は後者)。`is_fading`の間は`render_frame`が`requestAnimationFrame`で描き直し続ける(でないと途中の割合で止まる)。
+  途中でさらに差し替わったら、前の古い側は捨てて、いま出ている側が改めて消える側になる(連続して段階的に細かくなるとき、途中の1段は混ざらず切り替わる)。同時に混ぜる数が表の大きさを超える分・原点変更は、混ぜずにすぐ切り替える
 
 **水域レイヤー**(「マスクファイルの水域と地形データの範囲外を水色で表示。標高は海抜0m。WGS84の丸みを考慮し、地形を隠さないように。標高が0m以下の地形の上にも水域が来ないように」との要望で追加。
 以前はNaNセルの水色塗り・背景スカートというメッシュ方式で実装したが、z-fightingや縞状の透けが問題になり撤去した。DEVELOPMENT_HISTORY.md参照):
@@ -1152,7 +1159,14 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 
 **シンボル**(向きつきビルボード): 種別ごとの形を、進行方向が+y・右が+xのポリゴンで持ち、三角形分割(`earcutr`)して縁取り(暗色)→本体(所属の色)の順に積む。
 位置(高度込み)をアンカーに、頂点は画面のpxでずらす**画面サイズ固定のビルボード**(マーカーのピンと同じ仕組み)。さらに`draw.wgsl`の**向きつき**(`params.z=2`)は、アンカーとアンカーから進行方向(ENUの水平)へ200m進んだ点を射影して、
-進行方向が**画面上で実際に指す向き**を求め、その向きへ形を回す。3Dでカメラを回しても、2Dの地図でも、シンボルが実際の進行方向を向く(真上・真下から見て向きが画面に現れないときは画面の上向き)。深度は覆域マーカーと同じ扱い(アンカーの深度を距離の0.2%手前へ寄せる)。
+進行方向が**画面上で実際に指す向き**を求め、その向きへ形を回す。3Dでカメラを回しても、2Dの地図でも、シンボルが実際の進行方向を向く(真上・真下から見て向きが画面に現れないときは画面の上向き)。深度は覆域マーカーと同じ扱い(アンカーの深度を距離の0.2%手前へ寄せる)に、下記「ビルボードの深度」を加える。
+
+**ビルボードの深度**(`draw.wgsl`の`billboard_depth`。シンボル・選択の輪・観測点のピン共通): ビルボードは画面サイズ固定の四角形で、深度はアンカー1点の深度で一定になる。
+そのままだと、地面すれすれ(高度0mの船・地上車両)のシンボルは、画面でアンカーより下の画素(視点に近い地面・水面)が、シンボルより手前の地形・水面になって**下半分が埋まる**(カメラを浅い角度に倒すほど顕著)。
+そこで頂点ごとに、**アンカーを通る局所の水平面**(法線=アンカーと地球の中心を結ぶ向き)のうち、その画素の視線が当たる点の深度までは手前へ寄せる(深度は大きい方=手前を採る)。
+面の上の点`anchor + s·east + r·north`が画面で`offset`だけずれた位置に射影される条件は、同次座標が線形なので`s`・`r`の連立一次方程式(2×2)になり、厳密に解ける(遠近の近似がない)。
+視線が面に当たらない・視点の後ろなら何もしない。寄せる量は深度の1.3倍までに抑える(視線が地面とほぼ水平だと画素のわずかな差で当たる位置が視点側へ大きく動く。寄せ続けると手前の山に隠れるはずのシンボルまで山の上に描かれるため)。
+面より手前の実際の起伏(山)には従来どおり隠れる。
 
 **航跡・高度線・ラベル**
 
@@ -1760,6 +1774,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 | 名前 | シェーダー・エントリ | 頂点バッファ | ブレンド | 深度(書く?, 比較) |
 |---|---|---|---|---|
 | `terrain` | terrain.wgsl `vs_main`/`fs_main` | `TerrainVertex` | REPLACE | (書く, Greater) |
+| `terrain_fade` | terrain.wgsl `vs_fade`/`fs_fade`(`@group(1)`に割合の表`FadeTable`) | `TerrainVertex` | REPLACE | (書く, Greater) |
 | `water` | terrain.wgsl `vs_fullscreen`/`fs_water` | なし(3頂点を`vertex_index`から生成) | REPLACE | (書く, **Always**) |
 | `dome` | terrain.wgsl `vs_main`/`fs_dome` | `TerrainVertex` | ALPHA_BLENDING | (**書かない**, Greater) |
 | `draw_opaque` | draw.wgsl `vs_main`/`fs_main` | `DrawVertex` | ALPHA_BLENDING | (書く, Greater) |
@@ -1771,7 +1786,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 - 縮小サンプラーは`ClampToEdge`・`Linear`/`Linear`/`Nearest`。**wgpu標準の`TextureBlitter`は縮小側がNearest固定なので使わない**(線形フィルタの2×2平均がスーパーサンプリングの要)
 - 水域のbind groupと縮小のbind groupはどちらも`@group(0)`(別パイプラインで別のレイアウト)
 
-**`TerrainRenderer`の公開API**: `new(canvas)`(async)、`set_mesh(key, &mesh)`(同じキーは置換、`indices.is_empty()`なら削除。`bounds`=頂点位置のAABBを保持)、`remove_mesh`、`update_mesh_vertices(key, &vertices)`(頂点数不変で位置だけ更新=原点変更。boundsも更新)、
+**`TerrainRenderer`の公開API**: `new(canvas)`(async)、`set_mesh(key, &mesh)`(同じキーは置換、`indices.is_empty()`なら削除。`bounds`=頂点位置のAABBを保持)、`remove_mesh`、`set_mesh_faded`・`remove_mesh_faded`(クロスフェードで切り替える版)・`is_fading`、`update_mesh_vertices(key, &vertices)`(頂点数不変で位置だけ更新=原点変更。boundsも更新)、
 `update_markers`・`update_coverage_2d`・`update_tracks`(`&[DrawVertex]`)、`update_drawings(&DrawingBatches)`、`update_dome(&[TerrainVertex])`、`set_hillshade(bool)`、`set_ellipsoid_origin(&EnuTransform)`(頂点を作り直す場面で必ず呼ぶ)、
 `resize(w,h)`(0または現状と同じなら何もしない)、`aspect_ratio`・`canvas_height_px`・`canvas_size_px`、`render(&Camera) -> Result<(), String>`。
 
@@ -1779,7 +1794,9 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
   `request_adapter{HighPerformance, compatible_surface}`、`surface.get_default_config`で**sRGB形式があればそれに変更**、`present_mode=Fifo`
 - **`render(camera)`**: `CameraUniform`と作図のuniform3種を`queue.write_buffer`(`view`は`camera.projection_matrix()`=**ビュー行列なし**、`screen`は`screen_matrix`)。`surface.get_current_texture()`の結果:
   `Success`→描画、`Suboptimal`→描画してsubmit後に再設定、**`Timeout|Occluded`→このフレームは描かず`Ok(())`**(エラーではない。タブが隠れている等)、`Outdated`→再設定して`Ok(())`。その他は`Err`。
-  カメラ固定の作図があるときだけパス②を積む(パス①のカラーは`Store`、無ければ`Discard`+その場で解決)
+  カメラ固定の作図があるときだけパス②を積む(パス①のカラーは`Store`、無ければ`Discard`+その場で解決)。
+  最初に終わったクロスフェードを片付け(`Fades::finish`。`render`は`&mut self`)、クロスフェード中のメッシュ(出てくる側=割合`progress`・y=0、消える側=同じ`progress`・y=1で反転)の値を`FadeTable`へ書き、
+  通常のメッシュを描いたあとに`terrain_fade`で描く(視錐台カリングは同じ。表の番号=`first_instance`)
 - **視錐台カリング** `is_outside_frustum(view_proj, aabb)`: AABBの8隅をクリップ座標へ、各隅で6面のビット(`x<-w`,`x>w`,`y<-w`,`y>w`,`z<0`,`z>w`)を立て、**全隅のビットの論理積が非0ならその面の完全に外**(描かない)。保守的判定(見えているものを「外」とすることはない)
 
 **シェーダーの要点**(全文は`terrain.wgsl`・`draw.wgsl`。陰影・水域・MSAAの設計は6.8・6.10節):
@@ -1790,7 +1807,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 - **`vs_fullscreen`**: `vertex_index`(0,1,2)から画面いっぱいの三角形(`x=(i<<1)&2`, `y=i&2`, `clip=(x*2-1, 1-y*2)`)。`fs_downsample`は内部解像度のテクスチャを線形サンプルして縮小
 - **`draw.wgsl`の太い線**: 各頂点は「この端点`position`」と「反対側の端点`aux`」を持つ。クリップ座標→ピクセル座標で向きと法線を求め、`params.y`(±1)×半幅だけ左右へ、端点は線の向きへ半幅延ばす。
   `w < LINE_MIN_W(0.5)`の端点は線分をそこで打ち切る(両端とも後ろなら描かない)。`LINE_DEPTH_BIAS=2e-5`だけ手前に寄せる。頂点生成側(`append_line_strip`)は線分ごとに4頂点`a+, a-, b+(側-1), b-(側+1)`を作り三角形`[a+,a-,b+, b+,a-,b-]`にする
-- **ビルボード**: アンカーを射影し`aux.xy`(px、右・上が正)だけずらす。深度は`c.z*(1+BILLBOARD_DEPTH_BIAS(2e-3))`(距離の0.2%手前)。**向きつき**: アンカーと「アンカーからENU水平方向`(sin h, cos h)`へ200m進んだ点」を射影し、その差の画面上の向きを`forward`とする
+- **ビルボード**: アンカーを射影し`aux.xy`(px、右・上が正)だけずらす。深度は`billboard_depth`で求めた深度(アンカーを通る局所の水平面の、その画素の視線が当たる点の深度まで手前へ。上限は1.3倍。6.12節)に`(1+BILLBOARD_DEPTH_BIAS(2e-3))`(距離の0.2%手前)を掛ける。**向きつき**: アンカーと「アンカーからENU水平方向`(sin h, cos h)`へ200m進んだ点」を射影し、その差の画面上の向きを`forward`とする
   (`right=(forward.y,-forward.x)`、差がほぼ0なら`forward=(0,1)`)。面の陰影: `params.w>0.5`なら`AMBIENT(0.4)+(1-0.4)·max(dot(normalize(aux), light.xyz),0)`をRGBに掛ける
 
 **検証**: naga検証(WGSLがパース・検証を通る)、`CameraUniform`(208バイト)・`DrawUniform`(96バイト)・`TerrainVertex`(28)・`DrawVertex`(56)のオフセットがWGSL構造体と一致(nagaで型サイズを読んで比較)、`supersample_size`((700,500)→(1400,1000)、(0,0)→(2,2)、(3000,100)→(4096,200))、
@@ -1974,8 +1991,9 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 `plan = lod::plan_levels(...)`(優先度順)。`over_budget(uploaded, cost) = uploaded > 0 && (経過 >= 12ms || uploaded + cost > 600,000)`(**1個は必ず進める**。0個だと永遠に終わらない)。
 `request(key, level, chunk)`は`failed`か`loading`に含まれれば何もせず、`loading.len() >= 16`なら後回し(`deferred`)、それ以外は`loading`に入れて取得予定へ積む。
 
-- **`Whole`**: 現在`Chunks`なら`build_whole_tile_mesh`→`set_mesh(WHOLE)`+全チャンクの`remove_mesh`、`resident=Whole`、`terrain.set_whole_tile`
-- **`Chunks(targets)`**: ①`available[c] = best_cached_level(tile, c, targets[c])`。②現在`Whole`なら**全チャンクのレベル1が要る**(足りなければ`request(key,1,0)`して次へ。揃っていれば予算内でチャンクメッシュを作って`set_mesh`+`set_chunk_level`、`remove_mesh(WHOLE)`)。
+- メッシュの差し替えはすべてクロスフェード(`set_mesh_faded`・`remove_mesh_faded`。6.10節)。
+- **`Whole`**: 現在`Chunks`なら`build_whole_tile_mesh`→`set_mesh_faded(WHOLE)`+全チャンクの`remove_mesh_faded`、`resident=Whole`、`terrain.set_whole_tile`
+- **`Chunks(targets)`**: ①`available[c] = best_cached_level(tile, c, targets[c])`。②現在`Whole`なら**全チャンクのレベル1が要る**(足りなければ`request(key,1,0)`して次へ。揃っていれば予算内でチャンクメッシュを作って`set_mesh_faded`+`set_chunk_level`、`remove_mesh_faded(WHOLE)`)。
   ③各チャンクを目標に近づける(`new_level = now==0 ? have : (want < have ? now : max(now, have))`。目標のグリッドが未取得なら`request`。予算内ならメッシュを作って差し替え)。取得済みの範囲でより細かければ先にそこまで上げ、届いたらさらに上げる(レベル1→2→3→4と段階的)
 - 取得予定のキーは`spawn_local`で取得(`chunk=None`→`fetch_tile_level`+`insert_tile_level`、`Some(c)`→`fetch_chunk_grid`+`insert_chunk_grid`)。完了後に`loading`から外し、エラーは`log::warn`+`failed`へ。**デバウンスなしで`schedule_lod_soon`**
 - **`changed`のとき**: `target_up`・`camera.target.z`を新しい地形で更新、`terrain.evict_unused(keep=画面に出しているもの, 300MiB)`、観測点・地表基準の作図・トラックの`rebuild_*`、`render_frame`。最後に、反映を次に回したなら`schedule_lod_soon`、取得の上限で始められなかったなら`schedule_lod`
