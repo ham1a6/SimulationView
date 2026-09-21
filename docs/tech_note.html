@@ -3,6 +3,7 @@
 
 
 
+
 <title>Sim3dViewのしくみ</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,ital@9..144,400,600,700,900,600i&family=Source+Sans+3:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
@@ -379,6 +380,7 @@
       <a href="#drawing">37. 作図: 図形・線</a>
       <a href="#draw-editor">37.7 図形の対話作成</a>
       <a href="#tracks">38. 航跡表示</a>
+      <a href="#tracks-models">38.8 3Dモデル(glTF)</a>
       <div class="part">第10部 まとめ</div>
       <a href="#patterns">39. 設計パターンと落とし穴</a>
       <a href="#next">40. 次に読むと良いもの</a>
@@ -395,7 +397,21 @@
         C++との対比を手すりにしながら読み進めれば、最後には自分のコードが読めるようになるはずです。
       </p>
       <details class="changes" open>
-        <summary>最新版で変わったこと(複数の覆域の同時表示・選択したシンボル中心の断面図・シンボルの埋まり・LODのクロスフェード・覆域の軽量化と平滑化)</summary>
+        <summary>最新版で変わったこと(3Dモデル(glTF)の表示)</summary>
+        <ul>
+          <li><strong>航跡を、glTF(GLB)の3Dモデルで表示できるようになりました。</strong>UnityやBlenderで作ったモデルを、<strong>GLB形式</strong>で書き出して地図に置けます(FBXは対応しないので、Blenderなどでglbへ変換します)。
+            種別(航空機・ヘリ・艦船・車両・ミサイル)ごとに使うモデルのURLを<code>ModelsState</code>へ登録するだけです(38.8節)。</li>
+          <li><strong>表示方式は3つ。</strong>「近くはモデル・遠くはシンボル」(既定。カメラからの距離で入れ替える)、「常にモデル(最小サイズを保証)」(小さくなりすぎるモデルは実寸より大きくして、画面で最低のpxを保つ)、「シンボルのみ」。
+            表示メニューの「3Dモデル...」の移動できるウインドウで切り替えます。</li>
+          <li><strong>向きは、ヘディングに加えてピッチ・ロールも反映します。</strong>ピッチ・ロールはサーバー(C++)が<code>TrackList</code>に載せて送ります(デモは、旋回のバンク・上昇降下・艦船の波の揺れ)。地球の丸みで傾く「地点の上」にも沿います。</li>
+          <li><strong>おまけ機能として、既存の描画から切り離して作りました。</strong>純粋な計算(<code>terrain::models</code>)・GPU(<code>renderer/model_batch.rs</code>+<code>model.wgsl</code>)・組み込み(<code>ui/terrain_view/models.rs</code>)に閉じ、
+            既存のコードへの変更は<code>Track</code>のピッチ・ロール、シンボルを描かない指定、地点の東・北・上を返す関数、描画のフック数か所だけです。テクスチャ・アニメーションは対応しません。</li>
+          <li>サンプルのモデル(航空機・ヘリ・艦船・車両・ミサイルの簡易な低ポリゴン)は、<code>scripts/gen_sample_models.py</code>が標準ライブラリだけで生成します。</li>
+          <li>節番号は変わっていません。新しい内容は38.8節にあり、38.2・38.4節のプロトコルとコードの抜粋にピッチ・ロールを足しています。</li>
+        </ul>
+      </details>
+      <details class="changes">
+        <summary>1つ前の版で変わったこと(複数の覆域の同時表示・選択したシンボル中心の断面図・シンボルの埋まり・LODのクロスフェード・覆域の軽量化と平滑化)</summary>
         <ul>
           <li><strong>複数の覆域を、同時に表示できるようになりました。</strong>見通し範囲タブの「すべての観測点の覆域を同時に表示」をONにすると、すべての観測点の3Dドーム・2D領域が同時に出ます。観測点ごとに色が違い、計算・キャッシュ・頂点も観測点ごとに独立です(36.7節)。</li>
           <li><strong>断面図が、選択したシンボルを中心に表示されるようになりました。</strong>地図でシンボルを選択すると、その位置を中心(距離0)に、方位角の直線の両側の断面を出します。何も選択していなければ基準位置が中心です。シンボルの高度の位置に印が付き、「進行方向」ボタンで方位角をシンボルの向きに合わせられます。シンボルは毎秒何度も動くので、断面の再計算は約500m動いたときだけです(27.3節)。</li>
@@ -412,7 +428,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>1つ前の版で変わったこと(ライブラリの内部整理・単体テスト・OSSへの置き換え)</summary>
+        <summary>2つ前の版で変わったこと(ライブラリの内部整理・単体テスト・OSSへの置き換え)</summary>
         <ul>
           <li><strong>ライブラリのソースを、責務ごとに分けました。</strong>1,100行を超えていた描画(<code>renderer.rs</code>)と、1,400行を超えていた地図コンポーネント(<code>terrain_view.rs</code>)を、それぞれディレクトリにして小さなファイルに分割し、座標変換・標高・取得・メッシュ・LODの置き場所も整理しました。<strong>見た目や動きは変わりません</strong>(6.6節)。</li>
           <li><strong>単体テストが37件から104件になり、<code>cargo test -p sim3dview</code>がブラウザなしで動きます。</strong>合成した地形で、丸みを含む標高・LODの予算・反転Z・電波の地平線・視錐台カリングなどを検めます。WGSLシェーダーも<code>naga</code>で検証します(6.6節)。</li>
@@ -423,7 +439,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>2つ前の版で変わったこと(図形の対話作成・動かせるウインドウ・右クリックメニュー・VABのページ数)</summary>
+        <summary>3つ前の版で変わったこと(図形の対話作成・動かせるウインドウ・右クリックメニュー・VABのページ数)</summary>
         <ul>
           <li><strong>UIから図形を作れるようになりました。</strong>作図ウインドウでツール(円・矩形・多角形・扇形・折れ線・球・直方体・円柱・円錐)を選び、<strong>地図をクリックして置きます</strong>。カーソルの動きに合わせて作成中の図形が追従し、置いた図形は一覧から選んで<strong>数値で編集</strong>できます(位置・大きさ・高度・色・名前)。作った図形は<strong>ブラウザに保存</strong>され、リロードしても残ります(37.7節)。</li>
           <li><strong>フローティングウインドウが、背後を操作できる「ウインドウ」と、ドラッグ移動に対応しました。</strong><code>FloatingPanel</code>に<code>modal</code>・<code>draggable</code>・<code>initial_position</code>を足し、既定は従来どおりのモーダルです。作図エディタはこれで、地図の上に浮かせています(28.5節)。</li>
@@ -433,7 +449,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>3つ前の版で変わったこと(航跡表示・作図・覆域の見た目)</summary>
+        <summary>4つ前の版で変わったこと(航跡表示・作図・覆域の見た目)</summary>
         <ul>
           <li><strong>シミュレーションから受け取った位置を、航空機・艦船・車両などのシンボルで表示できるようになりました。</strong>向きつきのアイコン・ラベル(名前・高度・速度)・航跡(軌跡)・高度線までが1セットです。新しい通信メッセージ<code>TrackList</code>(0x07)が増え、sim_serverにはデモのシナリオ(7つのトラック)が入りました(38節)。</li>
           <li><strong>ライブラリに「作図」機能が加わりました。</strong>円・矩形・多角形・扇形・球・直方体・円柱・円錐・折れ線を、塗り・枠線・不透明度つきで描けます。置き場所は<strong>絶対座標(緯度経度)・カメラからの相対・画面のピクセル</strong>の3通りから選べます。カメラに固定したものは、地形とは別の2つ目の描画パスで描きます(37節)。</li>
@@ -443,7 +459,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>4つ前の版で変わったこと(地形の表示の高速化)</summary>
+        <summary>5つ前の版で変わったこと(地形の表示の高速化)</summary>
         <ul>
           <li><strong>地形が、地図の品質を変えずに速く出るようになりました。</strong>ページを開いてから俯瞰の見た目が整うまでが、<strong>約6.8秒→約2.9秒</strong>(同じPC上のサーバー、実測)。全タイルのL1の取得が終わるのは5.3秒→2.2秒です(14.4・14.9節)。</li>
           <li>原因は通信ではなく<strong>スケジューリング</strong>でした。1件の取得は中央値11msなのに、取得の補充が150msのデバウンス経由(16件が約0.19秒周期)、メッシュ反映が「1回60万頂点+150ms待ち」で、別々の下限を作っていました。両方を直し、反映の区切りは頂点数から<strong>時間の目安(12ms)</strong>にしました。</li>
@@ -452,7 +468,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>5つ前の版で変わったこと(画面部品カタログ・sampleの全処理)</summary>
+        <summary>6つ前の版で変わったこと(画面部品カタログ・sampleの全処理)</summary>
         <ul>
           <li><strong>第7部「画面部品カタログ」(23〜30節)を追加しました。</strong>sampleが実装している画面の部品を、<strong>実機の画像つきでもれなく</strong>説明しています。メニューバー、シミュレーションステータスパネル、VABパネル、メインパネル(3D/2D・回転・中心点・観測点・陰影)、右パネル(各種情報・断面図・見通し範囲)、原点設定・覆域高度設定のダイアログ、地図クリックでの原点指定、リサイザーです。</li>
           <li>各部品に、「画面のどこか(番号つきの画像)」「置き方」「足し方のコード」「必要なcontext」を付けました。画像はクリックで拡大できます。</li>
@@ -462,7 +478,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>6つ前の版で変わったこと(陰影・水域レイヤー・LOD下限)</summary>
+        <summary>7つ前の版で変わったこと(陰影・水域レイヤー・LOD下限)</summary>
         <ul>
           <li><strong>地形に陰影(ヒルシェード)が付きました。</strong>標高の色だけでは見分けにくかった30mの尾根や谷が、はっきり見えます。表示メニューの「陰影表示」でON/OFFできます(11節。<code>HillshadeState</code>は18・19節)。</li>
           <li><strong>水域レイヤーが加わりました。</strong>いったん撤去した水色の海を、方式を変えて戻しました。メッシュではなく、<strong>WGS84楕円体(海抜0m)と視線の交点をシェーダーで直接求める</strong>ので、地球の丸みが厳密で、範囲の限りもありません(11節)。水面越しに遠くの陸地の裏側が透ける問題は、水域が<strong>深度を書く</strong>ことで直しました。</li>
@@ -473,7 +489,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>7つ前の版(地形LODの導入)で変わったこと</summary>
+        <summary>8つ前の版(地形LODの導入)で変わったこと</summary>
         <ul>
           <li><strong>地図の描画が「地形LOD」になりました。</strong>1枚の2048×2048メッシュをやめ、1度タイル+6×6チャンクの多段解像度にして、拡大すると<strong>元データの30m</strong>まで細かくなります(9・14節)。</li>
           <li>前処理・配信・読み込みが作り直されました。タイルごとにストリーミング処理し、サーバーは<strong>HTTP Range</strong>で必要なチャンクだけ返します(9・7・20節)。</li>
@@ -6310,9 +6326,10 @@ sequenceDiagram
     double lat_deg, lon_deg, alt_m;
     uint8_t  alt_ref;     <span class="cm">// 0=海抜 1=地表から</span>
     double heading_deg, speed_mps;
+    double pitch_deg, roll_deg;
     <span class="ty">MSGPACK_DEFINE</span>(id, kind, affiliation, label,
         lat_deg, lon_deg, alt_m, alt_ref,
-        heading_deg, speed_mps);
+        heading_deg, speed_mps, pitch_deg, roll_deg);
 };
 <span class="kw">struct</span> <span class="ty">TrackList</span> {
     double t;
@@ -6334,6 +6351,8 @@ sequenceDiagram
     <span class="kw">pub</span> alt_ref: u8,
     <span class="kw">pub</span> heading_deg: f64,
     <span class="kw">pub</span> speed_mps: f64,
+    #[serde(default)] <span class="kw">pub</span> pitch_deg: f64,
+    #[serde(default)] <span class="kw">pub</span> roll_deg: f64,
 }
 #[derive(<span class="ty">Deserialize</span>)]
 <span class="kw">pub</span> <span class="kw">struct</span> <span class="ty">TrackList</span> {
@@ -6352,6 +6371,7 @@ sequenceDiagram
           <tr><td><code>lat_deg</code> / <code>lon_deg</code> / <code>alt_m</code></td><td>位置。<code>alt_m</code>の基準は<code>alt_ref</code>で決まる</td></tr>
           <tr><td><code>alt_ref</code></td><td>0=<code>alt_m</code>は海抜 / 1=地表からの高さ。<strong>サーバーが地形の高さを持たない</strong>車両・低空のヘリは1にして、フロントが地形の高さを足して置く</td></tr>
           <tr><td><code>heading_deg</code> / <code>speed_mps</code></td><td>進行方向(北から時計回り)と対地速度。シンボルの向きとラベルに使う</td></tr>
+          <tr><td><code>pitch_deg</code> / <code>roll_deg</code></td><td>ピッチ(機首上げが正)とロール(右翼が下がるのが正)。<strong>3Dモデル(38.8)の向きにだけ使う</strong>(シンボルは使わない)。古いサーバーが送らなければ0(<code>#[serde(default)]</code>)</td></tr>
         </tbody>
       </table>
       </div>
@@ -6412,6 +6432,8 @@ track.speed_mps   = std::hypot(velocity_east, velocity_north);</pre>
         altitude: <span class="kw">if</span> t.alt_ref == 1 { <span class="ty">Altitude</span>::<span class="ty">AboveGround</span>(t.alt_m) } <span class="kw">else</span> { <span class="ty">Altitude</span>::<span class="ty">Msl</span>(t.alt_m) },
         heading_deg: t.heading_deg,
         speed_mps: t.speed_mps,
+        pitch_deg: t.pitch_deg,
+        roll_deg: t.roll_deg,
     }
 }
 
@@ -6500,6 +6522,77 @@ track.speed_mps   = std::hypot(velocity_east, velocity_north);</pre>
         <p>
           トラックが密集すると、シンボルやラベルが重なります(重なりの回避は未実装)。ラベルは画面へ射影した位置に置くだけで、地形の陰に隠れても消えません
           (シンボルは深度テストで隠れますが、ラベルは隠れません)。トラックの数が数百を超える使い方では、ラベルのHTML要素の数が先に問題になります。
+        </p>
+      </div>
+
+      <h3 id="tracks-models">38.8 3Dモデル(glTF)で描く(おまけ機能)</h3>
+      <p>
+        シンボルの代わりに、3Dモデルを地図に置く機能です。<strong>C++でいえば、ゲームエンジンに「メッシュを読み込んで、位置と向きを与えて描く」処理を足した</strong>ようなもので、
+        地形・作図・航跡の描画とは責任を分けてあります。使うのは<strong>glTF 2.0のGLB</strong>(1ファイルに形・材質・バッファを詰めたバイナリ)。Unityの標準はFBXですが、FBXは独自形式で
+        WebAssemblyから読みにくいので、Blenderなどで<strong>GLBへ書き出して</strong>使います。Rustの<code>gltf</code>クレートが読み込みを担当します。
+      </p>
+
+      <h4>責任の分け方</h4>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>担当</th><th>場所</th><th>役目</th></tr></thead>
+        <tbody>
+          <tr><td>アプリ</td><td><code>sample/sim_frontend</code>(<code>app.rs</code>ほか)</td><td>種別→モデルのURLの登録(<code>ModelsState::set_source</code>)、GLBの配信、設定ウインドウを開くメニュー。サーバーはピッチ・ロールを送る</td></tr>
+          <tr><td>純粋な計算</td><td><code>terrain::models</code></td><td>GLB→頂点、位置・向き・大きさの行列、モデルにするかシンボルにするかの判定、設定(<code>ModelsState</code>)</td></tr>
+          <tr><td>GPU</td><td><code>renderer/model_batch.rs</code>+<code>model.wgsl</code></td><td>モデルごとのバッファ、インスタンス描画、パイプライン</td></tr>
+          <tr><td>組み込み</td><td><code>ui/terrain_view/models.rs</code></td><td>ファイルの取得・GPUへの登録、毎フレームの判定、シンボルとの入れ替え</td></tr>
+        </tbody>
+      </table>
+      </div>
+
+      <h4>GLBを読む</h4>
+      <p>
+        <code>import_glb</code>は、GLBの三角形メッシュの<strong>位置・法線・頂点色・材質の基本色</strong>を取り出し、シーンの全ノードの変換(親から子へ掛けた行列)を頂点へ<strong>焼き込んで</strong>、1つのメッシュにまとめます。
+        <strong>テクスチャ・アニメーション・スキンは対応しません</strong>(画像のデコードが要らないので、<code>gltf</code>クレートは<code>image</code>を引かない設定で使います)。
+        座標は、glTFの規約(+Y上・+Z前)から、ライブラリの<strong>機体座標</strong>(x=右・y=前・z=上。東・北・上と同じ右手系)へ回します。
+      </p>
+
+      <h4>向き: ヘディング・ピッチ・ロール</h4>
+      <pre class="code"><span class="fname">terrain/models/placement.rs(抜粋)</span><span class="cm">// 機体座標→ENU座標の回転。frameは、その地点の東・北・上(EnuTransform::local_frame)</span>
+<span class="kw">pub</span>(<span class="kw">crate</span>) <span class="kw">fn</span> attitude(frame: [[f32; 3]; 3], heading_deg: f32, pitch_deg: f32, roll_deg: f32) -&gt; <span class="ty">Mat3</span> {
+    <span class="kw">let</span> local = <span class="ty">Mat3</span>::from_rotation_z(-heading_deg.to_radians())   <span class="cm">// ヘディング: 北から時計回り</span>
+        * <span class="ty">Mat3</span>::from_rotation_x(pitch_deg.to_radians())            <span class="cm">// ピッチ: 機首上げが正</span>
+        * <span class="ty">Mat3</span>::from_rotation_y(roll_deg.to_radians());           <span class="cm">// ロール: 右翼が下がるのが正</span>
+    <span class="ty">Mat3</span>::from_cols(frame[0].into(), frame[1].into(), frame[2].into()) * local
+}</pre>
+      <p>
+        ポイントは<code>frame</code>です。地球は丸いので、原点から離れた地点の「上」は、原点の「上」(0,0,1)から傾きます(原点から1,000kmで約9度)。
+        そこで、その地点の東・北・上をECEFから求めて、原点基準のENUの成分で持ちます(<code>EnuTransform::local_frame</code>)。地平線近くの遠い機体も、その場所の水平に沿って傾きます。
+      </p>
+
+      <h4>近くはモデル・遠くはシンボル/最小サイズの保証</h4>
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>方式</th><th>動き</th></tr></thead>
+        <tbody>
+          <tr><td>近くはモデル・遠くはシンボル(既定)</td><td>カメラからの奥行きが<code>switch_distance_m</code>(既定1,500m)以内はモデル(実寸)、遠いとシンボル。境目でちらつかないよう、モデル表示中は1.1倍まで切り替えない(ヒステリシス)</td></tr>
+          <tr><td>常にモデル(最小サイズを保証)</td><td>モデルの外接球の直径が、画面で<code>min_screen_px</code>(既定32px)に満たなければ、その大きさになる倍率まで実寸より大きくする(上限10万倍)</td></tr>
+          <tr><td>シンボルのみ</td><td>従来どおり</td></tr>
+        </tbody>
+      </table>
+      </div>
+      <p>
+        画面での大きさは<code>1メートルあたりのpx = 画面の高さ / (2 × 奥行き × tan(視野角/2))</code>で見積もります。2D(正射影)は、視野角50度の透視投影で同じ縦幅が映る距離に換算するので、同じ設定値がそのまま使えます。
+        「シンボルへ切り替える」ので、シンボルのジオメトリ(受信のたびに作る)から、モデルで描いているトラックを外す必要があります。どちらで描くかは<strong>カメラで決まって毎フレーム変わる</strong>ので、
+        <code>render_frame</code>の中で毎フレーム判定し、<strong>モデルで描くトラックの集合が変わったときだけ</strong>シンボルを作り直します。
+      </p>
+
+      <h4>描く</h4>
+      <p>
+        モデルは不透明で、深度を書き、作図の不透明な図形と同じ位置(覆域ドームより前)で描きます。頂点バッファが2本(頂点・インスタンス)なので、パイプラインは<code>model_batch</code>の中で作りました。
+        同じモデルは、機数ぶんを<strong>インスタンス描画</strong>(1回の<code>draw_indexed</code>)で描き、インスタンスごとの違い(変換行列・所属の色)は<code>ModelInstance</code>で渡します。
+        陰影は頂点ごとのランバート(環境光+光源1つ)、所属の色を35%混ぜます。
+      </p>
+      <div class="callout warn">
+        <div class="label">⚠️ いまの制約</div>
+        <p>
+          テクスチャとアニメーション(プロペラ・脚)は未対応です。切替距離を遠くしすぎると、モデルが数pxでシンボルも出ない状態になるので、モデルの大きさに合わせて調整します(実寸の戦闘機が約30pxに見えるのはフルHDで約500m)。
+          カメラは地表から100mまでしか近づけないので、実寸のモデルが大きく見えるのは大きな画面のときです。選択の当たり判定は、シンボルと同じ位置の半径20pxです。
         </p>
       </div>
     </section>
@@ -6709,7 +6802,7 @@ cd sample/sim_frontend &amp;&amp; trunk serve        # 開発サーバー(ポー
     </section>
 
     <footer>
-      Sim3dView 技術解説ノート — 2026-09-21時点のコード(コミット 8f17559)に基づく。
+      Sim3dView 技術解説ノート — 2026-09-21時点のコード(コミット 809f636。ノートはVersion 16)に基づく。
       BASIC_DESIGN.md / DETAILED_DESIGN.md と合わせて読むことを想定しています。
     </footer>
   </main>
@@ -6734,6 +6827,7 @@ cd sample/sim_frontend &amp;&amp; trunk serve        # 開発サーバー(ポー
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') lb.hidden = true; });
 })();
 </script>
+
 
 <!--claude-mermaid-runtime-begin:3477-->
 <style>.mermaid-diagram{margin-block:4px}.mermaid-diagram svg{display:block;margin:0 auto;max-width:100%;height:auto}</style>
