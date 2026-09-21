@@ -145,9 +145,13 @@ const COVERAGE_AREA_ALPHA: f32 = 0.32;
 /// 領域の輪郭が一目で分かるようにする(`los_view.rs`の2D極座標図が塗り+輪郭線の両方を持つのと同じ考え方)。
 const COVERAGE_OUTLINE_COLOR: [f32; 4] = [0.75, 1.0, 0.4, 1.0];
 const COVERAGE_OUTLINE_WIDTH_PX: f32 = 2.5;
-/// 2Dの覆域の境界の平滑化(前後この方位ずつ。ドームより弱く、境界の形が残る程度)。
-const COVERAGE_SMOOTH_MEDIAN_HALF: usize = 1;
-const COVERAGE_SMOOTH_MEAN_HALF: usize = 2;
+/// 2Dの覆域の境界の平滑化。ドームと同じ角度の幅(ドームは4mil刻みでメディアン±1・平均±3を2回、ここは2mil刻みなので
+/// メディアン±2・平均±6を2回。約±0.45度のメディアンと、約±0.68度の平均を2回)にする。
+/// 低い高度では、島や岩の陰が細い放射状の楔になり、境界がギザギザに見えるため。
+/// 遮蔽されない方角(最大観測範囲)の半径は変わらず、遮蔽の境目が数百m〜1kmの幅でなだらかになるだけ。
+const COVERAGE_SMOOTH_MEDIAN_HALF: usize = 2;
+const COVERAGE_SMOOTH_MEAN_HALF: usize = 6;
+const COVERAGE_SMOOTH_MEAN_PASSES: usize = 2;
 
 /// 円環上の値(方位角ごとの半径など)の、前後`half`個ずつのメディアン(外れ値の除去。段差の位置は保つ)。端は反対側へつながる。
 fn median_circular(values: &[f64], half: usize) -> Vec<f64> {
@@ -427,7 +431,7 @@ pub fn dome_geometry(
 /// 地形の起伏に埋まって、塗りが場所によって欠けて不均一になる。
 ///
 /// `points`は`start_coverage_computation`の結果(全方位角の水平距離)。方位角方向に平滑化
-/// (`COVERAGE_SMOOTH_*`。1方位だけの外れ値による細い切れ込み・突起を除く)したものを境界とする、
+/// (`COVERAGE_SMOOTH_*`。細い切れ込み・突起を除き、境界をなだらかにする)したものを境界とする、
 /// 観測点を中心とした星形(star-shaped)領域なので、観測点から境界上の隣接2点への三角形
 /// (ファン)を並べるだけで自己交差のない面になる(3Dの覆域ドームのアペックス付近のような、
 /// 視点回転時の半透明合成チカチカ対策の間引きは、2Dは常に真上固定視点で回転しないため不要)。
@@ -445,7 +449,7 @@ pub fn coverage_2d_geometry(
     let radar_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
     let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
     let ranges: Vec<f64> = points.iter().map(|p| p.range_m).collect();
-    let ranges = smooth_circular(&ranges, COVERAGE_SMOOTH_MEDIAN_HALF, COVERAGE_SMOOTH_MEAN_HALF, 1);
+    let ranges = smooth_circular(&ranges, COVERAGE_SMOOTH_MEDIAN_HALF, COVERAGE_SMOOTH_MEAN_HALF, COVERAGE_SMOOTH_MEAN_PASSES);
 
     // 地表面に沿わせるため、各点(観測点自身も含む)は「その地点の地表標高+バイアス」の
     // 高さに置く(覆域そのものの高度target_altitude_mではない。あくまで地図上に貼る
@@ -524,6 +528,45 @@ mod tests {
         assert!(max_bend(&two) < 0.5 * max_bend(&one), "{} vs {}", max_bend(&two), max_bend(&one));
         // 平らな部分は変わらない。
         assert!((two[50] - 2_000.0).abs() < 1e-9 && (two[150] - 10_000.0).abs() < 1e-9);
+    }
+
+    /// 2D覆域の境界の平滑化: 低い高度の、細い楔・切れ込み(数方位〜十数方位の幅)はなだらかになり、
+    /// 広い遮蔽(数百方位)は残り、遮蔽のない方角の半径は変わらない。
+    #[test]
+    fn coverage_boundary_smoothing_rounds_narrow_wedges_but_keeps_wide_shadows() {
+        let n = 3200;
+        let smooth = |v: &[f64]| {
+            smooth_circular(v, COVERAGE_SMOOTH_MEDIAN_HALF, COVERAGE_SMOOTH_MEAN_HALF, COVERAGE_SMOOTH_MEAN_PASSES)
+        };
+        let full = 30_000.0;
+        // 細い切れ込み(2方位=約0.23度)と、細い突起(2方位)は消える(メディアンの窓(5方位)の半分未満)。
+        let mut v = vec![full; n];
+        for x in v.iter_mut().skip(100).take(2) {
+            *x = 2_000.0;
+        }
+        let mut w = vec![2_000.0; n];
+        for x in w.iter_mut().skip(500).take(2) {
+            *x = full;
+        }
+        assert!(smooth(&v).iter().all(|&r| (r - full).abs() < 1.0));
+        assert!(smooth(&w).iter().all(|&r| (r - 2_000.0).abs() < 1.0));
+        // 中くらいの楔(24方位=約2.7度)は、深さが残りつつ、縁が段差でなくなだらかな傾きになる。
+        let mut m = vec![full; n];
+        for x in m.iter_mut().skip(1000).take(24) {
+            *x = 2_000.0;
+        }
+        let s = smooth(&m);
+        assert!(s[1012] < 0.5 * full, "楔の中心は深いまま: {}", s[1012]);
+        let max_step = s.windows(2).map(|p| (p[1] - p[0]).abs()).fold(0.0_f64, f64::max);
+        assert!(max_step < 0.09 * (full - 2_000.0), "縁はなだらか: {max_step}");
+        // 広い遮蔽(400方位)は、中心付近で元の深さのまま。
+        let mut b = vec![full; n];
+        for x in b.iter_mut().skip(2000).take(400) {
+            *x = 2_000.0;
+        }
+        assert!((smooth(&b)[2200] - 2_000.0).abs() < 1.0);
+        // 遮蔽のない一様な半径は変わらない。
+        assert!(smooth(&vec![full; n]).iter().all(|&r| (r - full).abs() < 1e-9));
     }
 
     #[test]
