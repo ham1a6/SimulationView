@@ -128,6 +128,12 @@ pub struct Track {
     pub heading_deg: f64,
     /// 対地速度(m/s)
     pub speed_mps: f64,
+    /// ピッチ(度、機首上げが正)。3Dモデル表示の向きに使う。古いサーバー(このフィールドを送らない)なら0
+    #[serde(default)]
+    pub pitch_deg: f64,
+    /// ロール(度、右翼が下がる向きが正)。同上
+    #[serde(default)]
+    pub roll_deg: f64,
 }
 
 /// 航跡の一覧(全トラックの最新状態。トラックが消えたら次の一覧から抜ける)。

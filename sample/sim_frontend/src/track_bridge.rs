@@ -2,8 +2,8 @@
 //! sim3dviewライブラリの`terrain::tracks::TracksState`へ反映する。ライブラリを自分のシミュレータへつなぐときの
 //! 実装例(受信した値を`Track`へ変換して`TracksState::set`へ渡すだけ)。
 //!
-//! 位置・方位の単位は最初から同じ(緯度経度は度、方位は北から時計回りの度、速度はm/s)なので、変換は
-//! 種別・所属・高度基準の数値をライブラリの列挙型へ読み替えるだけ。
+//! 位置・方位の単位は最初から同じ(緯度経度は度、方位は北から時計回りの度、速度はm/s、ピッチ・ロールは度)なので、
+//! 変換は種別・所属・高度基準の数値をライブラリの列挙型へ読み替えるだけ。
 
 use leptos::prelude::*;
 
@@ -37,6 +37,8 @@ fn to_library_track(t: &protocol::Track) -> Track {
         altitude: if t.alt_ref == 1 { Altitude::AboveGround(t.alt_m) } else { Altitude::Msl(t.alt_m) },
         heading_deg: t.heading_deg,
         speed_mps: t.speed_mps,
+        pitch_deg: t.pitch_deg,
+        roll_deg: t.roll_deg,
     }
 }
 

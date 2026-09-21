@@ -15,6 +15,7 @@ use crate::terrain::hillshade::HillshadeState;
 use crate::terrain::renderer::TerrainRenderer;
 use crate::terrain::tracks::{TrackId, TrackLabel, TracksState};
 use super::coverage::CoverageState;
+use super::models::ModelsView;
 
 pub(super) struct ViewState {
     pub(super) renderer: Option<TerrainRenderer>,
@@ -38,6 +39,8 @@ pub(super) struct ViewState {
     pub(super) drawings: DrawingState,
     /// 航跡(トラック)の一覧・表示設定(`terrain::tracks`)。
     pub(super) tracks: TracksState,
+    /// 3Dモデル(`terrain::models`)の設定・取得状況・配置。
+    pub(super) models: ModelsView,
     /// 航跡のラベルを置くHTML要素(canvasに重ねる層)と、いま置いているラベル。
     pub(super) labels_ref: NodeRef<leptos::html::Div>,
     pub(super) labels: Vec<LabelView>,

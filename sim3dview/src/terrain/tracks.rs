@@ -14,7 +14,7 @@
 //! - **選択**: 地図上のシンボルをクリックすると`TracksState::selected`にそのIDが入り、シンボルに強調の輪が付く
 //!   (`TerrainView`が当たり判定`pick_track`を行う)。詳細の表示は呼び出し側(アプリ)が`selected_track`を読んで行う。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use leptos::prelude::*;
 
@@ -25,8 +25,8 @@ use super::render_bias::TRACK_M;
 
 pub type TrackId = u64;
 
-/// シンボルの種別(形が変わる)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// シンボルの種別(形が変わる)。3Dモデル(`terrain::models`)を割り当てる単位でもある。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SymbolKind {
     /// 種別不明(ひし形)。
     Unknown,
@@ -104,6 +104,10 @@ pub struct Track {
     pub heading_deg: f64,
     /// 対地速度(m/s。ラベルに表示する)。
     pub speed_mps: f64,
+    /// ピッチ(度、機首上げが正)。3Dモデル(`terrain::models`)の向きにだけ使う(シンボルは使わない)。
+    pub pitch_deg: f64,
+    /// ロール(度、右翼が下がる向きが正)。3Dモデルの向きにだけ使う。
+    pub roll_deg: f64,
 }
 
 /// トラックと、その航跡(過去の位置。現在位置は含まない)。
@@ -333,12 +337,14 @@ pub struct TrackLabel {
 
 /// 表示するもの(`TracksState`の設定+2D/3D)。
 #[derive(Debug, Clone, Copy)]
-pub struct TrackOptions {
+pub struct TrackOptions<'a> {
     /// 強調の輪を付けるトラック。
     pub selected: Option<TrackId>,
     pub trails: bool,
     /// 高度線(3Dのみ。2D=真上から見た地図では縦の線が点になるので出さない)。
     pub altitude_lines: bool,
+    /// シンボルを描かないトラック(3Dモデル`terrain::models`で描いているもの)。航跡・高度線・ラベル・選択の輪は描く。`None`なら全部描く。
+    pub symbols_hidden: Option<&'a HashSet<TrackId>>,
 }
 
 /// `build_track_geometry`の結果。
@@ -397,7 +403,7 @@ fn label_detail(track: &Track) -> String {
 }
 
 /// トラック一覧から、描画用の頂点とラベルを作る。
-pub fn build_track_geometry(ctx: &BuildContext, entries: &[TrackEntry], options: TrackOptions) -> TrackGeometry {
+pub fn build_track_geometry(ctx: &BuildContext, entries: &[TrackEntry], options: TrackOptions<'_>) -> TrackGeometry {
     let mut geometry = TrackGeometry::default();
     // 種別ごとの三角形(同じ形を何度も三角形分割しないよう、種別ごとに1回だけ作る)。
     let mut glyphs: HashMap<u8, Vec<[f64; 2]>> = HashMap::new();
@@ -438,14 +444,16 @@ pub fn build_track_geometry(ctx: &BuildContext, entries: &[TrackEntry], options:
             push_ring(out, anchor, SELECT_RING_INNER_PX + SELECT_RING_BAND_PX, SELECT_RING_INNER_PX, [1.0, 1.0, 1.0, 1.0]);
         }
 
-        // シンボル: 縁取り(暗色、少し大きく)→本体。
-        let triangles = glyphs.entry(track.kind as u8).or_insert_with(|| {
-            glyph(track.kind).iter().flat_map(|polygon| triangulate(polygon)).collect()
-        });
-        let heading = track.heading_deg.to_radians() as f32;
-        let half = SYMBOL_SIZE_PX * 0.5;
-        push_symbol(out, anchor, heading, triangles, half * SYMBOL_OUTLINE_SCALE, SYMBOL_OUTLINE_COLOR);
-        push_symbol(out, anchor, heading, triangles, half, color);
+        // シンボル: 縁取り(暗色、少し大きく)→本体。3Dモデルで描いているトラックは描かない。
+        if !options.symbols_hidden.is_some_and(|hidden| hidden.contains(&track.id)) {
+            let triangles = glyphs.entry(track.kind as u8).or_insert_with(|| {
+                glyph(track.kind).iter().flat_map(|polygon| triangulate(polygon)).collect()
+            });
+            let heading = track.heading_deg.to_radians() as f32;
+            let half = SYMBOL_SIZE_PX * 0.5;
+            push_symbol(out, anchor, heading, triangles, half * SYMBOL_OUTLINE_SCALE, SYMBOL_OUTLINE_COLOR);
+            push_symbol(out, anchor, heading, triangles, half, color);
+        }
 
         geometry.labels.push(TrackLabel {
             id: track.id,
@@ -479,10 +487,12 @@ mod tests {
             altitude,
             heading_deg: 90.0,
             speed_mps: 200.0,
+            pitch_deg: 0.0,
+            roll_deg: 0.0,
         }
     }
 
-    fn build(entries: &[TrackEntry], options: TrackOptions) -> TrackGeometry {
+    fn build(entries: &[TrackEntry], options: TrackOptions<'_>) -> TrackGeometry {
         let transform = EnuTransform::new(&ORIGIN, &Ellipsoid::WGS84);
         let ground = |_: f64, _: f64| 100.0;
         let ctx = BuildContext { mesh_transform: &transform, ellipsoid: &Ellipsoid::WGS84, ground: &ground, viewport_px: (800.0, 600.0) };
@@ -528,7 +538,7 @@ mod tests {
     #[test]
     fn symbol_is_oriented_billboard_with_heading_and_outline() {
         let entries = [TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail: vec![] }];
-        let geometry = build(&entries, TrackOptions { selected: None, trails: false, altitude_lines: false });
+        let geometry = build(&entries, TrackOptions { selected: None, trails: false, altitude_lines: false, symbols_hidden: None });
         assert_eq!(geometry.labels.len(), 1);
         let v = &geometry.vertices;
         assert!(!v.is_empty() && v.len() % 6 == 0, "縁取りと本体で同じ数の三角形");
@@ -545,11 +555,31 @@ mod tests {
     }
 
     #[test]
+    fn hidden_symbols_are_skipped_but_trails_and_labels_stay() {
+        let entries = [
+            TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail: vec![(35.3, 138.8, Altitude::Msl(3000.0))] },
+            TrackEntry { track: track(2, 35.5, 139.0, Altitude::Msl(3000.0)), trail: vec![] },
+        ];
+        let options = |hidden| TrackOptions { selected: None, trails: true, altitude_lines: false, symbols_hidden: hidden };
+        let all = build(&entries, options(None));
+        let hidden = HashSet::from([1]);
+        let some = build(&entries, options(Some(&hidden)));
+        let symbol_vertices = |g: &TrackGeometry| g.vertices.iter().filter(|v| v.params[2] == 2.0).count();
+        assert_eq!(symbol_vertices(&all), 2 * symbol_vertices(&some), "トラック1のシンボル(2つあるうちの1つ)だけが消える");
+        assert_eq!(some.labels.len(), 2, "ラベルは残る");
+        assert_eq!(
+            all.vertices.iter().filter(|v| v.params[0] == TRAIL_WIDTH_PX).count(),
+            some.vertices.iter().filter(|v| v.params[0] == TRAIL_WIDTH_PX).count(),
+            "航跡(軌跡)は残る"
+        );
+    }
+
+    #[test]
     fn altitude_line_only_for_aircraft_high_above_ground() {
         let high = TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail: vec![] };
         let low = TrackEntry { track: track(2, 35.4, 138.9, Altitude::AboveGround(0.0)), trail: vec![] };
         let lines = |entry: &TrackEntry, altitude_lines| {
-            build(std::slice::from_ref(entry), TrackOptions { selected: None, trails: false, altitude_lines })
+            build(std::slice::from_ref(entry), TrackOptions { selected: None, trails: false, altitude_lines, symbols_hidden: None })
                 .vertices
                 .iter()
                 .filter(|v| v.params[0] > 0.0 && v.params[2] == 0.0)
@@ -585,7 +615,7 @@ mod tests {
     fn trail_line_connects_past_positions_to_current() {
         let trail = vec![(35.30, 138.80, Altitude::Msl(3000.0)), (35.35, 138.85, Altitude::Msl(3000.0))];
         let entry = TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail };
-        let options = TrackOptions { selected: None, trails: true, altitude_lines: false };
+        let options = TrackOptions { selected: None, trails: true, altitude_lines: false, symbols_hidden: None };
         let with = build(std::slice::from_ref(&entry), options).vertices;
         let without = build(&[TrackEntry { trail: vec![], ..entry.clone() }], options).vertices;
         // 航跡の点は3つ(過去2+現在)=線分2本=三角形4枚=12頂点。
@@ -607,8 +637,8 @@ mod tests {
             TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail: vec![] },
             TrackEntry { track: track(2, 35.5, 139.0, Altitude::Msl(3000.0)), trail: vec![] },
         ];
-        let none = build(&entries, TrackOptions { selected: None, trails: false, altitude_lines: false });
-        let one = build(&entries, TrackOptions { selected: Some(2), trails: false, altitude_lines: false });
+        let none = build(&entries, TrackOptions { selected: None, trails: false, altitude_lines: false, symbols_hidden: None });
+        let one = build(&entries, TrackOptions { selected: Some(2), trails: false, altitude_lines: false, symbols_hidden: None });
         // 輪は縁取りと白の2本の円環(1本=分割数x三角形2枚x3頂点)。
         assert_eq!(one.vertices.len() - none.vertices.len(), 2 * SELECT_RING_SEGMENTS * 6);
         assert_eq!(one.labels.iter().map(|l| (l.id, l.selected)).collect::<Vec<_>>(), [(1, false), (2, true)]);

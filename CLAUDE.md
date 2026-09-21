@@ -42,7 +42,7 @@ sample/
 tools/
   geotiff_preprocess/    # ライブラリの一部の前処理CLI(C++/GDAL)。GeoTIFF→1度タイルごとの多段解像度グリッド+metadata.json。独立CMakeプロジェクト
 docs/                 # 設計書一式(基本設計・詳細設計(9節=ライブラリ実装仕様)・実装ガイド・開発履歴。索引はdocs/README.md)
-scripts/              # ライセンス表記の生成
+scripts/              # ライセンス表記の生成・サンプルの3Dモデル(glb)の生成
 map_data/             # 入力: ALOS DSM GeoTIFFタイル(現在390枚、既存・変更しない。git管理外で履歴にも無い)
 Cargo.toml             # ワークスペースルート(members: sim3dview, sample/sim_frontend)
 ```
@@ -83,6 +83,9 @@ Cargo.toml             # ワークスペースルート(members: sim3dview, samp
 - **航跡**(航空機・艦船・車両等の現在位置)は`terrain::tracks::TracksState`(context)へアプリが`set`する(サンプルは`track_bridge.rs`が
   `TrackList`を変換)。シンボルは向きつきビルボード(画面サイズ固定、進行方向が画面上の実際の向きを指す)、ラベルはHTML要素の重ね合わせ
   (docs/DETAILED_DESIGN.md 6.12節)。シンボルのクリックで`TracksState::selected`が変わり、詳細はアプリ側で表示(サンプルはトップパネルの「航跡情報」タブ)
+- **3Dモデル(glTF/GLB)表示**は任意のおまけ機能で、`terrain::models`(+`renderer/model_batch.rs`・`ui/terrain_view/models.rs`)に閉じている。アプリが`ModelsState`へ種別ごとのモデルのURLを登録し、
+  「近くはモデル・遠くはシンボル」/「最小画面サイズを保証」/「シンボルのみ」を切り替える。向きは`Track`のヘディング・ピッチ・ロール(サーバーが送る)。テクスチャ・アニメーション非対応
+  (docs/DETAILED_DESIGN.md 6.13節・9.15節、`sim3dview/README.md`)。サンプルのモデルは`python scripts/gen_sample_models.py`で生成
 - VABは開発用ダミー値 rows=6, cols=4(先頭行=カテゴリ、中段4行、下段1行)・空ラベルはDOM生成しない。状況パネル項目はC++から`StatusPanelConfig`で動的配信
 - WebSocket自動再接続: 指数バックオフ+ジッター、タブ非表示中は一時停止(Page Visibility API)
 - `sim3dview`は通信プロトコル・サーバーのURLを一切知らない(URL組み立て・原点のミラーはアプリ側の責務)

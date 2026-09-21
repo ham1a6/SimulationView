@@ -11,6 +11,7 @@ use crate::terrain::drawing_geometry;
 use crate::terrain::geodesy::EnuTransform;
 use crate::terrain::heightmap;
 use crate::terrain::loader::TerrainData;
+use crate::terrain::models::placement::build_placements;
 use crate::terrain::markers::{self, RadarMarkersState};
 use crate::terrain::origin::Origin;
 use crate::terrain::tracks::{self, TrackOptions};
@@ -102,7 +103,9 @@ pub(super) fn rebuild_tracks(state: &Rc<RefCell<ViewState>>) {
     };
     let tracks_state = s.tracks;
     let layer = label_layer(&s);
-    let geometry = {
+    // 3Dモデルで描いているトラックは、シンボルを描かない(`terrain::models`)。
+    let symbols_hidden = s.models.shown.clone();
+    let (geometry, placements) = {
         let Some(renderer) = s.renderer.as_mut() else {
             return;
         };
@@ -112,13 +115,17 @@ pub(super) fn rebuild_tracks(state: &Rc<RefCell<ViewState>>) {
             trails: tracks_state.show_trails.get_untracked(),
             // 真上から見る2D地図では、縦の線は点になるので出さない。
             altitude_lines: tracks_state.show_altitude_lines.get_untracked() && mode == ViewMode::ThreeD,
+            symbols_hidden: Some(&symbols_hidden),
         };
-        let geometry = inputs.with_context(|ctx| {
-            tracks_state.entries.with_untracked(|entries| tracks::build_track_geometry(ctx, entries, options))
+        let (geometry, placements) = inputs.with_context(|ctx| {
+            tracks_state.entries.with_untracked(|entries| {
+                (tracks::build_track_geometry(ctx, entries, options), build_placements(ctx, entries))
+            })
         });
         renderer.update_tracks(&geometry.vertices);
-        geometry
+        (geometry, placements)
     };
+    s.models.placements = placements;
     s.pick_anchors = geometry.labels.iter().map(|l| (l.id, l.position)).collect();
     let labels = if tracks_state.show_labels.get_untracked() { geometry.labels } else { Vec::new() };
     set_labels(&mut s, layer.as_ref(), labels);

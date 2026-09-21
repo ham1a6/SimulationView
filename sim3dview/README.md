@@ -19,7 +19,7 @@ ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し(Line of 
   作図エディタ、右クリックメニュー)
 - `style/sim3dview.css`: 上記コンポーネントのスタイル
 
-公開しているのは、アプリが使う`terrain::{camera, draw_tool, drawing, hillshade, markers, origin, origin_pick, recenter, store, tracks}`と
+公開しているのは、アプリが使う`terrain::{camera, draw_tool, drawing, hillshade, markers, models, origin, origin_pick, recenter, store, tracks}`と
 `ui`の各部品だけで、それ以外の`terrain`のモジュール(座標変換・LOD・描画・見通し計算など)はライブラリの内部(`pub(crate)`)です。
 モジュール構成は[DETAILED_DESIGN.md](../docs/DETAILED_DESIGN.md) 6.0節を参照してください。
 
@@ -299,7 +299,8 @@ view! { <DrawingEditor/> } // 地図(TerrainView)をクリックできるよう�
 
 - **`Track`**: `id`(同じ実体は常に同じID)・`kind`(`SymbolKind`: 固定翼機・ヘリ・艦船・地上車両・ミサイル・不明)・
   `affiliation`(`Affiliation`: 友軍=青・敵=赤・中立=緑・不明=黄)・`label`・緯度経度・`altitude`(`Altitude::Msl`=海抜 /
-  `AboveGround`=地表から。地形の高さを持たないサーバーの車両などは後者)・`heading_deg`(北から時計回り)・`speed_mps`。
+  `AboveGround`=地表から。地形の高さを持たないサーバーの車両などは後者)・`heading_deg`(北から時計回り)・`speed_mps`・
+  `pitch_deg`(機首上げが正)・`roll_deg`(右翼が下がるのが正。3Dモデルの向きだけに使う。使わなければ0)。
 - **シンボル**は画面サイズ固定で、進行方向が画面上の実際の向きを指すよう回ります(3Dでカメラを回しても、2Dの地図でも)。
 - **ラベル**は名前+「高度 速度」。**航跡**は過去の位置の折れ線、**高度線**は地表へ下ろす細い線(3Dのみ)。
   `TracksState`の`show_labels`/`show_trails`/`show_altitude_lines`(`RwSignal<bool>`、既定ON)で切り替えます。
@@ -327,6 +328,8 @@ tracks.set(vec![
         altitude: Altitude::Msl(4000.0),
         heading_deg: 90.0,
         speed_mps: 200.0,
+        pitch_deg: 0.0,
+        roll_deg: 0.0,
     },
     Track {
         id: 2,
@@ -338,6 +341,8 @@ tracks.set(vec![
         altitude: Altitude::AboveGround(0.0), // 地形の高さは不要(ライブラリが地表に置く)
         heading_deg: 180.0,
         speed_mps: 15.0,
+        pitch_deg: 0.0,
+        roll_deg: 0.0,
     },
 ]);
 ```
@@ -354,6 +359,42 @@ move || match tracks.selected_track() {
 `Simulation::make_demo_scenario`が7つのトラックを周回させて`TrackList`(msg_type 0x07)として配信し、`sample/sim_frontend`の
 `track_bridge.rs`が受信した値を上の`Track`へ変換して`TracksState::set`へ渡します(受信〜表示までの橋渡しがこの数十行だけ)。
 左パネルの「開始」でシミュレーションを進めると動き、表示メニューの「航跡ラベル/航跡(軌跡)/高度線」で表示を切り替えられます。
+
+## 3Dモデル(glTF)で航跡を描く(任意)
+
+航跡のシンボルの代わりに、glTF 2.0のGLBを3Dモデルとして地図に置けます。UnityやBlenderなどで作ったモデルを、**GLB形式で書き出して**使います
+(FBX・.prefabは対応しないので、Blenderなどでglbへ変換してください)。`terrain::models::ModelsState`を`provide_context`し、**種別ごとに使うモデルのURLを登録する**だけです
+(登録しない種別・読み込み中・読み込みに失敗したものは、今までどおりシンボルで描きます。`ModelsState`を提供しなければモデルなしで動作します)。
+
+- **表示方式**(`ModelsState::mode`。`ui::model_settings_dialog::ModelSettingsDialog`で利用者が切り替えられます):
+  - `SwitchToSymbol`(既定): カメラからの距離が`switch_distance_m`(既定1,500m)以内はモデル(実寸)、それより遠いとシンボル。
+  - `MinScreenSize`: 常にモデル。画面での大きさが`min_screen_px`(既定32px)に満たないモデルは、その大きさになるよう実寸より大きくします。
+  - `Off`: シンボルのみ。
+- **向き**: `Track`のヘディング・ピッチ・ロールで決まります(地球の丸みで傾く「上」にも沿います)。
+- **モデルの作り方**: 単位はメートル(cmなどなら`ModelSource::scale`で直す)、glTFの規約(+Y上・+Z前)。原点は基準点(航空機・ヘリは中心、艦船は水線、車両は接地面が便利)。
+  前が+Zからずれていれば`ModelSource::yaw_offset_deg`で直します。
+- **対応する内容**: 三角形メッシュの形・法線・頂点色・マテリアルの基本色。**テクスチャ・アニメーション・スキン・外部ファイル参照は対応しません**(GLBの1ファイルにしてください)。
+- モデルで描いているトラックも、航跡(軌跡)・高度線・ラベル・選択は今までどおりです。
+
+```rust
+use sim3dview::terrain::models::{ModelSource, ModelsState};
+use sim3dview::terrain::tracks::SymbolKind;
+use sim3dview::ui::model_settings_dialog::{ModelSettingsDialog, ModelSettingsDialogState};
+
+let models = ModelsState::new();
+models.set_source(SymbolKind::Aircraft, ModelSource::new("models/aircraft.glb")); // URLはページからの相対でも絶対でもよい
+models.set_source(SymbolKind::Ship, ModelSource { scale: 0.01, ..ModelSource::new("models/ship_cm.glb") }); // cm単位のモデル
+provide_context(models);
+
+// 表示方式・距離を利用者が変えるウインドウ(任意。メニューから`ModelSettingsDialogState.0.set(true)`で開く)
+provide_context(ModelSettingsDialogState(RwSignal::new(false)));
+// ...ビューの中に <ModelSettingsDialog/> を置く
+```
+
+サンプルアプリでは、`app.rs`が5種類のモデルを登録し、表示メニューの「3Dモデル...」が設定ウインドウです。モデルは`scripts/gen_sample_models.py`が生成する簡易なもの
+(`sample/sim_frontend/assets/models/`。`index.html`のcopy-dirで`models/`として配信)で、`python scripts/gen_sample_models.py`で作り直せます。
+`sample/sim_server`のデモシナリオは、`TrackList`のピッチ・ロールに、旋回のバンク・上昇降下・波の揺れを入れています。
+設計は[DETAILED_DESIGN.md](../docs/DETAILED_DESIGN.md) 6.13節。**カメラは地表から100mまでしか近づけない**ので、実寸のモデルが大きく見えるのは大きな画面のときです。
 
 ## 右クリックメニュー
 

@@ -198,6 +198,7 @@ Sim3dView/
 │       │   ├── drawing_geometry.rs    # 作図の描画用ジオメトリ生成(純粋関数)
 │       │   ├── draw_tool.rs           # 図形の対話作成(ツール・作成中の点・作った図形の一覧/選択/保存)DrawToolState(6.11節)
 │       │   ├── tracks.rs              # 航跡(トラック)のデータモデル・TracksState・シンボル/航跡ジオメトリ(6.12節)
+│       │   ├── models/                # 3Dモデル(glTF)表示(おまけ機能。6.13節): GLB読み込み・配置・表示方式・ModelsState・model.wgsl
 │       │   ├── los.rs                 # 見通し/覆域計算
 │       │   ├── profile.rs             # 断面図用の地表プロファイル
 │       │   ├── lod.rs                 # 地形LODの計画(どのタイル/チャンクをどのレベルで出すか)

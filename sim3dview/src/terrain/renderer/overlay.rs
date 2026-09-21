@@ -22,6 +22,11 @@ impl DrawSpace {
         let bind_group = uniform_bind_group(device, label, layout, &buffer);
         Self { buffer, bind_group }
     }
+
+    /// このuniformのbind group(作図以外のパイプライン`model_batch`が同じuniformを読む)。
+    pub(super) fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_group
+    }
 }
 
 /// 作図の頂点バッファ1本(TriangleList)。空ならバッファを持たない。

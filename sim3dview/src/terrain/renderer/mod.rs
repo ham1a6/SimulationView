@@ -9,6 +9,7 @@
 
 mod fade;
 mod frustum;
+mod model_batch;
 mod overlay;
 mod pipelines;
 mod targets;
@@ -20,6 +21,7 @@ use wgpu::util::DeviceExt;
 
 use self::fade::{fade_progress, Fades, MAX_FADE_ENTRIES};
 use self::frustum::{is_outside_frustum, position_bounds};
+use self::model_batch::ModelBatch;
 use self::overlay::{DrawSpace, VertexBatch};
 use self::pipelines::{terrain_shader, Pipelines};
 use self::targets::{Downsample, RenderTargets};
@@ -31,6 +33,7 @@ use super::camera::Camera;
 use super::drawing_geometry::DrawingBatches;
 use super::loader::MeshKey;
 use super::mesh::{TerrainMesh, TerrainVertex};
+use super::models::types::{ModelInstance, ModelMesh};
 use super::vertex::DrawVertex;
 
 /// 地形メッシュ1個分のGPUバッファ(タイル全体、またはチャンク1個)。メッシュごとに頂点・
@@ -78,6 +81,8 @@ pub struct TerrainRenderer {
     coverage_2d: VertexBatch,
     // 航跡(トラック。`terrain::tracks`): 向きつきのシンボル・航跡・高度線。マーカーと同じく`draw_blend`で描く。
     tracks: VertexBatch,
+    // 3Dモデル(`terrain::models`)。不透明で深度を書くので、作図の不透明な図形と同じ位置(覆域ドームより前)で描く。
+    models: ModelBatch,
     // 見通し範囲の覆域ドーム(半球状の面、TriangleList)用。地形・マーカーの奥に透けて見える
     // よう、アルファブレンド有効・深度書き込み無効のパイプラインにしてある(fs_dome参照)。
     dome_vertex_buffer: Option<wgpu::Buffer>,
@@ -185,6 +190,7 @@ impl TerrainRenderer {
         let draw_world = DrawSpace::new(&device, &pipelines.draw_bind_group_layout, "draw_world_uniform");
         let draw_view = DrawSpace::new(&device, &pipelines.draw_bind_group_layout, "draw_view_uniform");
         let draw_screen = DrawSpace::new(&device, &pipelines.draw_bind_group_layout, "draw_screen_uniform");
+        let models = ModelBatch::new(&device, config.format, &pipelines.draw_bind_group_layout);
 
         Ok(Self {
             surface,
@@ -203,6 +209,7 @@ impl TerrainRenderer {
             markers: VertexBatch::empty(),
             coverage_2d: VertexBatch::empty(),
             tracks: VertexBatch::empty(),
+            models,
             dome_vertex_buffer: None,
             num_dome_vertices: 0,
             hillshade: false,
@@ -248,6 +255,22 @@ impl TerrainRenderer {
     /// 2D/3D切り替えのたびに`terrain::tracks::build_track_geometry`で作り直して呼ぶ。
     pub fn update_tracks(&mut self, vertices: &[DrawVertex]) {
         self.tracks.set(&self.device, "tracks_vertex_buffer", vertices);
+    }
+
+    /// 3Dモデル(`terrain::models`)を1つ登録する(`key`はモデルの識別子。アプリが登録したURL)。同じキーがあれば置き換える。
+    pub fn set_model(&mut self, key: &str, mesh: &ModelMesh) {
+        self.models.set_model(&self.device, key, mesh);
+    }
+
+    /// 3Dモデルの登録を外す(GPUバッファは解放される)。
+    pub fn remove_model(&mut self, key: &str) {
+        self.models.remove_model(key);
+    }
+
+    /// このフレームに描く3Dモデルのインスタンス(キーごとの、1機ごとの変換行列と色)を差し替える。
+    /// `instances`に無いモデルは何も描かない。カメラ・トラックが変わるたびに呼ぶ(毎フレームでよい)。
+    pub fn update_model_instances(&mut self, instances: &HashMap<String, Vec<ModelInstance>>) {
+        self.models.set_instances(&self.device, &self.queue, instances);
     }
 
     /// 選択中マーカーの覆域ドーム(半球状の面、TriangleList)の頂点データを更新する。
@@ -586,6 +609,8 @@ impl TerrainRenderer {
 
         // 絶対座標の作図。不透明なものは覆域ドームより先に(深度を書く)、半透明なものはドームの後に描く。
         self.world_opaque.draw(&mut render_pass, &self.pipelines.draw_opaque, &self.draw_world);
+        // 3Dモデル(不透明。深度を書く)。
+        self.models.draw(&mut render_pass, &self.draw_world);
 
         // 覆域ドーム(半透明)は他の不透明な描画がすべて終わった後に描く。
         if let Some(dome_buffer) = self.dome_vertex_buffer.as_ref() {
@@ -659,11 +684,13 @@ mod tests {
     use super::uniforms::{DRAW_VERTEX_ATTRIBUTES, TERRAIN_VERTEX_ATTRIBUTES};
     use super::*;
     use crate::terrain::camera::{CameraPreset, OrbitCamera, ViewMode};
+    use crate::terrain::models::types::ModelVertex;
     use glam::{Mat4, Vec3, Vec4};
     use std::mem::{offset_of, size_of};
 
     const TERRAIN_WGSL: &str = include_str!("../terrain.wgsl");
     const DRAW_WGSL: &str = include_str!("../draw.wgsl");
+    const MODEL_WGSL: &str = include_str!("../models/model.wgsl");
 
     // ---- 純関数 ----
 
@@ -772,7 +799,7 @@ mod tests {
 
     #[test]
     fn wgsl_modules_parse_and_validate() {
-        for (name, src) in [("terrain.wgsl", TERRAIN_WGSL), ("draw.wgsl", DRAW_WGSL)] {
+        for (name, src) in [("terrain.wgsl", TERRAIN_WGSL), ("draw.wgsl", DRAW_WGSL), ("model.wgsl", MODEL_WGSL)] {
             let module = parse(src);
             naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
                 .validate(&module)
@@ -801,18 +828,46 @@ mod tests {
 
     #[test]
     fn draw_uniform_matches_the_wgsl_struct() {
-        let module = parse(DRAW_WGSL);
-        let (span, members) = struct_of(&module, "DrawUniform");
-        assert_eq!(span as usize, size_of::<DrawUniform>());
-        let want: Vec<(String, u32)> = [
-            ("view_proj", offset_of!(DrawUniform, view_proj)),
-            ("viewport", offset_of!(DrawUniform, viewport)),
-            ("light", offset_of!(DrawUniform, light)),
-        ]
-        .iter()
-        .map(|(n, o)| (n.to_string(), *o as u32))
-        .collect();
-        assert_eq!(offsets(members), want);
+        // 3Dモデルのシェーダーも、作図と同じuniform(`DrawUniform`)を読む。
+        for src in [DRAW_WGSL, MODEL_WGSL] {
+            let module = parse(src);
+            let (span, members) = struct_of(&module, "DrawUniform");
+            assert_eq!(span as usize, size_of::<DrawUniform>());
+            let want: Vec<(String, u32)> = [
+                ("view_proj", offset_of!(DrawUniform, view_proj)),
+                ("viewport", offset_of!(DrawUniform, viewport)),
+                ("light", offset_of!(DrawUniform, light)),
+            ]
+            .iter()
+            .map(|(n, o)| (n.to_string(), *o as u32))
+            .collect();
+            assert_eq!(offsets(members), want);
+        }
+    }
+
+    #[test]
+    fn model_vertex_and_instance_layouts_match_structs_and_wgsl() {
+        use super::model_batch::{MODEL_INSTANCE_ATTRIBUTES, MODEL_VERTEX_ATTRIBUTES};
+        // 頂点バッファ(頂点・インスタンス)それぞれで、属性が隙間なく構造体を覆い、オフセットが構造体と一致する。
+        let vertex_offsets: Vec<u64> = MODEL_VERTEX_ATTRIBUTES.iter().map(|a| a.offset).collect();
+        assert_eq!(
+            vertex_offsets,
+            [
+                offset_of!(ModelVertex, position) as u64,
+                offset_of!(ModelVertex, normal) as u64,
+                offset_of!(ModelVertex, color) as u64
+            ]
+        );
+        let last = MODEL_VERTEX_ATTRIBUTES.last().unwrap();
+        assert_eq!(last.offset + last.format.size(), size_of::<ModelVertex>() as u64);
+        let instance_offsets: Vec<u64> = MODEL_INSTANCE_ATTRIBUTES.iter().map(|a| a.offset).collect();
+        assert_eq!(instance_offsets, [0, 16, 32, 48, offset_of!(ModelInstance, tint) as u64]);
+        let last = MODEL_INSTANCE_ATTRIBUTES.last().unwrap();
+        assert_eq!(last.offset + last.format.size(), size_of::<ModelInstance>() as u64);
+        // シェーダーの入力(location 0〜7)と、2本のバッファの属性が対応する。
+        let all: Vec<wgpu::VertexAttribute> =
+            MODEL_VERTEX_ATTRIBUTES.iter().chain(MODEL_INSTANCE_ATTRIBUTES.iter()).copied().collect();
+        check_vertex_inputs(MODEL_WGSL, &all);
     }
 
     /// `vs_main`の頂点入力(location・型)を、Rust側の頂点属性と突き合わせる。

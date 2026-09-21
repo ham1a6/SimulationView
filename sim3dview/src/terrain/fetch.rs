@@ -23,7 +23,7 @@ fn decode_i16_le(bytes: &[u8]) -> Vec<i16> {
     bytes.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect()
 }
 
-async fn fetch_binary(url: &str, range: Option<(usize, usize)>) -> Result<Vec<u8>, String> {
+pub(crate) async fn fetch_binary(url: &str, range: Option<(usize, usize)>) -> Result<Vec<u8>, String> {
     let mut request = gloo_net::http::Request::get(url);
     if let Some((start, end)) = range {
         // Rangeは単純な`bytes=start-end`ならCORSのプリフライトなしで送れる。

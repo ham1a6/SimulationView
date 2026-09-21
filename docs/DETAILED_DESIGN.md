@@ -348,6 +348,8 @@ tracks: Vec<Track>             // 全トラックの最新状態(消えたトラ
     alt_ref: u8                // 0=alt_mは海抜 1=地表からの高さ(サーバーが地形の高さを持たない車両など)
     heading_deg: f64           // 進行方向(北から時計回り)
     speed_mps: f64             // 対地速度
+    pitch_deg: f64             // ピッチ(機首上げが正)。3Dモデル(6.13節)の向きに使う。古いサーバーが送らなければ0
+    roll_deg: f64              // ロール(右翼が下がる向きが正)。同上
 ```
 
 **ClientCommand**(クライアント→サーバー)
@@ -700,9 +702,10 @@ classDiagram
 | 描画 | `terrain::renderer` | `TerrainRenderer`(状態と3つの描画パス)。`pipelines`・`targets`(深度/MSAA/縮小)・`uniforms`・`overlay`(頂点バッチ)・`frustum` | 9.9 |
 | | `terrain::vertex`・`terrain::render_bias` | 作図・航跡・マーカー共通の頂点`DrawVertex`(種類`KIND_*`)・Zバイアスの一覧 | 9.9・9.10 |
 | 図形・航跡 | `terrain::drawing`・`drawing_geometry`・`draw_tool`・`tracks`・`markers` | 6.9・6.11・6.12節 | 9.10〜9.12 |
+| 3Dモデル(おまけ) | `terrain::models`(`gltf_import`・`placement`・`types`・`model.wgsl`)・`renderer::model_batch` | 航跡をglTFの3Dモデルで描く(6.13節) | 9.15 |
 | 計算 | `terrain::los`・`profile`・`pick`・`camera` | 見通し(`RayContext`)・断面・ピッキング・カメラ | 9.6・9.8 |
-| UI | `ui::terrain_view`(`mod.rs`=コンポーネント、`state`・`frame`・`lod_driver`・`overlay`・`labels`・`picking`) | 地図canvas | 9.13 |
-| | `ui::context_menu`(`MapMenuState`を含む)・`floating_panel`・`tabbed_panel`・`origin_dialog`・`drawing_editor`・`util` ほか | 汎用部品・ダイアログ | 9.14 |
+| UI | `ui::terrain_view`(`mod.rs`=コンポーネント、`state`・`frame`・`lod_driver`・`overlay`・`labels`・`picking`・`models`) | 地図canvas | 9.13 |
+| | `ui::context_menu`(`MapMenuState`を含む)・`floating_panel`・`tabbed_panel`・`origin_dialog`・`drawing_editor`・`model_settings_dialog`・`util` ほか | 汎用部品・ダイアログ | 9.14 |
 
 **テスト**: `cargo test -p sim3dview`(ネイティブ)。`TerrainData::synthetic`(`cfg(test)`)で合成地形を作り、標高サンプリング・丸み込みの`ground_at_enu`・LODの予算配分・反転Z・`screen_to_ray`・
 電波の地平線(見通し)・視錐台カリングなどを検証する。WGSL(`terrain.wgsl`・`draw.wgsl`)は`naga`で構文・型を検証し、uniform・頂点のレイアウトがRust側の構造体と一致することを確かめる
@@ -1198,6 +1201,52 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 **サンプル(デモ)**: `sample/sim_server`の`Simulation::make_demo_scenario`が、デフォルト原点(富士山の近く)のまわりに7つのトラック(友軍機・敵機・ヘリ(地表基準)・中立の艦船(駿河湾)・車両(地表基準)・不明機・ミサイル)を楕円軌道で周回させ、
 `TrackList`として配信する。フロントは左パネルの「開始/一時停止」ボタン(`resume`/`pause`コマンド)でシミュレーションを進め、表示メニューの「航跡ラベル/航跡(軌跡)/高度線」で表示を切り替える。
 自分のシミュレータへつなぐときは、シナリオの部分を自分のシミュレーション結果から`Track`を作る処理に置き換える。
+
+### 6.13 3Dモデル(glTF)表示(`terrain::models` / `model.wgsl`)
+
+航跡(6.12節)のトラックを、シンボルの代わりに**3Dモデル(glTF 2.0のGLB)**で描く**おまけ機能**。既存の航跡・作図・地形の描画を作り替えず、下の表の範囲に閉じる。
+モデルを登録しない・`ModelsState`を提供しない・表示方式を`Off`にすれば、従来と完全に同じ(シンボルだけ)。
+
+| 担当 | 場所 | 役目 |
+|---|---|---|
+| アプリ | `sample/sim_frontend`(`app.rs`・`menu_bar.rs`・`index.html`・`assets/models/`)、`sample/sim_server` | 種別→モデルのURLの登録(`ModelsState::set_source`)。GLBの配信。サーバーがピッチ・ロールを送る。設定ウインドウを開くメニュー |
+| 純粋な計算 | `terrain::models`(`gltf_import`・`placement`・`types`・`mod`) | GLB→頂点・インデックス、位置・向き・大きさの行列、モデルにするかシンボルにするかの判定、`ModelsState`(設定) |
+| GPU | `renderer::model_batch`・`terrain/models/model.wgsl` | モデルごとのバッファ、インスタンスのバッファ、パイプライン、描画 |
+| 組み込み | `ui::terrain_view::models`、`ui::model_settings_dialog` | モデルファイルの取得・登録、毎フレームの判定、シンボルとの入れ替え、設定ウインドウ |
+
+**既存コードへの変更は最小限**: `Track`にピッチ・ロール(`pitch_deg`・`roll_deg`)を足した。`TrackOptions::symbols_hidden`(モデルで描くトラックはシンボルを描かない)を足した。
+`EnuTransform::local_frame`(その地点の東・北・上)を足した。`fetch_binary`を`pub(crate)`にした。`TerrainRenderer`にモデル用の3メソッドと、メインパスの描画1行を足した。
+`TerrainView`は`ModelsState`(任意のcontext)を読み、`render_frame`の描画の前に`update_models`を呼ぶ。
+
+**モデルの規約**: 単位はメートル(違えば`ModelSource::scale`)、glTFの規約(+Y上・+Z前)。原点が基準点(航空機・ヘリ・ミサイルは中心、艦船は水線の中央、車両は接地面の中央)。
+前が+Zからずれて作られていれば`ModelSource::yaw_offset_deg`で直す。読み込み時に、glTFの座標を**機体座標**(x=右・y=前・z=上。東・北・上と同じ右手系)へ回し、全ノードの変換を頂点へ焼き込む。
+対応する内容は、三角形メッシュの位置・法線・頂点色・マテリアルの基本色(`baseColorFactor`)。**テクスチャ・アニメーション・スキン・モーフ・光源・カメラは対応しない**(読み飛ばす。画像のデコードが要らないので`gltf`クレートは`image`なしで使う)。
+外部ファイル・data URIのバッファは対応しない(GLBにする)。読めなければログに出して、そのモデルの種別はシンボルで描く。
+
+**向き**: ヘディング(北から時計回り)・ピッチ(機首上げが正)・ロール(右翼が下がるのが正)を、その地点の東・北・上(`local_frame`。地球の丸みで原点の「上」からかたむく。原点から1,000kmで約9度)へ回す。
+航空機の一般的なZ-Y-X回転(ヨー→ピッチ→ロールの順に、機体の軸で)。ピッチ・ロールはシンボルには効かない(モデルの向きだけ)。
+
+**表示方式**(`ModelDisplayMode`。設定ウインドウ`ui::model_settings_dialog`で切り替える):
+
+| 方式 | 動き |
+|---|---|
+| `SwitchToSymbol`(既定) | カメラからの奥行きが`switch_distance_m`(既定1,500m)以内のトラックはモデル(実寸)、遠いトラックはシンボル。境目でちらつかないよう、モデル表示中は1.1倍まで切り替えない |
+| `MinScreenSize` | 常にモデル。モデルの外接球の直径が画面で`min_screen_px`(既定32px)に満たないときは、その大きさになる倍率まで実寸より大きくする(上限10万倍) |
+| `Off` | シンボルのみ |
+
+奥行きは視線方向の距離。2D(正射影)は、縦の視野角50度の透視投影で同じ縦幅が映る距離に換算する(3Dと同じ設定値で使える)。
+切替距離はモデルの大きさに合わせて調整する(実寸の戦闘機が画面でシンボル並みの約30pxに見えるのはフルHDで約500m、艦船は数km)。**切替距離を遠くしすぎると、モデルが数pxでシンボルも無い状態になる**。
+モデルで描いているトラックも、航跡(軌跡)・高度線・ラベル・選択の輪は今までどおり出る。
+
+**描画**: 不透明・深度書き込みありで、メインパスの`World`不透明作図の直後(覆域ドームより前)に描く。陰影は頂点ごとのランバート(環境光0.4+絶対座標の作図と同じ光源)、所属の色を35%混ぜる。
+モデルごとに1回の`draw_indexed`で、同じモデルの機数はインスタンス描画。位置は地形と同じ原点基準のENU座標(f32)なので、原点から1,000km離れると位置の粒度は約0.1mになるが、機体(十数m)には影響しない。
+地表基準(`AboveGround`)の高度は、地表から2m持ち上げて置く(粗い地形LODに足元が埋まらない最小限。シンボルの25mは大きすぎる)。
+
+**制限**: テクスチャなし。**カメラは100m(`MIN_DISTANCE`)までしか近づけない**ので、実寸のモデルの大きさは、画面が小さいと数十pxまで(フルHDの縦なら航空機で約160px)。選択の当たり判定は、シンボルと同じ位置(アンカー)の半径20px。
+両面は、面の向きを見ずに頂点の法線で照らす(閉じたモデルなら問題ない)。
+
+**サンプル**: `scripts/gen_sample_models.py`が、標準ライブラリだけで5種類(航空機・ヘリ・艦船・車両・ミサイル)の簡易な低ポリゴンモデルを`sample/sim_frontend/assets/models/`へ書き出す(`index.html`のcopy-dirでtrunkが`models/`として配信、`app.rs`が種別ごとに登録)。
+サーバーのデモシナリオ(`snapshot_tracks`)は、航空機・ミサイルのピッチを上昇・降下の角度、ロールを旋回のバンク角(`atan(速度×旋回の角速度/g)`、±60度)に、艦船・車両を小さな揺れにする。表示メニューの「3Dモデル...」が設定ウインドウ。
 
 ---
 
@@ -1763,7 +1812,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 
 | パス | 描画先 | 内容 |
 |---|---|---|
-| ① メイン | 4×MSAAカラー+深度(内部解像度=canvas×2) | 水域 → 地形メッシュ → `World`不透明作図 → 覆域ドーム → `World`半透明作図 → 2D覆域 → マーカー → 航跡 |
+| ① メイン | 4×MSAAカラー+深度(内部解像度=canvas×2) | 水域 → 地形メッシュ → `World`不透明作図 → 3Dモデル(6.13節) → 覆域ドーム → `World`半透明作図 → 2D覆域 → マーカー → 航跡 |
 | ② オーバーレイ(カメラ固定の作図があるときだけ) | 同じMSAAカラー(`Load`)+深度(`Clear(0.0)`) | 視点空間の不透明 → 視点空間の半透明 → 画面座標(追加順) |
 | ③ 縮小 | スワップチェーン(canvas解像度、1サンプル) | 内部解像度の解決結果を線形フィルタで2×2平均して縮小 |
 
@@ -1897,13 +1946,13 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 ### 9.12 航跡(`terrain::tracks`)
 
 **モデル**: `SymbolKind { Unknown, Aircraft, Helicopter, Ship, Vehicle, Missile }`、`Affiliation { Unknown(1.0,0.9,0.3), Friendly(0.35,0.65,1.0), Hostile(1.0,0.3,0.3), Neutral(0.4,0.9,0.45) }`(括弧は色)、
-`Track { id, kind, affiliation, label, lat_deg, lon_deg, altitude: Altitude, heading_deg, speed_mps }`、`TrackEntry { track, trail: Vec<(lat,lon,Altitude)> }`(現在位置は含まない)、
+`Track { id, kind, affiliation, label, lat_deg, lon_deg, altitude: Altitude, heading_deg, speed_mps, pitch_deg, roll_deg }`(ピッチ・ロールは3Dモデルの向きだけに使う)、`TrackEntry { track, trail: Vec<(lat,lon,Altitude)> }`(現在位置は含まない)、
 `TracksState { entries, show_labels, show_trails, show_altitude_lines (既定すべてtrue), selected }`(Copy)。
 
 - 航跡定数: `TRAIL_MAX_POINTS=400`、`TRAIL_MIN_STEP_M=250`。`advance_trail`: 前回の位置が**trailの最後の点から250m以上**(trailが空なら常に)離れていれば前回の位置をtrailに追加し、400点を超えたら先頭を捨てる(距離は等距離円筒近似)
 - `set(tracks)`: **受信のたびに全トラックの最新状態を渡す**。同じIDはtrailを`advance_trail`で引き継ぐ。前回に無いIDは新規、今回に無いIDは消える。選択中のトラックが今回に無ければ`selected=None`。`clear()`、`select(Option<id>)`、`selected_track()`(リアクティブ)
 
-**ジオメトリ `build_track_geometry(ctx, entries, options) -> { vertices, labels }`**(`options = { selected, trails, altitude_lines(3Dのみtrue) }`)。定数: `SYMBOL_SIZE_PX=30`、`SYMBOL_OUTLINE_SCALE=1.3`、縁取り色`[0.04,0.04,0.07,0.9]`、`ALTITUDE_LINE_MIN_M=30`、
+**ジオメトリ `build_track_geometry(ctx, entries, options) -> { vertices, labels }`**(`options = { selected, trails, altitude_lines(3Dのみtrue), symbols_hidden: Option<&HashSet<TrackId>> }`。`symbols_hidden`のトラックはシンボル(縁取り+本体)だけ積まない。3Dモデルで描いているトラック)。定数: `SYMBOL_SIZE_PX=30`、`SYMBOL_OUTLINE_SCALE=1.3`、縁取り色`[0.04,0.04,0.07,0.9]`、`ALTITUDE_LINE_MIN_M=30`、
 `ALTITUDE_LINE_WIDTH_PX=1`、`TRAIL_WIDTH_PX=1.5`、`LINE_ALPHA=0.55`、選択の輪(外径26・内径21・帯3px・40分割)、`PICK_RADIUS_PX=20`。エントリごとに次の順に頂点を積む:
 
 1. `anchor = mesh_transform.transform(lat, lon, height_of(..., TRACK_M))`
@@ -2065,3 +2114,47 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 初回に「地形データを読み込み中...」→地形が出る(全タイルがレベル0→約20秒でレベル1→近い順に細かく)。3Dのドラッグ回転・ホイールズーム・Shift+ドラッグで注視点移動・地面の下にもぐらない。2D切替で北が上・ドラッグでパン。
 右クリック(メニュー未提供)で観測点が追加され、3Dでドーム・2Dで塗り+輪郭が出て、見通しタブの極座標図が更新される。海・データ範囲外は水色の水域で、水平線付近で地球の丸みの向こうの地形が水面越しに透けない。
 **判断を1枚のスクリーンショットだけで下さない**(同じ操作を複数回再現する)。
+
+
+### 9.15 3Dモデル(`terrain::models`・`renderer::model_batch`・`model.wgsl`・`ui::terrain_view::models`)
+
+設計は6.13節。依存: `gltf = "1.4.1"`(`default-features = false, features = ["utils"]`。`image`を引かない)。
+
+**型**(`terrain::models::types`): `ModelVertex { position [f32;3], normal [f32;3], color [f32;4] }`(40バイト。頂点`@location(0..2)`、`Float32x3,Float32x3,Float32x4`)、
+`ModelInstance { model [[f32;4];4](列優先), tint [f32;4] }`(80バイト。インスタンス`@location(3..6)`が行列の4列、`(7)`が色。全て`Float32x4`、`VertexStepMode::Instance`)、
+`ModelMesh { vertices, indices: Vec<u32>, radius_m }`(`radius_m`=基準点から最も遠い頂点までの距離)。
+
+**GLBの読み込み `import_glb(bytes)`**(`gltf_import`): `Gltf::from_slice`。バッファは`Source::Bin`(GLBのバイナリチャンク)だけ(`Uri`はエラー)。既定のシーン(なければ最初のシーン)のノードを再帰し
+(深さ上限128)、`world = 親 × ノードの行列`。各プリミティブは`Mode::Triangles`だけ(他は読み飛ばす)。`POSITION`必須、`NORMAL`・`COLOR_0`は任意、インデックスが無ければ連番。
+インデックスが頂点数を超える・属性の数が食い違う・累計頂点数が50万を超える場合はエラー。頂点色 × `baseColorFactor`(リニア。アルファは常に1)。
+法線は`(Mat3(world)の逆転置) × n`を正規化。**法線が無ければ、三角形ごとに頂点を分けて面の法線**(角ばった陰影)。座標は`(x,y,z)→(-x, z, y)`(glTF→機体座標。回転なので巻き順は変わらない)。
+三角形が1つも無い・半径が0/非有限はエラー。
+
+**配置 `placement`**:
+- `build_placements(ctx, entries)`: `height = height_of(ctx, lat, lon, altitude, GROUND_LIFT_M=2.0)`(`Msl`はそのまま、`AboveGround`は地表+高さ+2m)、`position = mesh_transform.transform(lat, lon, height)`、
+  `frame = mesh_transform.local_frame(lat, lon)`(その地点のECEFでの東・北・上に`enu_from_ecef`を掛けたもの)。所属の色(rgb)・ヘディング・ピッチ・ロールを持つ。`rebuild_tracks`が作り直して`ViewState`に置く
+- `attitude(frame, heading, pitch, roll) = [東 北 上] × Rz(-heading) × Rx(pitch) × Ry(roll)`(glamの右手系の回転。`Ry(+)`で機体の右(+x)が下がる、`Rx(+)`で前(+y)が上がる、`Rz(-heading)`で前が北から時計回りに向く)
+- `instance_matrix(placement, source, extra_scale) = T(position) × R(attitude × Rz(+yaw_offset)) × S(source.scale × extra_scale)`
+- `ViewMetrics::new(camera, viewport_height_px)`: 視点・視線(注視点-視点)。`depth_m(p)`= 3Dは`(p-eye)·forward`、2Dは`view_height/(2·tan(25°))`(縦の視野角50度換算)。`pixels_per_meter(d) = viewport_h/(2·d·tan(fov/2))`
+- `choose_representation(settings, metrics, depth, radius_m, was_model)`: `depth<=0`→シンボル。`Off`→シンボル。`SwitchToSymbol`→`depth <= switch_distance × (was_model ? 1.1 : 1.0)`ならモデル(倍率1)。
+  `MinScreenSize`→`scale = clamp(min_screen_px / (2·radius_m·pixels_per_meter(depth)), 1, 100000)`のモデル。`radius_m = mesh.radius_m × source.scale`
+- `plan_models(placements, sources, radius_of, settings, metrics, previous) -> ModelPlan { instances: URL→Vec<ModelInstance>, shown: HashSet<TrackId> }`: モードが`Off`なら空。
+  種別に登録が無い・モデルが読み込み前(`radius_of`が`None`)のトラックは飛ばす(=シンボル)。`tint = [所属rgb, 0.35]`
+
+**GPU**(`renderer::model_batch::ModelBatch`): モデルはURL文字列をキーに`{頂点バッファ, インデックスバッファ(u32), インスタンスバッファ(容量は2の冪・最小16個、足りなければ作り直す), 描く数}`。
+`set_instances`は`queue.write_buffer`で毎フレーム書く(`instances`に無いモデルは0個)。パイプライン: 頂点バッファ2本(頂点・インスタンス)、`Depth32Float`・`Greater`・深度書き込みあり、ブレンドなし(`REPLACE`)、MSAA、カリングなし。
+uniformは作図の`World`用(`draw_world`。`view_proj`・`light`だけ使う)を共有し、bind groupのレイアウトも`draw_bind_group_layout`。`model.wgsl`の`vs_main`: `world = model × pos`、`clip = view_proj × world`、
+`normal = normalize((model × n).xyz)`、`shade = 0.4 + 0.6·max(dot(normal, light), 0)`、`色 = mix(頂点色, tint.rgb, tint.a) × shade`。
+`TerrainRenderer::{set_model(key, mesh), remove_model(key), update_model_instances(&HashMap<String, Vec<ModelInstance>>)}`。
+
+**`ui::terrain_view::models`**: `ViewState::models: ModelsView { state, loads: URL→{Loading|Ready{radius_m}|Failed}, placements, shown }`。`update_models`(`render_frame`の`keep_camera_above_ground`の後・描画の前):
+①登録から外れたURLを`remove_model`して`loads`から消す ②`Off`でなければ、配置に現れる種別のうち未取得のURLを`Loading`にして`fetch_binary`→`import_glb`→`set_model`(`load_model`。完了したら`render_frame`)
+③`plan_models`→`update_model_instances` ④`shown`が前回と変わったら`rebuild_tracks`(シンボルを出し入れ)。`rebuild_tracks`は`symbols_hidden = shown`で作り、`placements`を更新する(`render_frame`は呼ばない=再帰しない)。
+取得に失敗したURLは`Failed`のまま再取得しない。取得中に登録が外れた結果は捨てる。設定の変化(`mode`・`switch_distance_m`・`min_screen_px`・`sources`)は`TerrainView`のEffect 5cが購読して`render_frame`する。
+
+**`ui::model_settings_dialog`**: `ModelSettingsDialogState(RwSignal<bool>)`とコンポーネント`ModelSettingsDialog`(`FloatingPanel`の`modal=false`・`draggable`)。表示方式の`<select>`、切替距離(100〜200,000m)・最小サイズ(4〜512px)の数値入力(範囲外・数値でない入力は反映しない。使わない方式の欄は無効表示)。
+
+**検証**: `gltf_import`(最小のGLBを手で組み立てて、軸の変換・ノードの平行移動と基本色の焼き込み・法線なしのとき面の法線・壊れた入力がパニックでなくエラー。**サンプルのGLB5つが読めて、実寸の長さで、三角形の向きが法線と一致する**)、
+`placement`(ヘディングは北から時計回り・ピッチ機首上げ・ロール右翼下がり・地点の局所の上に沿う・行列の位置と大きさとyaw補正・奥行きと画面の大きさ・切替距離とヒステリシス・最小サイズの倍率と上限・
+モデル別のインスタンス集約と未読み込み/未登録の除外・配置の位置と向き)、`geodesy::local_frame`(原点で単位行列・遠方で上がかたむく・正規直交の右手系)、`tracks`(`symbols_hidden`のトラックはシンボルだけ消える)、
+`renderer`(`model.wgsl`のnaga検証・`DrawUniform`の一致・頂点/インスタンスの属性のオフセットと`@location`)、`models`(登録・置き換え・解除)。実機: 最小サイズでモデルが出て向きが進行方向に合う・切替距離で入れ替わる。

@@ -43,19 +43,19 @@ Elevation data: ALOS World 3D - 30m (AW3D30), provided by the Japan Aerospace Ex
 
 ## 2. ブラウザに配布されるもの(Rustクレート)
 
-`sim3dview`と`sample/sim_frontend`をWebAssemblyにビルドしたときに、実行時にリンクされるクレートです(`Cargo.lock`から`wasm32-unknown-unknown`向けに解決した**188個**。単体テスト専用の依存(`naga`)、ビルド時だけ動くもの(proc-macro・ビルドスクリプトの依存)、開発用ツール(`trunk`・`wasm-bindgen`のCLI)は含めない)。
+`sim3dview`と`sample/sim_frontend`をWebAssemblyにビルドしたときに、実行時にリンクされるクレートです(`Cargo.lock`から`wasm32-unknown-unknown`向けに解決した**193個**。単体テスト専用の依存(`naga`)、ビルド時だけ動くもの(proc-macro・ビルドスクリプトの依存)、開発用ツール(`trunk`・`wasm-bindgen`のCLI)は含めない)。
 
 ライセンスが「A OR B」の形のクレートは、AとBのどちらの条件でも利用できる二重ライセンスです。
 
 **ライセンスの内訳**:
 
-- 96個: `MIT OR Apache-2.0`
-- 37個: `MIT`
+- 99個: `MIT OR Apache-2.0`
+- 38個: `MIT`
 - 15個: `Unicode-3.0`
 - 13個: `Apache-2.0 OR MIT`
 - 5個: `MIT/Apache-2.0`
 - 5個: `Zlib`
-- 3個: `Unlicense OR MIT`
+- 4個: `Unlicense OR MIT`
 - 2個: `Apache-2.0`
 - 2個: `Apache-2.0/MIT`
 - 2個: `MIT OR Apache-2.0 OR Zlib`
@@ -86,6 +86,7 @@ Elevation data: ALOS World 3D - 30m (AW3D30), provided by the Japan Aerospace Ex
 | block-buffer | 0.10.4 | MIT OR Apache-2.0 | <https://github.com/RustCrypto/utils> |
 | bumpalo | 3.20.3 | MIT OR Apache-2.0 | <https://github.com/fitzgen/bumpalo> |
 | bytemuck | 1.25.2 | Zlib OR Apache-2.0 OR MIT | <https://github.com/Lokathor/bytemuck> |
+| byteorder | 1.5.0 | Unlicense OR MIT | <https://github.com/BurntSushi/byteorder> |
 | bytes | 1.12.1 | MIT | <https://github.com/tokio-rs/bytes> |
 | camino | 1.2.6 | MIT OR Apache-2.0 | <https://github.com/camino-rs/camino> |
 | cfg-if | 1.0.5 | MIT OR Apache-2.0 | <https://github.com/rust-lang/cfg-if> |
@@ -130,6 +131,8 @@ Elevation data: ALOS World 3D - 30m (AW3D30), provided by the Japan Aerospace Ex
 | gloo-utils | 0.2.0 | MIT OR Apache-2.0 | <https://github.com/rustwasm/gloo/tree/master/crates/utils> |
 | gloo-utils | 0.3.0 | MIT OR Apache-2.0 | <https://github.com/rustwasm/gloo/tree/master/crates/utils> |
 | glow | 0.17.0 | MIT OR Apache-2.0 OR Zlib | <https://github.com/grovesNL/glow> |
+| gltf | 1.4.1 | MIT OR Apache-2.0 | <https://github.com/gltf-rs/gltf> |
+| gltf-json | 1.4.1 | MIT OR Apache-2.0 | <https://github.com/gltf-rs/gltf> |
 | guardian | 1.3.0 | MIT OR Apache-2.0 | <https://github.com/jonhoo/guardian.git> |
 | half | 2.7.1 | MIT OR Apache-2.0 | <https://github.com/VoidStarKat/half-rs> |
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 | <https://github.com/rust-lang/hashbrown> |
@@ -146,12 +149,14 @@ Elevation data: ALOS World 3D - 30m (AW3D30), provided by the Japan Aerospace Ex
 | idna | 1.1.0 | MIT OR Apache-2.0 | <https://github.com/servo/rust-url/> |
 | idna_adapter | 1.2.2 | Apache-2.0 OR MIT | <https://github.com/hsivonen/idna_adapter> |
 | indexmap | 2.14.2 | Apache-2.0 OR MIT | <https://github.com/indexmap-rs/indexmap> |
+| inflections | 1.1.1 | MIT | <https://docs.rs/inflections> |
 | interpolator | 0.5.0 | MIT OR Apache-2.0 | <https://github.com/ModProg/interpolator> |
 | itertools | 0.14.0 | MIT OR Apache-2.0 | <https://github.com/rust-itertools/itertools> |
 | itoa | 1.0.18 | MIT OR Apache-2.0 | <https://github.com/dtolnay/itoa> |
 | js-sys | 0.3.105 | MIT OR Apache-2.0 | <https://github.com/wasm-bindgen/wasm-bindgen/tree/master/crates/js-sys> |
 | konst | 0.2.20 | Zlib | <https://github.com/rodrimati1992/konst/> |
 | konst_macro_rules | 0.2.19 | Zlib | <https://github.com/rodrimati1992/konst/> |
+| lazy_static | 1.5.0 | MIT OR Apache-2.0 | <https://github.com/rust-lang-nursery/lazy-static.rs> |
 | leptos | 0.8.20 | MIT | <https://github.com/leptos-rs/leptos> |
 | leptos_config | 0.8.10 | MIT | <https://github.com/leptos-rs/leptos> |
 | leptos_dom | 0.8.8 | MIT | <https://github.com/leptos-rs/leptos> |
@@ -411,6 +416,12 @@ GDALの推移的な依存はvcpkgの版によって変わります。配布す�
 
 - Copyright (c) 2019 Daniel "Lokathor" Gee.
 
+### byteorder 1.5.0
+`Unlicense OR MIT`
+
+- Copyright (c) 2015 Andrew Gallant
+- In jurisdictions that recognize copyright laws, the author or authors
+
 ### bytes 1.12.1
 `MIT`
 
@@ -641,6 +652,16 @@ GDALの推移的な依存はvcpkgの版によって変わります。配布す�
 
 - (著作権表示のファイルが無いため、Cargo.tomlのauthorsを記載) Joshua Groves <josh@joshgroves.com>, Dzmitry Malyshau <kvarkus@gmail.com>
 
+### gltf 1.4.1
+`MIT OR Apache-2.0`
+
+- Copyright (c) 2017 The gltf Library Developers
+
+### gltf-json 1.4.1
+`MIT OR Apache-2.0`
+
+- Copyright (c) 2017 The gltf Library Developers
+
 ### guardian 1.3.0
 `MIT OR Apache-2.0`
 
@@ -722,6 +743,11 @@ GDALの推移的な依存はvcpkgの版によって変わります。配布す�
 
 - Copyright (c) 2016--2017
 
+### inflections 1.1.1
+`MIT`
+
+- Copyright (c) 2016 Caleb Meredith
+
 ### interpolator 0.5.0
 `MIT OR Apache-2.0`
 
@@ -751,6 +777,11 @@ GDALの推移的な依存はvcpkgの版によって変わります。配布す�
 `Zlib`
 
 - Copyright (c) 2021 Matias Rodriguez.
+
+### lazy_static 1.5.0
+`MIT OR Apache-2.0`
+
+- Copyright (c) 2010 The Rust Project Developers
 
 ### leptos 0.8.20
 `MIT`

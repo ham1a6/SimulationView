@@ -8,13 +8,15 @@ use sim3dview::terrain::draw_tool::DrawToolState;
 use sim3dview::terrain::drawing::DrawingState;
 use sim3dview::terrain::hillshade::HillshadeState;
 use sim3dview::terrain::markers::RadarMarkersState;
+use sim3dview::terrain::models::{ModelSource, ModelsState};
 use sim3dview::terrain::origin::OriginState;
 use sim3dview::terrain::origin_pick::OriginPickState;
 use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::terrain::store::TerrainStore;
-use sim3dview::terrain::tracks::TracksState;
+use sim3dview::terrain::tracks::{SymbolKind, TracksState};
 use sim3dview::ui::context_menu::{ContextMenu, ContextMenuState};
 use sim3dview::ui::coverage_altitude_dialog::{CoverageAltitudeDialog, CoverageAltitudeDialogState};
+use sim3dview::ui::model_settings_dialog::{ModelSettingsDialog, ModelSettingsDialogState};
 use sim3dview::ui::origin_dialog::{OriginDialog, OriginDialogState};
 
 use crate::components::drawing_window::{DrawingWindow, DrawingWindowState};
@@ -66,6 +68,22 @@ pub fn App() -> impl IntoView {
     let tracks_state = TracksState::new();
     provide_context(tracks_state);
     bridge_tracks(signals, tracks_state);
+    // 3Dモデル(glTF)表示の設定(sim3dviewライブラリの型)。種別ごとに使うモデルを登録する(ファイルは`assets/models/`。
+    // `index.html`のcopy-dirでtrunkが配信する。`scripts/gen_sample_models.py`が生成した簡易なモデル)。
+    // 表示メニューの「3Dモデル...」で、表示方式(距離で切替/最小サイズを保証/シンボルのみ)を設定する。
+    let models_state = ModelsState::new();
+    for (kind, file) in [
+        (SymbolKind::Aircraft, "models/aircraft.glb"),
+        (SymbolKind::Helicopter, "models/helicopter.glb"),
+        (SymbolKind::Ship, "models/ship.glb"),
+        (SymbolKind::Vehicle, "models/vehicle.glb"),
+        (SymbolKind::Missile, "models/missile.glb"),
+    ] {
+        models_state.set_source(kind, ModelSource::new(file));
+    }
+    provide_context(models_state);
+    // 3Dモデル設定ウインドウの開閉状態(表示メニューから開く。sim3dviewライブラリの型)。
+    provide_context(ModelSettingsDialogState(RwSignal::new(false)));
     // 現在の原点(sim3dviewライブラリの型)。TerrainViewはこれを読んでメッシュを再計算する。
     // サーバーからのOriginState(protocol)が届くたびに、下のEffectでこちらへミラーする
     // (sim3dviewライブラリは通信プロトコルを一切知らないため、この橋渡しはアプリ側の役目)。
@@ -182,6 +200,7 @@ pub fn App() -> impl IntoView {
             />
             <CoverageAltitudeDialog/>
             <DrawingWindow/>
+            <ModelSettingsDialog/>
             <ContextMenu/>
         </div>
     }

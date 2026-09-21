@@ -1,5 +1,6 @@
 #include "simulation.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -263,6 +264,37 @@ protocol::TrackList Simulation::snapshot_tracks() const {
         track.alt_m = s.altitude_m + s.altitude_swing_m * std::sin(0.5 * omega * t + s.phase_rad);
         track.heading_deg = normalize_deg(std::atan2(velocity_east, velocity_north) * 180.0 / kPi);
         track.speed_mps = std::hypot(velocity_east, velocity_north);
+
+        // ピッチ・ロール(フロントの3Dモデル表示の向き。デモ用の簡易な値)。
+        // 飛翔体・航空機: ピッチ=上昇・降下の角度(高度の変化率と対地速度から)、ロール=旋回のバンク角(旋回の角速度×速度/重力)。
+        // 艦船・車両: 波・路面による小さな揺れ。
+        constexpr double kGravity = 9.80665;
+        const double vertical_speed =
+            s.altitude_swing_m * std::cos(0.5 * omega * t + s.phase_rad) * 0.5 * omega;
+        const double climb_deg = std::atan2(vertical_speed, track.speed_mps) * 180.0 / kPi;
+        const double bank_deg =
+            std::clamp(std::atan(track.speed_mps * direction * omega / kGravity) * 180.0 / kPi, -60.0, 60.0);
+        switch (s.kind) {
+        case protocol::TrackKind::Aircraft:
+        case protocol::TrackKind::Missile:
+            track.pitch_deg = climb_deg;
+            track.roll_deg = bank_deg;
+            break;
+        case protocol::TrackKind::Helicopter:
+            track.pitch_deg = climb_deg - 6.0; // 前進飛行で機首を少し下げる
+            track.roll_deg = bank_deg;
+            break;
+        case protocol::TrackKind::Ship:
+            track.pitch_deg = 1.5 * std::sin(0.35 * t + 2.0 * s.phase_rad);
+            track.roll_deg = 4.0 * std::sin(0.5 * t + s.phase_rad);
+            break;
+        case protocol::TrackKind::Vehicle:
+            track.pitch_deg = 2.0 * std::sin(0.9 * t + s.phase_rad);
+            track.roll_deg = 2.0 * std::sin(1.3 * t + 2.0 * s.phase_rad);
+            break;
+        default:
+            break;
+        }
         list.tracks.push_back(std::move(track));
     }
     return list;

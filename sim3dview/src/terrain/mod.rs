@@ -11,6 +11,7 @@ pub(crate) mod lod;
 pub(crate) mod los;
 pub mod markers;
 pub(crate) mod mesh;
+pub mod models;
 pub mod origin;
 pub mod origin_pick;
 pub(crate) mod pick;

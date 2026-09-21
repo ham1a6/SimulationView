@@ -676,6 +676,19 @@
     font-size: 0.85rem;
 }
 
+.origin-form-row select {
+    background: #0d0d0d;
+    border: 1px solid var(--border);
+    color: var(--fg);
+    padding: 0.3rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
+.origin-form-row input:disabled {
+    opacity: 0.45;
+}
+
 .origin-form-row button {
     background: #234;
     color: var(--fg);

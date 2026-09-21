@@ -127,9 +127,11 @@ struct Track {
     uint8_t alt_ref = 0;     // AltitudeRef
     double heading_deg = 0.0; // 進行方向(北から時計回り)
     double speed_mps = 0.0;   // 対地速度
+    double pitch_deg = 0.0;   // ピッチ(機首上げが正)。フロントの3Dモデル表示の向きに使う
+    double roll_deg = 0.0;    // ロール(右翼が下がる向きが正)。同上
 
     MSGPACK_DEFINE(id, kind, affiliation, label, lat_deg, lon_deg, alt_m, alt_ref, heading_deg,
-                   speed_mps);
+                   speed_mps, pitch_deg, roll_deg);
 };
 
 // 航跡の一覧(全トラックの最新状態をまとめて送る)。トラックが消えたら次の一覧から抜ける。

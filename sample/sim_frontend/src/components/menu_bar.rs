@@ -10,6 +10,7 @@
 //! シミュレーション原点の位置へ戻すボタン(`terrain::recenter::RecenterRequestState`
 //! 経由の通知、`TerrainView`側で実際にリセットする。シミュレーション原点自体は変更しない)。
 //! 「表示」→「航跡ラベル/航跡(軌跡)/高度線」は、航跡(`terrain::tracks::TracksState`)の表示設定のON/OFF、
+//! 「3Dモデル...」は、航跡を3Dモデル(glTF)で描く方式の設定ウインドウ(`ui::model_settings_dialog`)を開く、
 //! 「作図...」は、図形を作る移動可能なウインドウ(`components/drawing_window.rs`)を開く。
 //! 「作図デモ」は作図(`terrain::drawing`)のデモ図形の表示/消去。
 //! ファイル/ヘルプは現時点では項目未定のプレースホルダ(クリックしても「準備中」の
@@ -25,6 +26,7 @@ use sim3dview::terrain::origin_pick::OriginPickState;
 use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::terrain::tracks::TracksState;
 use sim3dview::ui::coverage_altitude_dialog::CoverageAltitudeDialogState;
+use sim3dview::ui::model_settings_dialog::ModelSettingsDialogState;
 use sim3dview::ui::origin_dialog::OriginDialogState;
 
 use crate::components::drawing_demo;
@@ -55,6 +57,8 @@ pub fn MenuBar() -> impl IntoView {
         use_context::<DrawingWindowState>().expect("DrawingWindowState context not found");
     let origin = use_context::<OriginState>().expect("OriginState context not found");
     let tracks = use_context::<TracksState>().expect("TracksState context not found");
+    let model_settings =
+        use_context::<ModelSettingsDialogState>().expect("ModelSettingsDialogState context not found");
     // 「作図デモ」で追加した図形のID(表示中なら空でない。ライブラリの作図一覧を出し入れするだけで、
     // ライブラリ側にこの状態はない。消すときはこのIDだけを消し、ユーザーが作った図形は残す)。
     let drawing_demo_ids = RwSignal::new(Vec::<DrawingId>::new());
@@ -140,6 +144,15 @@ pub fn MenuBar() -> impl IntoView {
                             }
                         >
                             {move || if tracks.show_altitude_lines.get() { "✓ 高度線" } else { "　 高度線" }}
+                        </button>
+                        <button
+                            class="menu-dropdown-item"
+                            on:click=move |_| {
+                                open_menu.set(None);
+                                model_settings.0.set(true);
+                            }
+                        >
+                            "3Dモデル..."
                         </button>
                         <button
                             class="menu-dropdown-item"

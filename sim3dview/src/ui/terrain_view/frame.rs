@@ -14,7 +14,7 @@ use crate::terrain::heightmap;
 use crate::terrain::mesh;
 use crate::terrain::origin::{Origin, OriginState};
 use crate::terrain::renderer::TerrainRenderer;
-use super::{labels::*, lod_driver::*, overlay::*, state::*};
+use super::{labels::*, lod_driver::*, models::update_models, overlay::*, state::*};
 
 /// 現在の状態でレンダラーを構築できるなら構築する。
 /// canvasのサイズ確定(ResizeObserver)と地形データ取得(TerrainStore)は非同期かつ独立して
@@ -115,6 +115,8 @@ pub(super) fn keep_camera_above_ground(state: &Rc<RefCell<ViewState>>) {
 /// 現在の状態で1フレーム描くだけ(LODの更新は予約しない)。
 pub(super) fn render_frame(state: &Rc<RefCell<ViewState>>) {
     keep_camera_above_ground(state);
+    // どのトラックを3Dモデルで描くか(カメラからの距離・大きさで決まる)。描画の前に決める。
+    update_models(state);
     let mut s = state.borrow_mut();
     let s = &mut *s;
     let mut fading = false;

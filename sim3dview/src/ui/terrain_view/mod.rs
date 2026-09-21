@@ -16,6 +16,7 @@ mod coverage;
 mod frame;
 mod labels;
 mod lod_driver;
+mod models;
 mod overlay;
 mod picking;
 mod state;
@@ -34,6 +35,7 @@ use crate::terrain::drawing::DrawingState;
 use crate::terrain::loader::WHOLE_TILE;
 use crate::terrain::lod::TileLayout;
 use crate::terrain::markers::RadarMarkersState;
+use crate::terrain::models::ModelsState;
 use crate::terrain::geodesy::EnuTransform;
 use crate::terrain::heightmap;
 use crate::terrain::mesh;
@@ -66,6 +68,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let draw_tool = use_context::<DrawToolState>();
     // 未提供なら航跡表示なしで動作する(同上)。
     let tracks = use_context::<TracksState>().unwrap_or_default();
+    // 未提供なら3Dモデルなし(シンボルだけ)で動作する(同上。`terrain::models`)。
+    let models = use_context::<ModelsState>().unwrap_or_default();
     // 両方が提供されていれば、地図の右クリックで右クリックメニューを出す(未提供なら従来どおり観測点の追加)。
     let context_menu = use_context::<ContextMenuState>();
     let map_menu = use_context::<MapMenuState>();
@@ -89,6 +93,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         radar_markers,
         drawings,
         tracks,
+        models: models::ModelsView::new(models),
         labels_ref,
         labels: Vec::new(),
         pick_anchors: Vec::new(),
@@ -364,6 +369,19 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             let _ = tracks.show_altitude_lines.get();
             let _ = tracks.selected.get();
             rebuild_tracks(&state);
+            render_frame(&state);
+        });
+    }
+
+    // --- Effect 5c: 3Dモデル(`terrain::models`)の表示設定・モデルの登録の変化に追従して描き直す ---
+    // 何をモデルで描くかは描画のたびに決まる(`render_frame`→`update_models`)ので、購読して描き直すだけ。
+    {
+        let state = state.clone();
+        Effect::new(move |_| {
+            let _ = models.mode.get();
+            let _ = models.switch_distance_m.get();
+            let _ = models.min_screen_px.get();
+            let _ = models.sources.get();
             render_frame(&state);
         });
     }

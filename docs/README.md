@@ -40,6 +40,7 @@
 | 9.6〜9.8 カメラ・ピッキング・断面・LOD・見通し | `camera/pick/profile/lod/los`(純粋関数) | 6.6・6.9・6.10節 |
 | 9.9 レンダラー | `renderer/*`、`vertex`、シェーダーの要点 | 6.4・6.8・6.10(水域)・6.11(描画パス) |
 | 9.10〜9.12 観測点・作図・航跡 | `render_bias/markers/drawing/drawing_geometry/draw_tool/tracks` | 6.9・6.11・6.12節 |
+| 9.15 3Dモデル(おまけ) | `models/*`・`renderer/model_batch`・`ui/terrain_view/models`・`ui/model_settings_dialog` | 6.13節 |
 | 9.13〜9.14 UI統合・UI部品 | `ui/*`、context、`TerrainView`のイベント・Effect・LOD適用ループ、CSS契約、crate構成 | 6.0〜6.1・6.10(適用)・7.6〜7.7節 |
 
 通信プロトコル(DETAILED_DESIGN 4節)・C++サーバー(5節)・サンプルアプリのVAB/状況パネル/メニュー(7節)は`sample/`の設計で、9節の対象外。

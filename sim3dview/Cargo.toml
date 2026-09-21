@@ -18,6 +18,8 @@ wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 glam = "0.33"
 earcutr = "0.5.0"
+# 3Dモデル(glTF/GLB)の読み込み。画像のデコード(`import`機能=`image`クレート)は使わない(テクスチャ非対応。`terrain::models`)。
+gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 
 [dependencies.web-sys]
 version = "0.3"

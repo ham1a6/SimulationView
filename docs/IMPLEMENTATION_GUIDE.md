@@ -97,6 +97,7 @@ uniform・頂点の**バイトレイアウトがRustの構造体と一致する*
 | 11 | 図形の対話作成・右クリックメニュー | `draw_tool`、`ui::{context_menu, drawing_editor, util}` | 9.11・9.14 | draw_tool 8件(`circle_radius_is_click_distance` `zero_size_shapes_are_rejected` `rect_is_centered_between_corners` `sector_sweeps_clockwise_from_start_to_end` `sphere_rests_on_ground` `polygon_and_polyline_need_enough_points` `preview_falls_back_to_polyline` `shapes_survive_json_round_trip`)+実機: 全ツールの作成・確定・取り消し・数値編集・リロード後の復元 |
 | 12 | 航跡 | `tracks`(モデル・ジオメトリ・当たり判定)、`terrain_view/labels.rs`、選択 | 9.12・9.13 | tracks 10件(9.12)+実機: シンボルが進行方向を向く・ラベル追従・クリックで選択・右クリックメニュー |
 | 13 | 仕上げ | `sim3dview.css`、`sim3dview/README.md`、`THIRD_PARTY_NOTICE.md`再生成 | 9.14 | 全テスト通過、README掲載のコード例がコンパイルできる |
+| 14 | 3Dモデル表示(任意のおまけ) | `models`(`gltf_import`・`placement`・`types`)・`renderer::model_batch`・`model.wgsl`・`ui::terrain_view::models`・`ui::model_settings_dialog` | 9.15 | models 16件+geodesy 1件+tracks 1件+renderer 1件(9.15「検証」)+実機: 最小サイズでモデルが出て進行方向を向く・切替距離でシンボルと入れ替わる |
 
 ### 依存関係(並行作業のヒント)
 

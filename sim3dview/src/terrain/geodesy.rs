@@ -113,6 +113,19 @@ impl EnuTransform {
         self.ecef_to_enu(x, y, z)
     }
 
+    /// 緯度経度の地点における「東・北・上」の単位ベクトルを、この変換のENU座標系(原点基準)の成分で返す。
+    /// 原点から離れるほど地球の丸みで、その地点の「上」は原点の「上」(0,0,1)からかたむく
+    /// (原点から1,000kmで約9度)。地点に置く3Dモデルの向きを決めるために使う(`terrain::models`)。
+    pub fn local_frame(&self, lat_deg: f64, lon_deg: f64) -> [[f32; 3]; 3] {
+        let (sin_lat, cos_lat) = lat_deg.to_radians().sin_cos();
+        let (sin_lon, cos_lon) = lon_deg.to_radians().sin_cos();
+        // ECEFでの東・北・上(`new`の`enu_from_ecef`の行と同じ式を、その地点の緯度経度で)。
+        let east = DVec3::new(-sin_lon, cos_lon, 0.0);
+        let north = DVec3::new(-sin_lat * cos_lon, -sin_lat * sin_lon, cos_lat);
+        let up = DVec3::new(cos_lat * cos_lon, cos_lat * sin_lon, sin_lat);
+        [east, north, up].map(|v| (self.enu_from_ecef * v).as_vec3().to_array())
+    }
+
     /// `transform`の厳密な逆: ENU座標(東, 北, 上。メートル)から(緯度, 経度, 楕円体高)を求める。
     /// ENU→ECEF(原点の回転行列の転置)→測地座標(反復法)。原点から数千km離れた点でも
     /// 地球の丸み・楕円体を正しく扱う(下の`inverse`は原点近傍の接平面近似)。
@@ -212,6 +225,22 @@ mod tests {
         // 遠方でも、その地点の楕円体上の点(標高0m)で0に近い。
         let far = t.transform_f64(30.0, 130.0, 0.0);
         assert!(f(far).abs() < 1e-6, "f={}", f(far));
+    }
+
+    // 原点では東・北・上がそのまま(1,0,0)(0,1,0)(0,0,1)、遠方では上が原点の上からかたむき、3本は正規直交の右手系のまま。
+    #[test]
+    fn local_frame_tilts_with_earth_curvature() {
+        let t = transform_at(35.0, 135.0);
+        let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
+        let [east, north, up] = t.local_frame(35.0, 135.0);
+        assert!(close(east, [1.0, 0.0, 0.0]) && close(north, [0.0, 1.0, 0.0]) && close(up, [0.0, 0.0, 1.0]));
+        // 東へ約9.1度(北緯35度で経度約11度)離れた地点: 上は東へ約9度かたむく(原点から見て東の地点の「上」は東向きの成分を持つ)。
+        let far = t.local_frame(35.0, 146.0);
+        let [e, n, u] = far.map(glam::Vec3::from_array);
+        assert!(u.x > 0.15 && u.x < 0.2, "up.x={}", u.x);
+        assert!((e.length() - 1.0).abs() < 1e-5 && (n.length() - 1.0).abs() < 1e-5 && (u.length() - 1.0).abs() < 1e-5);
+        assert!(e.dot(n).abs() < 1e-5 && e.dot(u).abs() < 1e-5 && n.dot(u).abs() < 1e-5);
+        assert!(e.cross(n).dot(u) > 0.99, "右手系");
     }
 
     // 接平面近似の`inverse`は、原点の近く(20km程度)なら厳密な逆と数十m以内で一致する
