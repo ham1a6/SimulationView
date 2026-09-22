@@ -5,6 +5,7 @@
 
 
 
+
 <title>Sim3dViewのしくみ</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,ital@9..144,400,600,700,900,600i&family=Source+Sans+3:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
@@ -358,6 +359,7 @@
       <a href="#ui-map">23. 画面の部品マップ</a>
       <a href="#ui-menu">24. メニューバー</a>
       <a href="#ui-left">25. 左パネル: 状況パネルとVAB</a>
+      <a href="#ui-capture">25.3 スクリーンショット・画面録画</a>
       <a href="#ui-main">26. メインパネル: 地形ビュー</a>
       <a href="#ctx-menu">26.7 右クリックメニュー</a>
       <a href="#ui-right">27. 右パネル: タブと3つのタブ</a>
@@ -398,7 +400,16 @@
         C++との対比を手すりにしながら読み進めれば、最後には自分のコードが読めるようになるはずです。
       </p>
       <details class="changes" open>
-        <summary>最新版で変わったこと(覆域データの平滑化を撤去)</summary>
+        <summary>最新版で変わったこと(マップパネルのスクリーンショット・画面録画ボタン)</summary>
+        <ul>
+          <li><strong>マップパネルを、PNGスクリーンショット・WebM画面録画で保存できるようになりました。</strong>VABパネルの最上部に「スクリーンショット」「録画開始/停止」の2つのボタンを追加しています(25.3節)。</li>
+          <li><strong>サーバーへは何も送らない、ブラウザだけで完結する機能です。</strong><code>HTMLCanvasElement.toBlob</code>・<code>captureStream</code>・<code>MediaRecorder</code>というブラウザ標準APIだけで作っています。</li>
+          <li><strong>ライブラリ側は、要求を運ぶだけの新しいcontext(<code>terrain::capture::CaptureState</code>)を1つ足しただけです。</strong>実際にcanvasへ触れる処理は<code>TerrainView</code>の非公開サブモジュールにあり、ボタンをどこに置くかはアプリ(呼び出し側)の自由です。</li>
+          <li>節番号は変わっていません。新しい内容は25.3節にあります。</li>
+        </ul>
+      </details>
+      <details class="changes">
+        <summary>1つ前の版で変わったこと(覆域データの平滑化を撤去)</summary>
         <ul>
           <li><strong>覆域(3Dドーム・2D領域)の平滑化を、撤去しました。</strong>「覆域データの平滑化はやっぱりやめにしたい」という要望を受け、方位ごとの半径をなだらかにしていたメディアン→平均(ドームは仰角方向の平均も)を取りやめ、
             <code>DomeRing</code>・<code>LosPoint</code>の生の計算結果をそのまま頂点に使うようにしました。地形の細かい凹凸や1方位だけの遮蔽が作る放射状の筋(ドーム)、低い高度での境界のギザギザ(2D覆域)は、平滑化する前の見え方に戻ります(36.2・36.3・36.6節)。</li>
@@ -407,7 +418,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>1つ前の版で変わったこと(3Dモデル(glTF)の表示)</summary>
+        <summary>2つ前の版で変わったこと(3Dモデル(glTF)の表示)</summary>
         <ul>
           <li><strong>航跡を、glTF(GLB)の3Dモデルで表示できるようになりました。</strong>UnityやBlenderで作ったモデルを、<strong>GLB形式</strong>で書き出して地図に置けます(FBXは対応しないので、Blenderなどでglbへ変換します)。
             種別(航空機・ヘリ・艦船・車両・ミサイル)ごとに使うモデルのURLを<code>ModelsState</code>へ登録するだけです(38.8節)。</li>
@@ -421,7 +432,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>1つ前の版で変わったこと(複数の覆域の同時表示・選択したシンボル中心の断面図・シンボルの埋まり・LODのクロスフェード・覆域の軽量化と平滑化)</summary>
+        <summary>2つ前の版で変わったこと(複数の覆域の同時表示・選択したシンボル中心の断面図・シンボルの埋まり・LODのクロスフェード・覆域の軽量化と平滑化)</summary>
         <ul>
           <li><strong>複数の覆域を、同時に表示できるようになりました。</strong>見通し範囲タブの「すべての観測点の覆域を同時に表示」をONにすると、すべての観測点の3Dドーム・2D領域が同時に出ます。観測点ごとに色が違い、計算・キャッシュ・頂点も観測点ごとに独立です(36.7節)。</li>
           <li><strong>断面図が、選択したシンボルを中心に表示されるようになりました。</strong>地図でシンボルを選択すると、その位置を中心(距離0)に、方位角の直線の両側の断面を出します。何も選択していなければ基準位置が中心です。シンボルの高度の位置に印が付き、「進行方向」ボタンで方位角をシンボルの向きに合わせられます。シンボルは毎秒何度も動くので、断面の再計算は約500m動いたときだけです(27.3節)。</li>
@@ -438,7 +449,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>2つ前の版で変わったこと(ライブラリの内部整理・単体テスト・OSSへの置き換え)</summary>
+        <summary>3つ前の版で変わったこと(ライブラリの内部整理・単体テスト・OSSへの置き換え)</summary>
         <ul>
           <li><strong>ライブラリのソースを、責務ごとに分けました。</strong>1,100行を超えていた描画(<code>renderer.rs</code>)と、1,400行を超えていた地図コンポーネント(<code>terrain_view.rs</code>)を、それぞれディレクトリにして小さなファイルに分割し、座標変換・標高・取得・メッシュ・LODの置き場所も整理しました。<strong>見た目や動きは変わりません</strong>(6.6節)。</li>
           <li><strong>単体テストが37件から104件になり、<code>cargo test -p sim3dview</code>がブラウザなしで動きます。</strong>合成した地形で、丸みを含む標高・LODの予算・反転Z・電波の地平線・視錐台カリングなどを検めます。WGSLシェーダーも<code>naga</code>で検証します(6.6節)。</li>
@@ -449,7 +460,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>3つ前の版で変わったこと(図形の対話作成・動かせるウインドウ・右クリックメニュー・VABのページ数)</summary>
+        <summary>4つ前の版で変わったこと(図形の対話作成・動かせるウインドウ・右クリックメニュー・VABのページ数)</summary>
         <ul>
           <li><strong>UIから図形を作れるようになりました。</strong>作図ウインドウでツール(円・矩形・多角形・扇形・折れ線・球・直方体・円柱・円錐)を選び、<strong>地図をクリックして置きます</strong>。カーソルの動きに合わせて作成中の図形が追従し、置いた図形は一覧から選んで<strong>数値で編集</strong>できます(位置・大きさ・高度・色・名前)。作った図形は<strong>ブラウザに保存</strong>され、リロードしても残ります(37.7節)。</li>
           <li><strong>フローティングウインドウが、背後を操作できる「ウインドウ」と、ドラッグ移動に対応しました。</strong><code>FloatingPanel</code>に<code>modal</code>・<code>draggable</code>・<code>initial_position</code>を足し、既定は従来どおりのモーダルです。作図エディタはこれで、地図の上に浮かせています(28.5節)。</li>
@@ -459,7 +470,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>4つ前の版で変わったこと(航跡表示・作図・覆域の見た目)</summary>
+        <summary>5つ前の版で変わったこと(航跡表示・作図・覆域の見た目)</summary>
         <ul>
           <li><strong>シミュレーションから受け取った位置を、航空機・艦船・車両などのシンボルで表示できるようになりました。</strong>向きつきのアイコン・ラベル(名前・高度・速度)・航跡(軌跡)・高度線までが1セットです。新しい通信メッセージ<code>TrackList</code>(0x07)が増え、sim_serverにはデモのシナリオ(7つのトラック)が入りました(38節)。</li>
           <li><strong>ライブラリに「作図」機能が加わりました。</strong>円・矩形・多角形・扇形・球・直方体・円柱・円錐・折れ線を、塗り・枠線・不透明度つきで描けます。置き場所は<strong>絶対座標(緯度経度)・カメラからの相対・画面のピクセル</strong>の3通りから選べます。カメラに固定したものは、地形とは別の2つ目の描画パスで描きます(37節)。</li>
@@ -469,7 +480,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>5つ前の版で変わったこと(地形の表示の高速化)</summary>
+        <summary>6つ前の版で変わったこと(地形の表示の高速化)</summary>
         <ul>
           <li><strong>地形が、地図の品質を変えずに速く出るようになりました。</strong>ページを開いてから俯瞰の見た目が整うまでが、<strong>約6.8秒→約2.9秒</strong>(同じPC上のサーバー、実測)。全タイルのL1の取得が終わるのは5.3秒→2.2秒です(14.4・14.9節)。</li>
           <li>原因は通信ではなく<strong>スケジューリング</strong>でした。1件の取得は中央値11msなのに、取得の補充が150msのデバウンス経由(16件が約0.19秒周期)、メッシュ反映が「1回60万頂点+150ms待ち」で、別々の下限を作っていました。両方を直し、反映の区切りは頂点数から<strong>時間の目安(12ms)</strong>にしました。</li>
@@ -478,7 +489,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>6つ前の版で変わったこと(画面部品カタログ・sampleの全処理)</summary>
+        <summary>7つ前の版で変わったこと(画面部品カタログ・sampleの全処理)</summary>
         <ul>
           <li><strong>第7部「画面部品カタログ」(23〜30節)を追加しました。</strong>sampleが実装している画面の部品を、<strong>実機の画像つきでもれなく</strong>説明しています。メニューバー、シミュレーションステータスパネル、VABパネル、メインパネル(3D/2D・回転・中心点・観測点・陰影)、右パネル(各種情報・断面図・見通し範囲)、原点設定・覆域高度設定のダイアログ、地図クリックでの原点指定、リサイザーです。</li>
           <li>各部品に、「画面のどこか(番号つきの画像)」「置き方」「足し方のコード」「必要なcontext」を付けました。画像はクリックで拡大できます。</li>
@@ -488,7 +499,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>7つ前の版で変わったこと(陰影・水域レイヤー・LOD下限)</summary>
+        <summary>8つ前の版で変わったこと(陰影・水域レイヤー・LOD下限)</summary>
         <ul>
           <li><strong>地形に陰影(ヒルシェード)が付きました。</strong>標高の色だけでは見分けにくかった30mの尾根や谷が、はっきり見えます。表示メニューの「陰影表示」でON/OFFできます(11節。<code>HillshadeState</code>は18・19節)。</li>
           <li><strong>水域レイヤーが加わりました。</strong>いったん撤去した水色の海を、方式を変えて戻しました。メッシュではなく、<strong>WGS84楕円体(海抜0m)と視線の交点をシェーダーで直接求める</strong>ので、地球の丸みが厳密で、範囲の限りもありません(11節)。水面越しに遠くの陸地の裏側が透ける問題は、水域が<strong>深度を書く</strong>ことで直しました。</li>
@@ -499,7 +510,7 @@
         </ul>
       </details>
       <details class="changes">
-        <summary>8つ前の版(地形LODの導入)で変わったこと</summary>
+        <summary>9つ前の版(地形LODの導入)で変わったこと</summary>
         <ul>
           <li><strong>地図の描画が「地形LOD」になりました。</strong>1枚の2048×2048メッシュをやめ、1度タイル+6×6チャンクの多段解像度にして、拡大すると<strong>元データの30m</strong>まで細かくなります(9・14節)。</li>
           <li>前処理・配信・読み込みが作り直されました。タイルごとにストリーミング処理し、サーバーは<strong>HTTP Range</strong>で必要なチャンクだけ返します(9・7・20節)。</li>
@@ -4472,6 +4483,56 @@ button.label = is_hole ? <span class="str">""</span> : (<span class="str">"B"</s
         押されたときの本当の処理は、サーバー側の<code>Simulation::apply_command</code>の<code>"vab_press"</code>の枝に書きます(いまはログを出すだけ)。
         <strong>フロントは、ボタンのidをそのまま送るだけ</strong>で、意味を知りません。
       </p>
+
+      <h3 id="ui-capture">25.3 スクリーンショット・画面録画ボタン(おまけ機能)</h3>
+      <p>
+        VABパネルの最上部に、マップパネル(地形canvas)を<strong>PNG保存</strong>・<strong>WebM録画</strong>する2つのボタンを置きました。
+        VABの先頭行(サーバー<code>VabConfig</code>駆動)・中段/下段(フロントだけのダミー、25.2節)とは性質が違う、<strong>完全にフロント側だけで完結する本物のボタン</strong>です。
+        サーバーへは何も送りません。
+      </p>
+      <div class="callout">
+        <div class="label">💡 置き場所は自由</div>
+        <p>
+          このライブラリ(<code>sim3dview</code>)は「ボタンをどこに置くか」を知りません。<code>terrain::capture::CaptureState</code>というcontextで
+          「スクリーンショットして」「録画を開始/停止して」という<strong>要求</strong>を受け取り、実際にcanvasへ触れる処理(<code>ui::terrain_view</code>の非公開サブモジュール)は
+          <code>TerrainView</code>側にあります。26節の<code>RecenterRequestState</code>(中心点を原点に戻す要求)と同じ「要求を運ぶだけのcontext」パターンです。
+          サンプルはこれをVABパネルに置きましたが、メニューバーや右パネルに置いても同じように動きます。
+        </p>
+      </div>
+
+      <pre class="code"><span class="fname">sample/sim_frontend/src/components/vab.rs(実際のコード、抜粋)</span><span class="kw">let</span> capture = use_context::&lt;<span class="ty">CaptureState</span>&gt;().expect(<span class="str">"CaptureState context not found"</span>);
+<span class="cm">// …</span>
+&lt;button on:click=<span class="kw">move</span> |_| capture.request_screenshot()&gt;<span class="str">"スクリーンショット"</span>&lt;/button&gt;
+&lt;button
+    class:vab-button-active=<span class="kw">move</span> || capture.is_recording.get()
+    on:click=<span class="kw">move</span> |_| capture.toggle_recording()
+&gt;
+    {<span class="kw">move</span> || <span class="kw">if</span> capture.is_recording.get() { <span class="str">"録画停止"</span> } <span class="kw">else</span> { <span class="str">"録画開始"</span> }}
+&lt;/button&gt;</pre>
+
+      <div class="table-wrap">
+      <table>
+        <thead><tr><th>操作</th><th>使うブラウザAPI</th><th>保存されるファイル</th></tr></thead>
+        <tbody>
+          <tr><td>スクリーンショット</td><td><code>HTMLCanvasElement.toBlob("image/png")</code></td><td><code>sim3dview_YYYYMMDD_HHMMSS.png</code></td></tr>
+          <tr><td>画面録画の開始/停止</td><td><code>HTMLCanvasElement.captureStream()</code> + <code>MediaRecorder</code></td><td><code>sim3dview_YYYYMMDD_HHMMSS.webm</code></td></tr>
+        </tbody>
+      </table>
+      </div>
+
+      <p>
+        どちらも、生成した<code>Blob</code>をその場で<code>&lt;a download&gt;</code>要素にしてクリックする、ブラウザの定番のダウンロード手順です。
+        録画は<code>captureStream()</code>に<strong>引数を渡しません</strong>。引数なしだと「canvasが実際に描画されるたびにフレームが入る」動きになり、
+        地形は常時アニメーションせず操作したときだけ再描画するSim3dViewの描き方(6.4節)に、固定fps指定より合っています。
+        コーデックは<code>vp9</code>→<code>vp8</code>→指定なしの順に<code>MediaRecorder.isTypeSupported()</code>で確認して選びます。
+      </p>
+      <div class="callout warn">
+        <div class="label">⚠️ 写らないもの</div>
+        <p>
+          写るのはcanvas上の描画(地形・作図・覆域・航跡のシンボル)だけです。航跡のラベルは、canvasの外に重ねた別のHTML要素(<code>terrain-track-labels</code>、38節)なので、
+          スクリーンショット・録画のどちらにも写りません。
+        </p>
+      </div>
     </section>
 
     <section id="ui-main">
@@ -6688,7 +6749,7 @@ cd sample/sim_frontend &amp;&amp; trunk serve        # 開発サーバー(ポー
     </section>
 
     <footer>
-      Sim3dView 技術解説ノート — 2026-09-22時点のコード(コミット 5239f49。ノートはVersion 17)に基づく。
+      Sim3dView 技術解説ノート — 2026-09-22時点のコード(コミット 42c684b。ノートはVersion 18)に基づく。
       BASIC_DESIGN.md / DETAILED_DESIGN.md と合わせて読むことを想定しています。
     </footer>
   </main>
@@ -6714,6 +6775,83 @@ cd sample/sim_frontend &amp;&amp; trunk serve        # 開発サーバー(ポー
 })();
 </script>
 
+
+<!--claude-mermaid-runtime-begin:3477-->
+<style>.mermaid-diagram{margin-block:4px}.mermaid-diagram svg{display:block;margin:0 auto;max-width:100%;height:auto}</style>
+<script src="/_runtime/mermaid-11.16.1.min.js"></script>
+<script>(function(){
+var CFG={"palettes":{"light":{"surface":"#f4efe4","text":"#42392e","line":"#8a7f6d","border":"#7a6c52","bg":"#fffdf8"},"dark":{"surface":"#262b34","text":"#f2f3f5","line":"#a8adb8","border":"#9aa4b8","bg":"#1f232b"}}};
+if(typeof mermaid==='undefined')return;
+var pres=Array.prototype.slice.call(document.querySelectorAll('pre.mermaid')).filter(function(p){if(p.hasAttribute('data-claude-mermaid-claimed'))return false;p.setAttribute('data-claude-mermaid-claimed','1');return true;});
+if(!pres.length)return;
+var mq=window.matchMedia?window.matchMedia('(prefers-color-scheme: dark)'):null;
+var root=document.documentElement;
+var items=pres.map(function(pre){
+var mount=document.createElement('div');mount.className='mermaid-diagram';
+return {pre:pre,mount:mount,src:pre.textContent||''};
+});
+var seq=0;
+var renderGen=0;
+var lastKey='';
+function pageBg(fallback){
+var els=[document.body,document.documentElement];
+for(var i=0;i<els.length;i++){
+var c=els[i]&&getComputedStyle(els[i]).backgroundColor;
+if(c&&c!=='transparent'&&c!=='rgba(0, 0, 0, 0)')return c;
+}
+return fallback;
+}
+function render(){
+var theme=root.getAttribute('data-theme');
+var dark=theme==='dark'||(!!(mq&&mq.matches)&&theme!=='light');
+var pal=dark?CFG.palettes.dark:CFG.palettes.light;
+var bg=pageBg(pal.bg);
+var key=(dark?'d':'l')+'|'+bg;
+if(key===lastKey)return;
+lastKey=key;
+var gen=++renderGen;
+var font=getComputedStyle(document.body).fontFamily||'sans-serif';
+var nat={useMaxWidth:false};
+mermaid.initialize({
+startOnLoad:false,securityLevel:'strict',theme:'base',
+flowchart:nat,sequence:nat,er:nat,state:nat,class:nat,pie:nat,
+gantt:nat,journey:nat,timeline:nat,gitGraph:nat,mindmap:nat,xyChart:nat,
+quadrantChart:nat,sankey:nat,c4:nat,requirement:nat,block:nat,
+packet:nat,kanban:nat,architecture:nat,radar:nat,
+themeVariables:{background:bg,mainBkg:pal.surface,primaryColor:pal.surface,
+primaryTextColor:pal.text,lineColor:pal.line,primaryBorderColor:pal.border,
+nodeBorder:pal.border,clusterBorder:pal.border,edgeLabelBackground:bg,
+clusterBkg:'rgba(127,127,127,0.07)',titleColor:pal.text,
+darkMode:dark,rowOdd:bg,rowEven:'rgba(127,127,127,0.07)',
+attributeBackgroundColorOdd:bg,attributeBackgroundColorEven:'rgba(127,127,127,0.07)',
+fontSize:'16px',fontFamily:font},
+themeCSS:'.node rect, .node circle, .node polygon, .node path, .cluster rect { stroke-width: 2px; }'
+});
+items.forEach(function(it){
+var id='claude-mermaid-'+seq++;
+mermaid.render(id,it.src).then(function(r){
+if(gen!==renderGen)return;
+var prev=it.pre.previousElementSibling;
+if(prev&&prev.className==='mermaid-diagram'&&prev!==it.mount)return;
+it.mount.innerHTML=r.svg;
+if(!it.mount.parentNode)it.pre.parentNode.insertBefore(it.mount,it.pre);
+it.pre.style.display='none';
+},function(){
+var scratch=document.getElementById(id);
+if(scratch)scratch.parentNode.removeChild(scratch);
+scratch=document.getElementById('d'+id);
+if(scratch)scratch.parentNode.removeChild(scratch);
+if(gen!==renderGen)return;
+if(it.mount.parentNode)it.mount.parentNode.removeChild(it.mount);
+it.pre.style.display='';
+});
+});
+}
+render();
+if(mq&&mq.addEventListener)mq.addEventListener('change',render);
+if(typeof MutationObserver!=='undefined')new MutationObserver(render).observe(root,{attributes:true,attributeFilter:['data-theme']});
+})();</script>
+<!--claude-mermaid-runtime-end-->
 
 <!--claude-mermaid-runtime-begin:3477-->
 <style>.mermaid-diagram{margin-block:4px}.mermaid-diagram svg{display:block;margin:0 auto;max-width:100%;height:auto}</style>
