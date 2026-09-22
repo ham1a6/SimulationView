@@ -716,8 +716,8 @@ classDiagram
 ```mermaid
 graph TD
     App["App (app.rs)<br/>3カラムCSS Gridレイアウト・リサイザー"]
-    App --> SimulationStatusPanel["SimulationStatusPanel<br/>(operation_panel.rs) 接続状態・原点・フレーム・航跡数・開始/一時停止"]
-    App --> VabPanel["VabPanel<br/>(vab.rs) 先頭行=カテゴリタブ、中段・下段=フロント側ダミー"]
+    App --> SimulationStatusPanel["SimulationStatusPanel<br/>(operation_panel.rs) 接続状態・原点・フレーム・航跡数(表示専用)"]
+    App --> VabPanel["VabPanel<br/>(vab.rs) 先頭行=カテゴリタブ、中段先頭4枠=スクショ/録画/開始/一時停止、残り+下段=フロント側ダミー"]
     App --> MainPanel["MainPanel<br/>(main_panel.rs) 地形描画canvas(3D/2D, TerrainView)"]
     App --> TopStatusPanel["TopStatusPanel<br/>TabbedPanel: [各種情報]=StatusPanel / [航跡情報]=TrackDetail"]
     App --> BottomStatusPanel["BottomStatusPanel<br/>TabbedPanel: [断面図]=CrossSectionView / [見通し範囲]=LosView"]
@@ -1198,7 +1198,7 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 トラックは高頻度で更新されるので、受信のたびに`render_frame`だけ呼び、LODの更新は予約しない。
 
 **サンプル(デモ)**: `sample/sim_server`の`Simulation::make_demo_scenario`が、デフォルト原点(富士山の近く)のまわりに7つのトラック(友軍機・敵機・ヘリ(地表基準)・中立の艦船(駿河湾)・車両(地表基準)・不明機・ミサイル)を楕円軌道で周回させ、
-`TrackList`として配信する。フロントは左パネルの「開始/一時停止」ボタン(`resume`/`pause`コマンド)でシミュレーションを進め、表示メニューの「航跡ラベル/航跡(軌跡)/高度線」で表示を切り替える。
+`TrackList`として配信する。フロントはVABパネルの「開始」「一時停止」ボタン(`resume`/`pause`コマンド。7.4節)でシミュレーションを進め、表示メニューの「航跡ラベル/航跡(軌跡)/高度線」で表示を切り替える。
 自分のシミュレータへつなぐときは、シナリオの部分を自分のシミュレーション結果から`Track`を作る処理に置き換える。
 
 ### 6.13 3Dモデル(glTF)表示(`terrain::models` / `model.wgsl`)
@@ -1367,9 +1367,9 @@ VabConfigの内容を使わず、選択中カテゴリに応じて内容が切�
   「B1-1」「B1-2」の位置)の2枠だけは、カテゴリ・ページによらず常にスクリーンショット・
   画面録画ボタン(要望による固定配置。6.14節)に差し替わり、`vab_dummy_mid_0`/`_1`は送らない。
   続く`i == 2`/`i == 3`(「B1-3」「B1-4」の位置)も同様に固定で、シミュレーションの
-  開始/一時停止ボタン(`SimulationStatusPanel`・25.1節と同じ`resume`/`pause`コマンドを送るだけ。
-  状態に応じた押し分け表示は持たない)。ステータスパネル側のボタンは残したまま、VABにも
-  同じ操作口を増やした形
+  開始/一時停止ボタン(`resume`/`pause`コマンドを送るだけ。状態に応じた押し分け表示は持たない)。
+  元は`SimulationStatusPanel`(25.1節)にもあったが、重複するため要望によりそちらから撤去し、
+  VABへ一本化した(`SimulationStatusPanel`は接続状態・原点・フレーム・航跡数の表示専用になった)
 
 VABはまだ実ハードウェア非連動の開発用ダミー段階であるため、**「カテゴリごとに実際に何を
 表示・操作すべきか」はまだフロント側だけの試作**であり、サーバー(C++)側はカテゴリという
@@ -1539,9 +1539,10 @@ stateDiagram-v2
 `ConnectionStatus::Connected`でない、または接続済みでもまだ`AppStatus`を受け取っていない)は、
 詳細を出し分けず一律「接続中」とだけ表示する(`ConnectionStatus`ごとの色分け・文言の出し分けはしない)。
 
-左パネルのシミュレーションステータスパネルには、状態文字列の下に**「開始」「一時停止」ボタン**(それぞれ`resume`/`pause`
-コマンドを送る)と、原点・フレームの下に**「航跡数」**(最新の`TrackList`のトラック数。6.12節)がある。以前は`resume`を送る部品が
-フロントに無く、`running_`が`false`のまま経過時間が0で止まっていた。実行中は原点を変更できない(3.4節。拒否は`CommandError`)。
+左パネルのシミュレーションステータスパネルには、原点・フレームの下に**「航跡数」**(最新の`TrackList`のトラック数。6.12節)がある。
+「開始」「一時停止」ボタン(それぞれ`resume`/`pause`コマンドを送る)は、当初このパネルにあったが、VABパネル(7.4節の「例外」)に
+統合したため撤去した(重複していたため要望により撤去。以前は`resume`を送る部品がフロントに無く、`running_`が`false`のまま
+経過時間が0で止まっていた)。実行中は原点を変更できない(3.4節。拒否は`CommandError`)。
 
 `AppStatus.text`の実体はC++側`Simulation::running_`(pause/resumeコマンドで変化)に
 連動しており、`OriginState`の`origin_changed`と同じパターンで

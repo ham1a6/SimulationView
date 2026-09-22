@@ -1,15 +1,16 @@
-//! 左パネル上: シミュレーションステータスパネル(接続状態・原点・フレーム・航跡数の表示と、開始/一時停止ボタン)。
+//! 左パネル上: シミュレーションステータスパネル(接続状態・原点・フレーム・航跡数の表示)。
 //! DETAILED_DESIGN.md 7.1節参照。VABパネル(左パネル下)は`vab.rs`。
 //! 原点を変更するフォームは、メニューバー(設定→原点設定...)から開く
 //! フローティングパネル(`origin_dialog.rs`)へ移動済み。
+//! 開始/一時停止ボタンは、VABパネルの中段(B1-3・B1-4の位置)に統合したため、このパネルからは
+//! 撤去した(表示専用のパネルになった。要望により、重複していたボタンを消した)。
 
 use leptos::prelude::*;
 
-use crate::protocol::ClientCommand;
-use crate::ws::{ConnectionStatus, WsHandle, WsSignals};
+use crate::ws::{ConnectionStatus, WsSignals};
 
 #[component]
-pub fn SimulationStatusPanel(conn: WsHandle) -> impl IntoView {
+pub fn SimulationStatusPanel() -> impl IntoView {
     let signals = use_context::<WsSignals>().expect("WsSignals context not found");
 
     // シミュレータアプリケーション(C++)が送ってきた状態文字列を装飾なしでそのまま表示する。
@@ -23,20 +24,9 @@ pub fn SimulationStatusPanel(conn: WsHandle) -> impl IntoView {
         app_status.map(|s| s.text).unwrap_or_else(|| "接続中".to_string())
     };
 
-    // シミュレーションを進める/止める。進めている間は航跡(TrackList)が更新され続ける。
-    // (停止中しか原点は変更できない: サーバー側のガード)
-
     view! {
         <div class="panel-section operation-panel">
             <p>{status_text}</p>
-            <div class="sim-controls">
-                <button class="sim-button" on:click=move |_| conn.send_command(&ClientCommand::resume())>
-                    "開始"
-                </button>
-                <button class="sim-button" on:click=move |_| conn.send_command(&ClientCommand::pause())>
-                    "一時停止"
-                </button>
-            </div>
 
             <dl class="kv-list">
                 <dt>"原点"</dt>

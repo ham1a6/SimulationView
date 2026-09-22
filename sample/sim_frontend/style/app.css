@@ -327,13 +327,8 @@ body {
     font-size: 0.85rem;
 }
 
-/* シミュレーションステータスパネルの開始/一時停止ボタン。 */
-.sim-controls {
-    display: flex;
-    gap: 0.4rem;
-    margin: 0.25rem 0 0.5rem 0;
-}
-
+/* 汎用の操作ボタン(元はシミュレーションステータスパネルの開始/一時停止用だったが、
+   VABパネルに統合したため撤去。現在は航跡情報タブの選択解除ボタン等が使う)。 */
 .sim-button {
     flex: 1 1 0;
     background: #234;
