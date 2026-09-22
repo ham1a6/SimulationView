@@ -8,6 +8,7 @@
 //! **完全に一致させる必要がある**(片方だけ並び替えるとデータが壊れる)。
 
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -33,6 +34,64 @@ impl MsgType {
             0x07 => Some(MsgType::TrackList),
             _ => None,
         }
+    }
+}
+
+/// 型バイトを検証・復号したサーバー通知。
+#[derive(Debug, Clone)]
+pub enum ServerMessage {
+    SimState(SimState),
+    VabConfig(VabConfig),
+    OriginState(OriginState),
+    StatusPanelConfig(StatusPanelConfig),
+    CommandError(CommandError),
+    AppStatus(AppStatus),
+    TrackList(TrackList),
+}
+
+#[derive(Debug)]
+pub enum DecodeFrameError {
+    Empty,
+    UnknownType(u8),
+    InvalidBody {
+        msg_type: MsgType,
+        source: rmp_serde::decode::Error,
+    },
+}
+
+impl fmt::Display for DecodeFrameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "空のフレーム"),
+            Self::UnknownType(value) => write!(f, "未知のmsg_type: 0x{value:02x}"),
+            Self::InvalidBody { msg_type, source } => {
+                write!(f, "{msg_type:?}のMessagePackが不正: {source}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DecodeFrameError {}
+
+/// `[msg_type][MessagePack body]`をDOMやLeptosに依存せず復号する。
+pub fn decode_frame(bytes: &[u8]) -> Result<ServerMessage, DecodeFrameError> {
+    let (&kind, body) = bytes.split_first().ok_or(DecodeFrameError::Empty)?;
+    let msg_type = MsgType::from_byte(kind).ok_or(DecodeFrameError::UnknownType(kind))?;
+    macro_rules! decode {
+        ($type:ty, $variant:ident) => {
+            rmp_serde::from_slice::<$type>(body)
+                .map(ServerMessage::$variant)
+                .map_err(|source| DecodeFrameError::InvalidBody { msg_type, source })
+        };
+    }
+    match msg_type {
+        MsgType::SimState => decode!(SimState, SimState),
+        MsgType::VabConfig => decode!(VabConfig, VabConfig),
+        MsgType::OriginState => decode!(OriginState, OriginState),
+        MsgType::StatusPanelConfig => decode!(StatusPanelConfig, StatusPanelConfig),
+        MsgType::CommandError => decode!(CommandError, CommandError),
+        MsgType::AppStatus => decode!(AppStatus, AppStatus),
+        MsgType::TrackList => decode!(TrackList, TrackList),
     }
 }
 
@@ -197,5 +256,70 @@ impl ClientCommand {
             button_id: button_id.into(),
             ..Default::default()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame<T: Serialize>(kind: MsgType, value: &T) -> Vec<u8> {
+        let mut bytes = vec![kind as u8];
+        bytes.extend(rmp_serde::to_vec(value).unwrap());
+        bytes
+    }
+
+    #[test]
+    fn decodes_each_server_message_type() {
+        assert!(matches!(
+            decode_frame(&frame(
+                MsgType::SimState,
+                &(1.0_f64, vec![0.0_f32], 2_u32, vec![3.0_f64])
+            )),
+            Ok(ServerMessage::SimState(_))
+        ));
+        assert!(matches!(
+            decode_frame(&frame(
+                MsgType::VabConfig,
+                &(1_u32, 1_u32, vec![("id", "label", true)])
+            )),
+            Ok(ServerMessage::VabConfig(_))
+        ));
+        assert!(matches!(
+            decode_frame(&frame(MsgType::OriginState, &(35.0_f64, 139.0_f64))),
+            Ok(ServerMessage::OriginState(_))
+        ));
+        assert!(matches!(
+            decode_frame(&frame(
+                MsgType::StatusPanelConfig,
+                &(vec![("id", "label", "m")],)
+            )),
+            Ok(ServerMessage::StatusPanelConfig(_))
+        ));
+        assert!(matches!(
+            decode_frame(&frame(MsgType::CommandError, &("resume", "拒否"))),
+            Ok(ServerMessage::CommandError(_))
+        ));
+        assert!(matches!(
+            decode_frame(&frame(MsgType::AppStatus, &("停止中",))),
+            Ok(ServerMessage::AppStatus(_))
+        ));
+        assert!(matches!(
+            decode_frame(&frame(MsgType::TrackList, &(0.0_f64, Vec::<(u32,)>::new()))),
+            Ok(ServerMessage::TrackList(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_unknown_and_malformed_frames() {
+        assert!(matches!(decode_frame(&[]), Err(DecodeFrameError::Empty)));
+        assert!(matches!(
+            decode_frame(&[0xff]),
+            Err(DecodeFrameError::UnknownType(0xff))
+        ));
+        assert!(matches!(
+            decode_frame(&[MsgType::OriginState as u8, 0xc1]),
+            Err(DecodeFrameError::InvalidBody { .. })
+        ));
     }
 }

@@ -21,6 +21,7 @@ use sim3dview::ui::coverage_altitude_dialog::{
 };
 use sim3dview::ui::model_settings_dialog::{ModelSettingsDialog, ModelSettingsDialogState};
 use sim3dview::ui::origin_dialog::{OriginDialog, OriginDialogState};
+use sim3dview::ui::pointer_drag::DragTracker;
 
 use crate::components::drawing_window::{DrawingWindow, DrawingWindowState};
 use crate::components::main_panel::MainPanel;
@@ -131,14 +132,18 @@ pub fn App() -> impl IntoView {
     let center_fr = RwSignal::new(640.0_f64);
     let right_fr = RwSignal::new(320.0_f64);
 
-    let dragging = RwSignal::new(false);
-    let drag_start_x = RwSignal::new(0.0_f64);
+    let drag = RwSignal::new(DragTracker::default());
     let drag_start_center = RwSignal::new(0.0_f64);
     let drag_start_right = RwSignal::new(0.0_f64);
 
     let on_pointer_down = move |ev: leptos::ev::PointerEvent| {
-        dragging.set(true);
-        drag_start_x.set(ev.client_x() as f64);
+        drag.update(|drag| {
+            drag.begin(
+                ev.pointer_id(),
+                f64::from(ev.client_x()),
+                f64::from(ev.client_y()),
+            )
+        });
         drag_start_center.set(center_fr.get_untracked());
         drag_start_right.set(right_fr.get_untracked());
         // ポインタキャプチャ: ドラッグ中にカーソルがリサイザー外に出てもイベントを受け取り続ける。
@@ -150,16 +155,36 @@ pub fn App() -> impl IntoView {
     };
 
     let on_pointer_move = move |ev: leptos::ev::PointerEvent| {
-        if !dragging.get_untracked() {
+        let Some(update) = drag
+            .try_update(|drag| {
+                drag.update(
+                    ev.pointer_id(),
+                    f64::from(ev.client_x()),
+                    f64::from(ev.client_y()),
+                )
+            })
+            .flatten()
+        else {
             return;
-        }
-        let dx = ev.client_x() as f64 - drag_start_x.get_untracked();
+        };
+        let dx = update.total.0;
         center_fr.set((drag_start_center.get_untracked() + dx).max(MIN_CENTER_PX));
         right_fr.set((drag_start_right.get_untracked() - dx).max(MIN_RIGHT_PX));
     };
 
-    let on_pointer_up = move |_ev: leptos::ev::PointerEvent| {
-        dragging.set(false);
+    let on_pointer_up = move |ev: leptos::ev::PointerEvent| {
+        drag.update(|drag| {
+            drag.end(
+                ev.pointer_id(),
+                f64::from(ev.client_x()),
+                f64::from(ev.client_y()),
+            );
+        });
+    };
+    let on_pointer_cancel = move |ev: leptos::ev::PointerEvent| {
+        drag.update(|drag| {
+            drag.cancel(ev.pointer_id());
+        });
     };
 
     // 4列: 左パネル(固定) / メインパネル / リサイザー / 右パネル。
@@ -193,7 +218,7 @@ pub fn App() -> impl IntoView {
                         on:pointerdown=on_pointer_down
                         on:pointermove=on_pointer_move
                         on:pointerup=on_pointer_up
-                        on:pointercancel=on_pointer_up
+                        on:pointercancel=on_pointer_cancel
                     ></div>
 
                     <div class="right-panel">

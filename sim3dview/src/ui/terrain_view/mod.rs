@@ -92,11 +92,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         camera: OrbitCamera::preset(preset, 0.0),
         target_up: 0.0,
         initializing: false,
-        dragging: false,
-        last_x: 0.0,
-        last_y: 0.0,
-        down_x: 0.0,
-        down_y: 0.0,
+        interaction: InteractionState::default(),
         radar_markers,
         drawings,
         tracks,
@@ -534,11 +530,11 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let on_pointer_down = move |ev: leptos::ev::PointerEvent| {
         {
             let mut s = state_pd.borrow_mut();
-            s.dragging = true;
-            s.last_x = ev.client_x() as f64;
-            s.last_y = ev.client_y() as f64;
-            s.down_x = s.last_x;
-            s.down_y = s.last_y;
+            s.interaction.drag.begin(
+                ev.pointer_id(),
+                f64::from(ev.client_x()),
+                f64::from(ev.client_y()),
+            );
         }
         if let Some(target) = ev.target() {
             if let Ok(el) = target.dyn_into::<web_sys::Element>() {
@@ -554,7 +550,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         // 図形の作成中は、カーソルの指す地点へ仮の図形の先端を追従させる(ドラッグ中は動かさない)。
         // 仮の図形を更新するたびに作図全体の再構築+描画が走るので、マウス移動は1フレームに1回へまとめる。
         if let Some(tool) = draw_tool.filter(|t| t.wants_hover()) {
-            if !state_pm.borrow().dragging {
+            if !state_pm.borrow().interaction.drag.is_active() {
                 if let Some(canvas) = ev
                     .target()
                     .and_then(|t| t.dyn_into::<web_sys::HtmlCanvasElement>().ok())
@@ -579,15 +575,13 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         }
         let should_render = {
             let mut s = state_pm.borrow_mut();
-            if !s.dragging {
-                false
-            } else {
-                let x = ev.client_x() as f64;
-                let y = ev.client_y() as f64;
-                let dx = (x - s.last_x) as f32;
-                let dy = (y - s.last_y) as f32;
-                s.last_x = x;
-                s.last_y = y;
+            if let Some(update) = s.interaction.drag.update(
+                ev.pointer_id(),
+                f64::from(ev.client_x()),
+                f64::from(ev.client_y()),
+            ) {
+                let dx = update.delta.0 as f32;
+                let dy = update.delta.1 as f32;
                 match s.camera.mode {
                     ViewMode::ThreeD => {
                         if ev.shift_key() {
@@ -637,6 +631,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                     }
                 }
                 true
+            } else {
+                false
             }
         };
         if should_render {
@@ -645,8 +641,12 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     };
 
     let state_pc = state.clone();
-    let on_pointer_cancel = move |_ev: leptos::ev::PointerEvent| {
-        state_pc.borrow_mut().dragging = false;
+    let on_pointer_cancel = move |ev: leptos::ev::PointerEvent| {
+        state_pc
+            .borrow_mut()
+            .interaction
+            .drag
+            .cancel(ev.pointer_id());
     };
 
     // ドラッグではない左クリックが離されたとき:
@@ -656,16 +656,18 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     // (通常のドラッグ=回転・パンは従来通り動く)
     let state_pu = state.clone();
     let on_pointer_up = move |ev: leptos::ev::PointerEvent| {
-        let (down_x, down_y) = {
+        let drag_end = {
             let mut s = state_pu.borrow_mut();
-            s.dragging = false;
-            (s.down_x, s.down_y)
+            s.interaction.drag.end(
+                ev.pointer_id(),
+                f64::from(ev.client_x()),
+                f64::from(ev.client_y()),
+            )
         };
         if ev.button() != 0 {
             return;
         }
-        let moved = (ev.client_x() as f64 - down_x).hypot(ev.client_y() as f64 - down_y);
-        if moved >= CLICK_MAX_MOVE_PX {
+        if drag_end.is_none_or(|drag| drag.distance() >= CLICK_MAX_MOVE_PX) {
             return;
         }
         let Some(target) = ev.target() else {
@@ -674,7 +676,14 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         let Ok(canvas) = target.dyn_into::<web_sys::HtmlCanvasElement>() else {
             return;
         };
-        if let Some(pick_state) = origin_pick.filter(|p| p.active.get_untracked()) {
+        let mode = MapClickMode::resolve(
+            origin_pick.is_some_and(|p| p.active.get_untracked()),
+            draw_tool.is_some_and(|t| t.tool.get_untracked().is_some()),
+        );
+        if mode == MapClickMode::Origin {
+            let Some(pick_state) = origin_pick else {
+                return;
+            };
             // 地形データ範囲外(海の外側など)をクリックした場合は、モードを維持して指定し直せるようにする。
             if let Some((lat, lon)) = pick_at_client(
                 &state_pu,
@@ -687,7 +696,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             }
             return;
         }
-        if let Some(tool) = draw_tool.filter(|t| t.tool.get_untracked().is_some()) {
+        if mode == MapClickMode::Drawing {
+            let Some(tool) = draw_tool else { return };
             // 図形の作成中。地形データ範囲外のクリックは無視する(点を置き直せる)。
             if let Some((lat, lon)) = pick_at_client(
                 &state_pu,

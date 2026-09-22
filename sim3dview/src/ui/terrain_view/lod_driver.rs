@@ -78,7 +78,7 @@ pub(super) fn schedule_lod_soon(state: &Rc<RefCell<ViewState>>) {
 pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
     let (terrain, origin, plan) = {
         let s = state.borrow();
-        if s.dragging {
+        if s.interaction.drag.is_active() {
             drop(s);
             schedule_lod(state); // ドラッグ中は重い処理を避け、落ち着いてからやり直す。
             return;

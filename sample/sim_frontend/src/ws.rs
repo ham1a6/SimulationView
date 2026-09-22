@@ -16,13 +16,20 @@ use wasm_bindgen::JsCast;
 use web_sys::{BinaryType, CloseEvent, MessageEvent, WebSocket};
 
 use crate::protocol::{
-    AppStatus, ClientCommand, CommandError, MsgType, OriginState, SimState, StatusPanelConfig,
-    TrackList, VabConfig,
+    decode_frame, AppStatus, ClientCommand, CommandError, OriginState, ServerMessage, SimState,
+    StatusPanelConfig, TrackList, VabConfig,
 };
 
 const INITIAL_BACKOFF_MS: u32 = 1_000;
 const MAX_BACKOFF_MS: u32 = 30_000;
 const JITTER_MS: f64 = 300.0; // ±300ms
+
+fn reconnect_delay_ms(attempt: u32, jitter_ms: i64) -> u32 {
+    let base_ms = INITIAL_BACKOFF_MS
+        .saturating_mul(1u32 << attempt.min(5))
+        .min(MAX_BACKOFF_MS);
+    (i64::from(base_ms) + jitter_ms).clamp(200, i64::from(MAX_BACKOFF_MS)) as u32
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ConnectionStatus {
@@ -226,47 +233,26 @@ impl WsConnection {
             }
         };
         let bytes = Uint8Array::new(&array_buffer).to_vec();
-        if bytes.is_empty() {
-            return;
-        }
-        let Some(msg_type) = MsgType::from_byte(bytes[0]) else {
-            log::warn!("[ws] unknown msg_type: 0x{:02x}", bytes[0]);
-            return;
+        let message = match decode_frame(&bytes) {
+            Ok(message) => message,
+            Err(error) => {
+                log::warn!("[ws] frame ignored: {error}");
+                return;
+            }
         };
-        let body = &bytes[1..];
-
-        match msg_type {
-            MsgType::SimState => match rmp_serde::from_slice::<SimState>(body) {
-                Ok(state) => self.signals.last_sim_state.set(Some(state)),
-                Err(e) => log::error!("[ws] failed to decode SimState: {e}"),
-            },
-            MsgType::VabConfig => match rmp_serde::from_slice::<VabConfig>(body) {
-                Ok(cfg) => self.signals.vab_config.set(Some(cfg)),
-                Err(e) => log::error!("[ws] failed to decode VabConfig: {e}"),
-            },
-            MsgType::OriginState => match rmp_serde::from_slice::<OriginState>(body) {
-                Ok(origin) => self.signals.origin.set(Some(origin)),
-                Err(e) => log::error!("[ws] failed to decode OriginState: {e}"),
-            },
-            MsgType::StatusPanelConfig => match rmp_serde::from_slice::<StatusPanelConfig>(body) {
-                Ok(cfg) => self.signals.status_panel_config.set(Some(cfg)),
-                Err(e) => log::error!("[ws] failed to decode StatusPanelConfig: {e}"),
-            },
-            MsgType::CommandError => match rmp_serde::from_slice::<CommandError>(body) {
-                Ok(err) => {
-                    log::warn!("[ws] CommandError: {} ({})", err.message, err.command_type);
-                    self.signals.last_command_error.set(Some(err));
-                }
-                Err(e) => log::error!("[ws] failed to decode CommandError: {e}"),
-            },
-            MsgType::AppStatus => match rmp_serde::from_slice::<AppStatus>(body) {
-                Ok(status) => self.signals.app_status.set(Some(status)),
-                Err(e) => log::error!("[ws] failed to decode AppStatus: {e}"),
-            },
-            MsgType::TrackList => match rmp_serde::from_slice::<TrackList>(body) {
-                Ok(list) => self.signals.track_list.set(Some(list)),
-                Err(e) => log::error!("[ws] failed to decode TrackList: {e}"),
-            },
+        match message {
+            ServerMessage::SimState(state) => self.signals.last_sim_state.set(Some(state)),
+            ServerMessage::VabConfig(cfg) => self.signals.vab_config.set(Some(cfg)),
+            ServerMessage::OriginState(origin) => self.signals.origin.set(Some(origin)),
+            ServerMessage::StatusPanelConfig(cfg) => {
+                self.signals.status_panel_config.set(Some(cfg));
+            }
+            ServerMessage::CommandError(err) => {
+                log::warn!("[ws] CommandError: {} ({})", err.message, err.command_type);
+                self.signals.last_command_error.set(Some(err));
+            }
+            ServerMessage::AppStatus(status) => self.signals.app_status.set(Some(status)),
+            ServerMessage::TrackList(list) => self.signals.track_list.set(Some(list)),
         }
     }
 
@@ -291,11 +277,8 @@ impl WsConnection {
             attempt: attempt + 1,
         });
 
-        let base_ms = INITIAL_BACKOFF_MS
-            .saturating_mul(1u32 << attempt.min(5))
-            .min(MAX_BACKOFF_MS);
         let jitter_ms = (js_sys::Math::random() * (2.0 * JITTER_MS) - JITTER_MS).round() as i64;
-        let delay_ms = (base_ms as i64 + jitter_ms).clamp(200, MAX_BACKOFF_MS as i64) as u32;
+        let delay_ms = reconnect_delay_ms(attempt, jitter_ms);
 
         let this = self.clone();
         let timeout = Timeout::new(delay_ms, move || {
@@ -373,4 +356,18 @@ pub fn default_terrain_base_url() -> String {
     let (hostname, is_tls) = page_host_and_tls();
     let scheme = if is_tls { "https" } else { "http" };
     format!("{scheme}://{hostname}:9001/terrain")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconnect_backoff_saturates_and_clamps_jitter() {
+        assert_eq!(reconnect_delay_ms(0, 0), 1_000);
+        assert_eq!(reconnect_delay_ms(1, -300), 1_700);
+        assert_eq!(reconnect_delay_ms(5, 0), MAX_BACKOFF_MS);
+        assert_eq!(reconnect_delay_ms(99, 300), MAX_BACKOFF_MS);
+        assert_eq!(reconnect_delay_ms(0, -9_999), 200);
+    }
 }

@@ -10,6 +10,25 @@ use crate::terrain::tracks::{self, TrackId};
 /// この距離(CSSピクセル)未満の移動なら、ドラッグではなく単発クリックとして扱う。
 pub(super) const CLICK_MAX_MOVE_PX: f64 = 5.0;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MapClickMode {
+    Origin,
+    Drawing,
+    Track,
+}
+
+impl MapClickMode {
+    pub(super) fn resolve(origin_active: bool, drawing_active: bool) -> Self {
+        if origin_active {
+            Self::Origin
+        } else if drawing_active {
+            Self::Drawing
+        } else {
+            Self::Track
+        }
+    }
+}
+
 /// canvas上の画面座標(client座標)が指す地表の緯度経度。地形データ範囲外・未初期化ならNone。
 pub(super) fn pick_at_client(
     state: &Rc<RefCell<ViewState>>,
@@ -61,4 +80,16 @@ pub(super) fn pick_track_at_client(
         (x, y),
         tracks::PICK_RADIUS_PX,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn click_mode_has_an_explicit_priority() {
+        assert_eq!(MapClickMode::resolve(true, true), MapClickMode::Origin);
+        assert_eq!(MapClickMode::resolve(false, true), MapClickMode::Drawing);
+        assert_eq!(MapClickMode::resolve(false, false), MapClickMode::Track);
+    }
 }

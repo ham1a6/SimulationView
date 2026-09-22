@@ -16,6 +16,12 @@ use crate::terrain::markers::RadarMarkersState;
 use crate::terrain::origin::Origin;
 use crate::terrain::renderer::TerrainRenderer;
 use crate::terrain::tracks::{TrackId, TrackLabel, TracksState};
+use crate::ui::pointer_drag::DragTracker;
+
+#[derive(Default)]
+pub(super) struct InteractionState {
+    pub(super) drag: DragTracker,
+}
 
 pub(super) struct ViewState {
     pub(super) renderer: Option<TerrainRenderer>,
@@ -28,12 +34,7 @@ pub(super) struct ViewState {
     /// 置くことで、ズームインしても地表に埋まらないようにする(camera.rs参照)。
     pub(super) target_up: f32,
     pub(super) initializing: bool,
-    pub(super) dragging: bool,
-    pub(super) last_x: f64,
-    pub(super) last_y: f64,
-    /// ボタンを押した位置。離した位置との距離で「クリック」か「ドラッグ」かを判別する。
-    pub(super) down_x: f64,
-    pub(super) down_y: f64,
+    pub(super) interaction: InteractionState,
     pub(super) radar_markers: RadarMarkersState,
     /// 作図(図形・線)の一覧(`terrain::drawing`)。
     pub(super) drawings: DrawingState,
