@@ -46,7 +46,7 @@ pub fn App() -> impl IntoView {
     // 作図ウインドウ(移動できる非モーダルのウインドウ)の開閉状態(表示メニューの「作図...」から開く)。
     provide_context(DrawingWindowState(RwSignal::new(false)));
     // 地形データはメインパネル・見通し範囲タブで共有する(フェッチは1回だけ、
-    // BASIC_DESIGN.md 6節フェーズ10: 同一の地形メッシュに異なるカメラを適用する構成)。
+    // DETAILED_DESIGN.md 6.0・6.5節: 同一の地形データに異なるカメラを適用する構成)。
     // sample/sim_server(ポート9001)の`/terrain/*`から取得する(sim3dviewライブラリ自体は
     // サーバーのホスト名・ポートを知らない。terrain::loader参照)。
     provide_context(TerrainStore::new(default_terrain_base_url()));

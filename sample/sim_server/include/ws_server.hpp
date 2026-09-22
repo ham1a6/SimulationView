@@ -1,6 +1,6 @@
 #pragma once
 
-// WebSocketサーバー。BASIC_DESIGN.md 6節フェーズ5: 実シミュレーション(Simulation)との結合。
+// WebSocketサーバー。DETAILED_DESIGN.md 5.1節: 実シミュレーション(Simulation)との結合。
 //
 // スレッドモデル(DETAILED_DESIGN.md 5.1節):
 // - uWSイベントループスレッドとsimスレッドを分離する。

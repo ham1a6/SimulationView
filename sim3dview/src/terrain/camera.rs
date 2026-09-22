@@ -6,7 +6,7 @@
 //! ENUがそもそも右手系なのでlook_at_rh/perspective_rhの右手系前提ともそのまま整合する。
 //! DETAILED_DESIGN.md 6.6節)。
 //!
-//! フェーズ10: 自由視点カメラ(ズーム・回転・視点プリセット)。BASIC_DESIGN.md 6節フェーズ10。
+//! 自由視点カメラ(ズーム・回転・視点プリセット)。DETAILED_DESIGN.md 6.6・9.6節。
 
 use glam::camera::rh::{proj::directx, view::look_at_mat4};
 use glam::{Mat4, Vec3};
@@ -140,7 +140,7 @@ impl Camera {
     }
 }
 
-/// 視点プリセット(BASIC_DESIGN.md 6節フェーズ10)。3Dモードの初期カメラアングルを与える
+/// 視点プリセット(DETAILED_DESIGN.md 6.6節)。3Dモードの初期カメラアングルを与える
 /// (以後はズーム・回転の自由操作ができる)。当初は俯瞰・側面の2種類をワンクリックで
 /// 切り替えるボタンがあったが、「俯瞰ボタンと側面ボタンはいらない」との要望により
 /// ボタン自体を削除し(`components/terrain_view.rs`)、`Side`バリアントも不要になったため
@@ -192,7 +192,7 @@ const ORTHO_DEPTH_RANGE_M: f32 = 1_200_000.0;
 
 /// 自由視点カメラの内部状態。ドラッグ(回転)・ホイール(ズーム)で更新し、
 /// 都度`to_camera()`で描画用の`Camera`(視点位置・注視点)へ変換する。
-/// BASIC_DESIGN.md 6節フェーズ10: 「カメラの状態(位置・角度・ズーム)はLeptosのSignalで保持し、
+/// DETAILED_DESIGN.md 6.5〜6.6節: 「カメラの状態(位置・角度・ズーム)はLeptosのSignalで保持し、
 /// パネルごとに独立させる」— 本構造体自体は素のRust構造体だが、
 /// `components/terrain_view.rs`側で各パネルごとに独立したインスタンスとして保持することで
 /// この方針を満たす。

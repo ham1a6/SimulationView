@@ -613,7 +613,7 @@ DETAILED_DESIGN.md 6.10節に詳細。
 
 「マップの解像度を上げてほしい」との要望を受けた変更。前々から「既知の制約」として
 記録していた「現在のheightmap解像度ではズームインしても地形の凹凸が見えない」
-(1グリッドセル約542m)を、LOD化までは行わない範囲で緩和した。BASIC_DESIGN.md 4節
+(1グリッドセル約542m)を、LOD化までは行わない範囲で緩和した。当時の基本設計4節
 9番・DETAILED_DESIGN.md 2.4節・2.5節・3.3節もあわせて更新。
 
 - `geotiff_preprocess/main.cpp`の`kTargetWidth`/`kTargetHeight`を1024→2048に変更。
@@ -1761,7 +1761,7 @@ C++/Rust全ソースを通読し、`cargo check`(警告ゼロ化)・CMakeビル�
   `dome_geometry`・`coverage_2d_geometry`は、計算結果(`DomeRing`・`LosPoint`の`range_m`)を平滑化せずそのまま頂点に使うようにした。頂点の間引き(`DOME_AZIMUTH_STEP`・`ring_stride`・`COVERAGE_AZIMUTH_STEP`)や、
   計算の小分け・キャッシュ・複数覆域の同時表示など、平滑化以外の性能対策はそのまま残した。
 - **結果**: 遮蔽の境目(放射状の筋・低い高度でのギザギザ)は、平滑化前の生の計算結果どおりに戻る。単体テストは平滑化専用の5件(`smoothing_*`・`coverage_boundary_smoothing_*`・`ring_smoothing_*`)を削除し、残り(間引き・帯のつなぎ目・色・ピン形状)は変更なしで通ることを確認した。
-- **ドキュメント**: `docs/DETAILED_DESIGN.md`6.9節・9.10節、`docs/IMPLEMENTATION_GUIDE.md`のチェックリストから、平滑化の記述を「平滑化はしない」に書き換えた。技術解説ノート(36.2・36.3・36.6節)も同様に更新した。
+- **ドキュメント**: `docs/DETAILED_DESIGN.md`6.9節・9.10節、当時の再実装ガイドのチェックリストから、平滑化の記述を「平滑化はしない」に書き換えた。技術解説ノート(36.2・36.3・36.6節)も同様に更新した。
 
 ### マップパネルのスクリーンショット・画面録画(おまけ機能)
 
