@@ -7,6 +7,7 @@
 
 
 
+
 <title>Sim3dViewのしくみ</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght,ital@9..144,400,600,700,900,600i&family=Source+Sans+3:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
@@ -360,7 +361,7 @@
       <a href="#ui-map">23. 画面の部品マップ</a>
       <a href="#ui-menu">24. メニューバー</a>
       <a href="#ui-left">25. 左パネル: 状況パネルとVAB</a>
-      <a href="#ui-capture">25.3 スクリーンショット・画面録画</a>
+      <a href="#ui-capture">25.3 中段の固定ボタン枠</a>
       <a href="#ui-main">26. メインパネル: 地形ビュー</a>
       <a href="#ctx-menu">26.7 右クリックメニュー</a>
       <a href="#ui-right">27. 右パネル: タブと3つのタブ</a>
@@ -406,6 +407,7 @@
           <li><strong>マップパネルを、PNGスクリーンショット・WebM画面録画で保存できるようになりました。</strong>VABパネルの中段の先頭2枠(既定のカテゴリ・1ページ目なら「B1-1」「B1-2」だった位置)が、カテゴリ・ページによらず常に「スクショ」「録画」ボタンになります(25.3節)。</li>
           <li><strong>サーバーへは何も送らない、ブラウザだけで完結する機能です。</strong><code>HTMLCanvasElement.toBlob</code>・<code>captureStream</code>・<code>MediaRecorder</code>というブラウザ標準APIだけで作っています。</li>
           <li><strong>ライブラリ側は、要求を運ぶだけの新しいcontext(<code>terrain::capture::CaptureState</code>)を1つ足しただけです。</strong>実際にcanvasへ触れる処理は<code>TerrainView</code>の非公開サブモジュールにあり、ボタンをどこに置くかはアプリ(呼び出し側)の自由です。</li>
+          <li><strong>シミュレーションの「開始」「一時停止」も、VABの中段(続く2枠)に割り当てました。</strong>左パネル上の状況パネルの同名ボタンと同じコマンドを送るだけの、もう1つの操作口です(25.3節)。</li>
           <li>節番号は変わっていません。新しい内容は25.3節にあります。</li>
         </ul>
       </details>
@@ -4485,12 +4487,19 @@ button.label = is_hole ? <span class="str">""</span> : (<span class="str">"B"</s
         <strong>フロントは、ボタンのidをそのまま送るだけ</strong>で、意味を知りません。
       </p>
 
-      <h3 id="ui-capture">25.3 スクリーンショット・画面録画ボタン(おまけ機能)</h3>
+      <h3 id="ui-capture">25.3 中段の固定ボタン枠(スクリーンショット・画面録画・シミュレーション開始/一時停止)</h3>
       <p>
         マップパネル(地形canvas)を<strong>PNG保存</strong>・<strong>WebM録画</strong>する2つのボタンを、VABパネルの<strong>中段の先頭2枠</strong>
         (既定のカテゴリ・1ページ目なら、25.2節の例で言う「B1-1」「B1-2」の位置)に固定で置きました。中段は本来、選択中カテゴリに応じて内容が切り替わる
         フロントだけのダミーボタンの区画(25.2節)ですが、この2枠だけは<strong>カテゴリ・ページによらず常にこの2つのボタン</strong>(<strong>完全にフロント側だけで完結する本物のボタン</strong>)です。
         サーバーへは何も送りません。
+      </p>
+      <p>
+        続く2枠(<code>i == 2</code>/<code>i == 3</code>、既定なら「B1-3」「B1-4」の位置)も同じ考え方で固定してあり、
+        こちらは<strong>シミュレーションの「開始」「一時停止」</strong>です。左パネル上の<code>SimulationStatusPanel</code>(25.1節)と
+        まったく同じ<code>resume</code>/<code>pause</code>コマンドを送るだけで、押し分け表示(色反転)は持ちません
+        (C++が決める自由文字列の状態表示から「実行中/一時停止中」を判定するのは筋が悪いため)。<code>SimulationStatusPanel</code>側のボタンは
+        そのまま残っていて、VABにも同じ操作口が増えた形です。
       </p>
       <div class="callout warn">
         <div class="label">⚠️ 最初はVABパネルの最上部の専用行でした</div>
@@ -4529,7 +4538,22 @@ button.label = is_hole ? <span class="str">""</span> : (<span class="str">"B"</s
             &lt;/button&gt;
         }.into_any();
     }
-    <span class="cm">// i &gt;= 2 はこれまでどおり選択中カテゴリのダミーボタン(mid_button)…</span>
+    <span class="cm">// 続く2枠(B1-3・B1-4の位置)は、シミュレーションの開始/一時停止。</span>
+    <span class="kw">if</span> i == 2 {
+        <span class="kw">return</span> view! {
+            &lt;button class=<span class="str">"vab-button"</span> on:click=<span class="kw">move</span> |_| conn.send_command(&amp;<span class="ty">ClientCommand</span>::resume())&gt;
+                <span class="str">"開始"</span>
+            &lt;/button&gt;
+        }.into_any();
+    }
+    <span class="kw">if</span> i == 3 {
+        <span class="kw">return</span> view! {
+            &lt;button class=<span class="str">"vab-button"</span> on:click=<span class="kw">move</span> |_| conn.send_command(&amp;<span class="ty">ClientCommand</span>::pause())&gt;
+                <span class="str">"一時停止"</span>
+            &lt;/button&gt;
+        }.into_any();
+    }
+    <span class="cm">// i &gt;= 4 はこれまでどおり選択中カテゴリのダミーボタン(mid_button)…</span>
 })</pre>
 
       <div class="table-wrap">
@@ -6771,7 +6795,7 @@ cd sample/sim_frontend &amp;&amp; trunk serve        # 開発サーバー(ポー
     </section>
 
     <footer>
-      Sim3dView 技術解説ノート — 2026-09-22時点のコード(コミット f03de8b。ノートはVersion 19)に基づく。
+      Sim3dView 技術解説ノート — 2026-09-22時点のコード(コミット feb54f9。ノートはVersion 20)に基づく。
       BASIC_DESIGN.md / DETAILED_DESIGN.md と合わせて読むことを想定しています。
     </footer>
   </main>
@@ -6797,6 +6821,83 @@ cd sample/sim_frontend &amp;&amp; trunk serve        # 開発サーバー(ポー
 })();
 </script>
 
+
+<!--claude-mermaid-runtime-begin:3477-->
+<style>.mermaid-diagram{margin-block:4px}.mermaid-diagram svg{display:block;margin:0 auto;max-width:100%;height:auto}</style>
+<script src="/_runtime/mermaid-11.16.1.min.js"></script>
+<script>(function(){
+var CFG={"palettes":{"light":{"surface":"#f4efe4","text":"#42392e","line":"#8a7f6d","border":"#7a6c52","bg":"#fffdf8"},"dark":{"surface":"#262b34","text":"#f2f3f5","line":"#a8adb8","border":"#9aa4b8","bg":"#1f232b"}}};
+if(typeof mermaid==='undefined')return;
+var pres=Array.prototype.slice.call(document.querySelectorAll('pre.mermaid')).filter(function(p){if(p.hasAttribute('data-claude-mermaid-claimed'))return false;p.setAttribute('data-claude-mermaid-claimed','1');return true;});
+if(!pres.length)return;
+var mq=window.matchMedia?window.matchMedia('(prefers-color-scheme: dark)'):null;
+var root=document.documentElement;
+var items=pres.map(function(pre){
+var mount=document.createElement('div');mount.className='mermaid-diagram';
+return {pre:pre,mount:mount,src:pre.textContent||''};
+});
+var seq=0;
+var renderGen=0;
+var lastKey='';
+function pageBg(fallback){
+var els=[document.body,document.documentElement];
+for(var i=0;i<els.length;i++){
+var c=els[i]&&getComputedStyle(els[i]).backgroundColor;
+if(c&&c!=='transparent'&&c!=='rgba(0, 0, 0, 0)')return c;
+}
+return fallback;
+}
+function render(){
+var theme=root.getAttribute('data-theme');
+var dark=theme==='dark'||(!!(mq&&mq.matches)&&theme!=='light');
+var pal=dark?CFG.palettes.dark:CFG.palettes.light;
+var bg=pageBg(pal.bg);
+var key=(dark?'d':'l')+'|'+bg;
+if(key===lastKey)return;
+lastKey=key;
+var gen=++renderGen;
+var font=getComputedStyle(document.body).fontFamily||'sans-serif';
+var nat={useMaxWidth:false};
+mermaid.initialize({
+startOnLoad:false,securityLevel:'strict',theme:'base',
+flowchart:nat,sequence:nat,er:nat,state:nat,class:nat,pie:nat,
+gantt:nat,journey:nat,timeline:nat,gitGraph:nat,mindmap:nat,xyChart:nat,
+quadrantChart:nat,sankey:nat,c4:nat,requirement:nat,block:nat,
+packet:nat,kanban:nat,architecture:nat,radar:nat,
+themeVariables:{background:bg,mainBkg:pal.surface,primaryColor:pal.surface,
+primaryTextColor:pal.text,lineColor:pal.line,primaryBorderColor:pal.border,
+nodeBorder:pal.border,clusterBorder:pal.border,edgeLabelBackground:bg,
+clusterBkg:'rgba(127,127,127,0.07)',titleColor:pal.text,
+darkMode:dark,rowOdd:bg,rowEven:'rgba(127,127,127,0.07)',
+attributeBackgroundColorOdd:bg,attributeBackgroundColorEven:'rgba(127,127,127,0.07)',
+fontSize:'16px',fontFamily:font},
+themeCSS:'.node rect, .node circle, .node polygon, .node path, .cluster rect { stroke-width: 2px; }'
+});
+items.forEach(function(it){
+var id='claude-mermaid-'+seq++;
+mermaid.render(id,it.src).then(function(r){
+if(gen!==renderGen)return;
+var prev=it.pre.previousElementSibling;
+if(prev&&prev.className==='mermaid-diagram'&&prev!==it.mount)return;
+it.mount.innerHTML=r.svg;
+if(!it.mount.parentNode)it.pre.parentNode.insertBefore(it.mount,it.pre);
+it.pre.style.display='none';
+},function(){
+var scratch=document.getElementById(id);
+if(scratch)scratch.parentNode.removeChild(scratch);
+scratch=document.getElementById('d'+id);
+if(scratch)scratch.parentNode.removeChild(scratch);
+if(gen!==renderGen)return;
+if(it.mount.parentNode)it.mount.parentNode.removeChild(it.mount);
+it.pre.style.display='';
+});
+});
+}
+render();
+if(mq&&mq.addEventListener)mq.addEventListener('change',render);
+if(typeof MutationObserver!=='undefined')new MutationObserver(render).observe(root,{attributes:true,attributeFilter:['data-theme']});
+})();</script>
+<!--claude-mermaid-runtime-end-->
 
 <!--claude-mermaid-runtime-begin:3477-->
 <style>.mermaid-diagram{margin-block:4px}.mermaid-diagram svg{display:block;margin:0 auto;max-width:100%;height:auto}</style>
