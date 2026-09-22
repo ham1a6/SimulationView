@@ -132,8 +132,7 @@ pub const DOME_RING_ELEVATIONS_DEG: [f64; 38] = [
     33.0, 36.0, 39.0, 42.0, 45.0, 48.0, 51.0, 54.0, 57.0, 60.0, // 3度刻み
     64.0, 68.0, 72.0, 76.0, 80.0, 84.0, 87.0, // 4度刻み(最上段は87度)
 ];
-/// ドームの方位角の刻み(mil)。4なら1,600方位(50km先で約196m間隔)。ドームは下の平滑化でなだらかにするので、
-/// 1mil刻み(6400方位)で計算しても、1〜数方位の細かい凹凸は消えてしまう。計算量(方位数に比例)と頂点数を減らすために間引く。
+/// ドームの方位角の刻み(mil)。4なら1,600方位(50km先で約196m間隔)。計算量(方位数に比例)と頂点数を減らすために間引く。
 pub const DOME_AZIMUTH_STEP: usize = 4;
 /// 2D覆域の境界の方位角の刻み(mil)。2なら3,200方位(50km先で約98m間隔)。
 pub const COVERAGE_AZIMUTH_STEP: usize = 2;
@@ -142,18 +141,8 @@ pub const COVERAGE_AZIMUTH_STEP: usize = 2;
 /// カメラ操作中にチカチカして見えることが分かった(360方位角のときに確認)ので、方位角を間引いて
 /// この数の三角形にする。リング間の四角形パッチは互いに重ならないので間引かない。
 const DOME_APEX_SEGMENTS: usize = 48;
-/// ドームの半径の平滑化。生の計算結果は方位ごとの遮蔽判定なので、地形の細かい凹凸や、1方位だけ遮蔽される所が
-/// 観測点へ向かう細い三角形(放射状の筋)になって、ドームが滑らかに見えない。
-/// (1) 方位角方向: 前後この方位ずつのメディアン(外れ値の除去)→前後この方位ずつの平均を`DOME_SMOOTH_MEAN_PASSES`回
-///     (平均を重ねると重みが山形になり、段差がなだらかな曲線になる)。
-/// (2) 仰角方向: 隣のリングと[1,2,1]/4で平均を`DOME_ELEVATION_SMOOTH_PASSES`回(リングごとの段が階段状に見えるのを消す)。
-/// 地形に遮蔽される境目は数百m〜1kmの幅でなだらかになるだけで、遮蔽されない方角の半径(最大観測範囲)は変わらない。
-const DOME_SMOOTH_MEDIAN_HALF: usize = 1;
-const DOME_SMOOTH_MEAN_HALF: usize = 3;
-const DOME_SMOOTH_MEAN_PASSES: usize = 2;
-const DOME_ELEVATION_SMOOTH_PASSES: usize = 1;
-/// ドームのメッシュの頂点を置く方位の間引き(計算・平滑化は`DOME_AZIMUTH_STEP`の刻みのまま、面を張るときだけ間引く)。
-/// 平滑化した半径は方位方向になだらかなので、2方位に1つでも輪郭が多角形には見えない(50km先で約390m間隔、半径50kmの円の弦の誤差は約0.4m)。
+/// ドームのメッシュの頂点を置く方位の間引き(計算は`DOME_AZIMUTH_STEP`の刻みのまま、面を張るときだけ間引く。
+/// 50km先で約390m間隔、半径50kmの円の弦の誤差は約0.4m)。
 const DOME_MIN_RING_STRIDE: usize = 2;
 /// 高いリングほど円周が短いので、方位の頂点をさらに間引く(隣のリングとは整数倍。2のべき乗個おき)。この間隔の上限。
 /// 間引かないと最上部の細い三角形が大量に重なり、無駄が多く筋が出る。
@@ -165,68 +154,6 @@ const COVERAGE_AREA_ALPHA: f32 = 0.32;
 /// 覆域表示(2D)の境界線の太さ(画面のpx)。塗りは半透明で控えめなので、境界だけは不透明な太い線で描き、
 /// 領域の輪郭が一目で分かるようにする(`los_view.rs`の2D極座標図が塗り+輪郭線の両方を持つのと同じ考え方)。
 const COVERAGE_OUTLINE_WIDTH_PX: f32 = 2.5;
-/// 2Dの覆域の境界の平滑化。ドームと同じ角度の幅(ドームは4mil刻みでメディアン±1・平均±3を2回、ここは2mil刻みなので
-/// メディアン±2・平均±6を2回。約±0.45度のメディアンと、約±0.68度の平均を2回)にする。
-/// 低い高度では、島や岩の陰が細い放射状の楔になり、境界がギザギザに見えるため。
-/// 遮蔽されない方角(最大観測範囲)の半径は変わらず、遮蔽の境目が数百m〜1kmの幅でなだらかになるだけ。
-const COVERAGE_SMOOTH_MEDIAN_HALF: usize = 2;
-const COVERAGE_SMOOTH_MEAN_HALF: usize = 6;
-const COVERAGE_SMOOTH_MEAN_PASSES: usize = 2;
-
-/// 円環上の値(方位角ごとの半径など)の、前後`half`個ずつのメディアン(外れ値の除去。段差の位置は保つ)。端は反対側へつながる。
-fn median_circular(values: &[f64], half: usize) -> Vec<f64> {
-    let n = values.len();
-    let h = half as isize;
-    (0..n as isize)
-        .map(|i| {
-            let mut window: Vec<f64> = (-h..=h).map(|d| values[(i + d).rem_euclid(n as isize) as usize]).collect();
-            window.sort_by(f64::total_cmp);
-            window[window.len() / 2]
-        })
-        .collect()
-}
-
-/// 円環上の値の、前後`half`個ずつの平均(段差をなだらかにする)。端は反対側へつながる。
-fn mean_circular(values: &[f64], half: usize) -> Vec<f64> {
-    let n = values.len();
-    let h = half as isize;
-    (0..n as isize)
-        .map(|i| {
-            (-h..=h).map(|d| values[(i + d).rem_euclid(n as isize) as usize]).sum::<f64>() / (2 * h + 1) as f64
-        })
-        .collect()
-}
-
-/// 円環上の値(方位角ごとの半径など)を平滑化する: 前後`median_half`個ずつのメディアン→前後`mean_half`個ずつの
-/// 平均を`mean_passes`回。端は反対側へつながる。
-fn smooth_circular(values: &[f64], median_half: usize, mean_half: usize, mean_passes: usize) -> Vec<f64> {
-    if values.is_empty() {
-        return Vec::new();
-    }
-    let mut smoothed = median_circular(values, median_half);
-    for _ in 0..mean_passes {
-        smoothed = mean_circular(&smoothed, mean_half);
-    }
-    smoothed
-}
-
-/// リング(仰角)方向の平滑化: 方位ごとに、隣のリングと[1,2,1]/4で平均する(端のリングは、外側を自分と同じ値とみなす)。
-/// `rings[k][j]`はリングk・方位jの値。
-fn smooth_across_rings(rings: &mut [Vec<f64>], passes: usize) {
-    let num_rings = rings.len();
-    if num_rings < 3 {
-        return;
-    }
-    for _ in 0..passes {
-        let before = rings.to_vec();
-        for k in 0..num_rings {
-            let (below, above) = (&before[k.saturating_sub(1)], &before[(k + 1).min(num_rings - 1)]);
-            for (j, value) in rings[k].iter_mut().enumerate() {
-                *value = 0.25 * below[j] + 0.5 * before[k][j] + 0.25 * above[j];
-            }
-        }
-    }
-}
 
 /// ドームのリングの方位の間引き間隔(何方位おきに頂点を置くか)。`DOME_MIN_RING_STRIDE`以上で、高い(円周が短い)リングほど
 /// 大きくして、頂点の間隔が赤道側と同じくらいになるようにする。2のべき乗で、隣のリングとは整数倍になる。
@@ -355,27 +282,13 @@ pub fn start_coverage_computation(data: &TerrainData, marker: &RadarMarker, targ
     RangeComputation::new(data, &origin, &params, RangeKind::AtAltitude(target_altitude_m), COVERAGE_AZIMUTH_STEP)
 }
 
-/// ドームのリングごとの半径(スラントレンジ)を平滑化する(`DOME_SMOOTH_*`・`DOME_ELEVATION_SMOOTH_PASSES`)。
-/// 戻り値は`[リング][方位]`。遮蔽されない方角(どのリングも最大観測範囲)は値が変わらない。
-fn smooth_dome_ranges(rings: &[DomeRing]) -> Vec<Vec<f64>> {
-    let mut smoothed: Vec<Vec<f64>> = rings
-        .iter()
-        .map(|ring| {
-            let ranges: Vec<f64> = ring.points.iter().map(|p| p.range_m).collect();
-            smooth_circular(&ranges, DOME_SMOOTH_MEDIAN_HALF, DOME_SMOOTH_MEAN_HALF, DOME_SMOOTH_MEAN_PASSES)
-        })
-        .collect();
-    smooth_across_rings(&mut smoothed, DOME_ELEVATION_SMOOTH_PASSES);
-    smoothed
-}
-
 /// 覆域ドーム(半球状の面、TriangleList)の頂点列を作る。複数マーカーの覆域を同時に重ねると見づらいため、
 /// 呼び出し側は選択中のマーカーについてのみ作る。`rings`は`start_dome_computation`の結果。
 /// `mesh_origin`は現在GPUにアップロードされている地形メッシュの原点(頂点をこの原点基準のENU座標へ変換する)。
 ///
 /// `compute_los_dome`が仰角ごとに求めるスラントレンジ(地形に遮蔽されない方角では最大観測
-/// 範囲まで一定、遮蔽される方角だけ内側に凹む)を平滑化(`smooth_dome_ranges`)してから、
-/// 隣接する2リングの間を三角形で埋めて球面状の面を作る(「ワイヤーフレームではなくSurfaceが存在する多面体に」という要望による)。
+/// 範囲まで一定、遮蔽される方角だけ内側に凹む)をそのまま使い、隣接する2リングの間を三角形で
+/// 埋めて球面状の面を作る(「ワイヤーフレームではなくSurfaceが存在する多面体に」という要望による)。
 /// 高いリングほど方位の頂点を間引き(`ring_stride`)、最上段リングは、その半径の平均を高さとする頂点(アペックス)へ
 /// 傘状に閉じて、開いた穴のない多面体にする。
 pub fn dome_geometry(
@@ -396,22 +309,20 @@ pub fn dome_geometry(
     let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
     let observer_height =
         sample_heightmap(data, marker.lat_deg, marker.lon_deg).unwrap_or(0.0) as f64 + marker.height_m;
-    let smoothed = smooth_dome_ranges(rings);
     let (dome_color, _, _) = coverage_colors(marker.id);
 
     // ドーム上の頂点(リングごと・方位ごと。高いリングは間引く)を、地形メッシュのENU座標へ変換しておく。
     // パッチが各頂点を複数回使うので、先に1回ずつだけ計算する。
     let dome_vertices: Vec<Vec<TerrainVertex>> = rings
         .iter()
-        .zip(&smoothed)
-        .map(|(ring, ranges)| {
+        .map(|ring| {
             let el_rad = ring.elevation_deg.to_radians();
             let stride = ring_stride(ring.elevation_deg, num_azimuths);
             (0..num_azimuths)
                 .step_by(stride)
                 .map(|az_i| {
                     let az_rad = ring.points[az_i].azimuth_deg.to_radians();
-                    let range_m = ranges[az_i];
+                    let range_m = ring.points[az_i].range_m;
                     let horizontal = range_m * el_rad.cos();
                     let (lat, lon) =
                         local_transform.inverse(horizontal * az_rad.sin(), horizontal * az_rad.cos());
@@ -430,8 +341,8 @@ pub fn dome_geometry(
     // 最上段リングを、その半径の平均を高さとする頂点(アペックス)へ傘状の三角形群で閉じる
     // (最上段リングは仰角87度で、ほぼ真上。遮蔽がなければ半径=最大観測範囲=球の頂点の高さ)。
     let top = dome_vertices.last().expect("リングは2つ以上ある");
-    let top_ranges = smoothed.last().expect("リングは2つ以上ある");
-    let avg_range = top_ranges.iter().sum::<f64>() / top_ranges.len() as f64;
+    let top_ring = rings.last().expect("リングは2つ以上ある");
+    let avg_range = top_ring.points.iter().map(|p| p.range_m).sum::<f64>() / top_ring.points.len() as f64;
     let apex_pos = mesh_transform.transform(
         marker.lat_deg,
         marker.lon_deg,
@@ -451,8 +362,7 @@ pub fn dome_geometry(
 /// 正射影で地形に隠れることがないので、深度テストをすると、観測点から境界への大きな三角形が
 /// 地形の起伏に埋まって、塗りが場所によって欠けて不均一になる。
 ///
-/// `points`は`start_coverage_computation`の結果(全方位角の水平距離)。方位角方向に平滑化
-/// (`COVERAGE_SMOOTH_*`。細い切れ込み・突起を除き、境界をなだらかにする)したものを境界とする、
+/// `points`は`start_coverage_computation`の結果(全方位角の水平距離)。そのままの値を境界とする、
 /// 観測点を中心とした星形(star-shaped)領域なので、観測点から境界上の隣接2点への三角形
 /// (ファン)を並べるだけで自己交差のない面になる(3Dの覆域ドームのアペックス付近のような、
 /// 視点回転時の半透明合成チカチカ対策の間引きは、2Dは常に真上固定視点で回転しないため不要)。
@@ -469,8 +379,6 @@ pub fn coverage_2d_geometry(
     let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
     let radar_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
     let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
-    let ranges: Vec<f64> = points.iter().map(|p| p.range_m).collect();
-    let ranges = smooth_circular(&ranges, COVERAGE_SMOOTH_MEDIAN_HALF, COVERAGE_SMOOTH_MEAN_HALF, COVERAGE_SMOOTH_MEAN_PASSES);
 
     // 地表面に沿わせるため、各点(観測点自身も含む)は「その地点の地表標高+バイアス」の
     // 高さに置く(覆域そのものの高度target_altitude_mではない。あくまで地図上に貼る
@@ -482,10 +390,9 @@ pub fn coverage_2d_geometry(
     };
     let boundary: Vec<[f32; 3]> = points
         .iter()
-        .zip(&ranges)
-        .map(|(p, &range_m)| {
+        .map(|p| {
             let az_rad = p.azimuth_deg.to_radians();
-            let (lat, lon) = local_transform.inverse(range_m * az_rad.sin(), range_m * az_rad.cos());
+            let (lat, lon) = local_transform.inverse(p.range_m * az_rad.sin(), p.range_m * az_rad.cos());
             position_at(lat, lon)
         })
         .collect();
@@ -507,104 +414,6 @@ pub fn coverage_2d_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn smoothing_keeps_constant_and_removes_single_spikes() {
-        // 一定の値は変わらない。
-        let flat = vec![50_000.0; 100];
-        assert!(smooth_circular(&flat, 3, 6, 1).iter().all(|&v| (v - 50_000.0).abs() < 1e-9));
-        // 1方位だけの落ち込み(観測点へ向かう細い三角形になる)は消える。
-        let mut spiky = flat.clone();
-        spiky[40] = 0.0;
-        spiky[70] = 0.0;
-        spiky[71] = 0.0;
-        assert!(smooth_circular(&spiky, 3, 6, 1).iter().all(|&v| (v - 50_000.0).abs() < 1e-9));
-    }
-
-    #[test]
-    fn smoothing_wraps_around_and_softens_steps() {
-        // 端(0と99)をまたぐ段差: 前半だけ遮蔽(0)、後半は一定。円環なので端でも同じように滑らかになる。
-        let mut v = vec![10_000.0; 100];
-        for i in (0..20).chain(90..100) {
-            v[i] = 2_000.0;
-        }
-        let s = smooth_circular(&v, 3, 6, 1);
-        // 段差の中心付近で中間の値、両側は元の値のまま(段差の幅の外は影響を受けない)。
-        assert!(s[20] > 2_000.0 && s[20] < 10_000.0);
-        assert!(s[5] < 2_000.0 + 1e-9 && s[50] > 10_000.0 - 1e-9);
-        // 単調(段差の間で値が上下しない)。
-        assert!(s[10..40].windows(2).all(|w| w[1] >= w[0] - 1e-9));
-        assert!(s[70..100].windows(2).all(|w| w[1] <= w[0] + 1e-9));
-    }
-
-    #[test]
-    fn mean_passes_round_a_step_into_a_smoother_curve() {
-        let mut v = vec![10_000.0; 200];
-        for x in v.iter_mut().take(100) {
-            *x = 2_000.0;
-        }
-        let one = smooth_circular(&v, 0, 3, 1);
-        let two = smooth_circular(&v, 0, 3, 2);
-        // 平均を重ねるほど、段差の折れ目がなだらかな曲線になる(傾きの変化=2階差分の最大値が小さくなる)。
-        let max_bend = |s: &[f64]| s.windows(3).map(|w| (w[2] - 2.0 * w[1] + w[0]).abs()).fold(0.0_f64, f64::max);
-        assert!(max_bend(&two) < 0.5 * max_bend(&one), "{} vs {}", max_bend(&two), max_bend(&one));
-        // 平らな部分は変わらない。
-        assert!((two[50] - 2_000.0).abs() < 1e-9 && (two[150] - 10_000.0).abs() < 1e-9);
-    }
-
-    /// 2D覆域の境界の平滑化: 低い高度の、細い楔・切れ込み(数方位〜十数方位の幅)はなだらかになり、
-    /// 広い遮蔽(数百方位)は残り、遮蔽のない方角の半径は変わらない。
-    #[test]
-    fn coverage_boundary_smoothing_rounds_narrow_wedges_but_keeps_wide_shadows() {
-        let n = 3200;
-        let smooth = |v: &[f64]| {
-            smooth_circular(v, COVERAGE_SMOOTH_MEDIAN_HALF, COVERAGE_SMOOTH_MEAN_HALF, COVERAGE_SMOOTH_MEAN_PASSES)
-        };
-        let full = 30_000.0;
-        // 細い切れ込み(2方位=約0.23度)と、細い突起(2方位)は消える(メディアンの窓(5方位)の半分未満)。
-        let mut v = vec![full; n];
-        for x in v.iter_mut().skip(100).take(2) {
-            *x = 2_000.0;
-        }
-        let mut w = vec![2_000.0; n];
-        for x in w.iter_mut().skip(500).take(2) {
-            *x = full;
-        }
-        assert!(smooth(&v).iter().all(|&r| (r - full).abs() < 1.0));
-        assert!(smooth(&w).iter().all(|&r| (r - 2_000.0).abs() < 1.0));
-        // 中くらいの楔(24方位=約2.7度)は、深さが残りつつ、縁が段差でなくなだらかな傾きになる。
-        let mut m = vec![full; n];
-        for x in m.iter_mut().skip(1000).take(24) {
-            *x = 2_000.0;
-        }
-        let s = smooth(&m);
-        assert!(s[1012] < 0.5 * full, "楔の中心は深いまま: {}", s[1012]);
-        let max_step = s.windows(2).map(|p| (p[1] - p[0]).abs()).fold(0.0_f64, f64::max);
-        assert!(max_step < 0.09 * (full - 2_000.0), "縁はなだらか: {max_step}");
-        // 広い遮蔽(400方位)は、中心付近で元の深さのまま。
-        let mut b = vec![full; n];
-        for x in b.iter_mut().skip(2000).take(400) {
-            *x = 2_000.0;
-        }
-        assert!((smooth(&b)[2200] - 2_000.0).abs() < 1.0);
-        // 遮蔽のない一様な半径は変わらない。
-        assert!(smooth(&vec![full; n]).iter().all(|&r| (r - full).abs() < 1e-9));
-    }
-
-    #[test]
-    fn ring_smoothing_keeps_constants_and_softens_steps_between_rings() {
-        let mut flat = vec![vec![30_000.0; 16]; 6];
-        smooth_across_rings(&mut flat, 1);
-        assert!(flat.iter().flatten().all(|&v| (v - 30_000.0).abs() < 1e-9));
-
-        // 下の3リングだけ遮蔽(5,000)、上は最大(30,000): 境目のリングが中間の値になり、離れたリングは変わらない。
-        let mut stepped: Vec<Vec<f64>> = (0..6).map(|k| vec![if k < 3 { 5_000.0 } else { 30_000.0 }; 4]).collect();
-        smooth_across_rings(&mut stepped, 1);
-        assert!((stepped[0][0] - 5_000.0).abs() < 1e-9 && (stepped[5][0] - 30_000.0).abs() < 1e-9);
-        assert!(stepped[2][0] > 5_000.0 && stepped[2][0] < 30_000.0);
-        assert!(stepped[3][0] > 5_000.0 && stepped[3][0] < 30_000.0);
-        assert!(stepped.windows(2).all(|w| w[1][0] >= w[0][0] - 1e-9));
-    }
 
     #[test]
     fn ring_stride_thins_high_rings_by_powers_of_two() {

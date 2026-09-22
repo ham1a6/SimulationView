@@ -1752,3 +1752,13 @@ C++/Rust全ソースを通読し、`cargo check`(警告ゼロ化)・CMakeビル�
   - ヒアドキュメントに大きなPython/Rustを直接書くとシェルが構文エラーを出すことがあった。ファイルに書いてから実行する
 - **未対応**(次にやるなら): テクスチャ(ブラウザの`createImageBitmap`+`copy_external_image_to_texture`で可能)・アニメーション(プロペラ・脚)・トラックごとのモデル指定(今は種別ごと)・LOD・視錐台カリング・
   モデル自体の当たり判定(今はシンボルと同じ位置の半径20px)・実寸モデルに合わせたカメラの最小距離
+
+### 覆域データの平滑化を撤去(やっぱりやめにする要望)
+
+- **要望**: 「覆域データの平滑化はやっぱりやめにしたい」。7b6a859(覆域ドームの平滑化)・8b82817(2D覆域境界の平滑化)で入れた平滑化を、3Dドーム・2D境界とも撤去する(範囲を確認して両方と決めた)。
+- **変更**: `terrain::markers`から、円環上の値の平滑化一式(`smooth_circular`・`median_circular`・`mean_circular`・仰角方向の`smooth_across_rings`・ドーム用の`smooth_dome_ranges`)と、
+  対応する定数(`DOME_SMOOTH_MEDIAN_HALF`/`MEAN_HALF`/`MEAN_PASSES`、`DOME_ELEVATION_SMOOTH_PASSES`、`COVERAGE_SMOOTH_MEDIAN_HALF`/`MEAN_HALF`/`MEAN_PASSES`)を削除。
+  `dome_geometry`・`coverage_2d_geometry`は、計算結果(`DomeRing`・`LosPoint`の`range_m`)を平滑化せずそのまま頂点に使うようにした。頂点の間引き(`DOME_AZIMUTH_STEP`・`ring_stride`・`COVERAGE_AZIMUTH_STEP`)や、
+  計算の小分け・キャッシュ・複数覆域の同時表示など、平滑化以外の性能対策はそのまま残した。
+- **結果**: 遮蔽の境目(放射状の筋・低い高度でのギザギザ)は、平滑化前の生の計算結果どおりに戻る。単体テストは平滑化専用の5件(`smoothing_*`・`coverage_boundary_smoothing_*`・`ring_smoothing_*`)を削除し、残り(間引き・帯のつなぎ目・色・ピン形状)は変更なしで通ることを確認した。
+- **ドキュメント**: `docs/DETAILED_DESIGN.md`6.9節・9.10節、`docs/IMPLEMENTATION_GUIDE.md`のチェックリストから、平滑化の記述を「平滑化はしない」に書き換えた。技術解説ノート(36.2・36.3・36.6節)も同様に更新した。

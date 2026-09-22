@@ -1027,11 +1027,10 @@ flowchart LR
   計算・キャッシュ・ジオメトリは観測点ごとに独立(`MarkerCoverage`)で、GPUには表示する観測点のジオメトリをつないで1つのバッファとして載せる(`sync_gpu`)。計算済みの観測点は、他の観測点が増えても計算し直さない。
 - **覆域ドーム**: 表示する観測点(既定は選択中の1つ)について、仰角0°〜87°の38段の緯度リングを、隣接リング×隣接方位ごとの四角形パッチでつないだ半透明の面(ワイヤーフレームではなくSurfaceを持つ多面体)。
   専用の`dome_pipeline`(アルファブレンド有効・深度書き込み無効。地形やマーカーの奥に透けて見えるように)で描く。色は半透明の水色固定(`fs_dome`)
-- **滑らかにするための処理**: (1) 遮蔽されなかったリングの半径をサンプル位置に丸めず上限ちょうどにする(丸めると高仰角ほど半径が不揃いで球にならなかった)、
-  (2) 半径を**方位角方向**に平滑化する(前後1方位のメディアン→前後3方位の平均を2回。平均を重ねると重みが山形になり、遮蔽の段差がなだらかな曲線になる。1方位だけ遮蔽される所が細い三角形になって放射状の筋に見えるのを防ぐ)、
-  (3) 半径を**仰角方向**(隣のリングと[1,2,1]/4)にも平滑化する(リングごとの段が階段状に見えるのを消す)。遮蔽されない方角の半径(最大観測範囲)は、どちらの平滑化でも変わらない。
-  (4) リング数を増やし間隔を最上部まで細かくする。計算・平滑化は4mil刻み(1600方位)で、面を張るときは2方位に1つに間引き、さらに**高いリングほど間引く**(円周が短いので`1/cos(仰角)`以下の2のべき乗個おき、最大32)。
-  間引きの違うリングの間は、上のリングの1辺に下のリングの複数の頂点を扇状につないで、すき間もT字の継ぎ目も作らない(`stitch_rings`)。頂点数は以前(3200方位×38リング)の約71万から約16万に減り、最上部の細い三角形の重なりによる筋も無くなった
+- **リング・頂点の処理**: (1) 遮蔽されなかったリングの半径をサンプル位置に丸めず上限ちょうどにする(丸めると高仰角ほど半径が不揃いで球にならなかった)、
+  (2) リング数を増やし間隔を最上部まで細かくする。計算は4mil刻み(1600方位)で、面を張るときは2方位に1つに間引き、さらに**高いリングほど間引く**(円周が短いので`1/cos(仰角)`以下の2のべき乗個おき、最大32)。
+  間引きの違うリングの間は、上のリングの1辺に下のリングの複数の頂点を扇状につないで、すき間もT字の継ぎ目も作らない(`stitch_rings`)。頂点数は以前(3200方位×38リング)の約71万から約16万に減った。
+  **半径は平滑化しない**(以前は方位角方向にメディアン→平均、仰角方向にも[1,2,1]/4で平滑化していたが、要望で撤去した。地形の細かい凹凸や1方位だけ遮蔽される所は、放射状の筋としてそのまま出る)
 - **ちらつき対策**: 最上段リングを閉じる傘の部分は48分割に間引く(全方位で三角形化するとアペックスへ極端に細い三角形が大量に重なり、アルファブレンドの描画順依存でカメラ角度ごとに明るさがちらつく)。
   リング間の四角形は重ならないので間引かない。また、遮蔽される方角ではドーム境界が定義上ちょうど地形表面に接してZファイティングするため、ドーム全体を一律に20m持ち上げる(`render_bias::DOME_M`)
 - **2D覆域の塗り**: 星形(観測点中心の極座標の境界なので自己交差しない)の塗り(半透明、アルファ0.32)+外周の輪郭線(不透明・太さ2.5px)。**深度テストなし**(`draw_screen_pipeline`)で描く。
@@ -1888,19 +1887,18 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 
 **定数**: 選択中=黄`[1,0.92,0.25,1]`、非選択=橙`[1,0.55,0.15,1]`、縁取り`[0.08,0.08,0.10,1]`、ドーム面`[0.3,0.9,1.0]`(アルファはシェーダー0.22)。ピン: `PIN_HEAD_CENTER_PX=26`・`PIN_HEAD_RADIUS_PX=10`・`PIN_OUTLINE_PX=2.5`・`PIN_DOT_RADIUS_PX=4`・`PIN_HEAD_SEGMENTS=24`。
 `DOME_RING_ELEVATIONS_DEG`(38個)=0〜10°を1°刻み / 12〜30°を2° / 33〜60°を3° / 64,68,72,76,80,84,87°。`DOME_AZIMUTH_STEP=4`(1600方位)、`DOME_APEX_SEGMENTS=48`、
-`DOME_SMOOTH_MEDIAN_HALF/MEAN_HALF/MEAN_PASSES=1/3/2`、`DOME_ELEVATION_SMOOTH_PASSES=1`、`DOME_MIN_RING_STRIDE=2`・`DOME_MAX_RING_STRIDE=32`。
-2D覆域: 塗り`[0.35,0.9,0.4]`アルファ`0.32`、輪郭`[0.75,1.0,0.4,1]`太さ2.5px、`COVERAGE_AZIMUTH_STEP=2`(3200方位)、`COVERAGE_SMOOTH_MEDIAN_HALF/MEAN_HALF/MEAN_PASSES=2/6/2`(ドームと同じ角度の幅。ドームは4mil刻みで1/3/2)。
+`DOME_MIN_RING_STRIDE=2`・`DOME_MAX_RING_STRIDE=32`。
+2D覆域: 塗り`[0.35,0.9,0.4]`アルファ`0.32`、輪郭`[0.75,1.0,0.4,1]`太さ2.5px、`COVERAGE_AZIMUTH_STEP=2`(3200方位)。
 
-- **平滑化は表示用のジオメトリを作るときだけ**(`dome_geometry`・`coverage_2d_geometry`の中)。計算結果(`DomeRing`・`LosPoint`)は生の値のままキャッシュし、極座標図・断面図には掛けない(だから平滑化の設定を変えても、覆域の計算は要らない)。窓幅は、方位の刻みが違ってもドームと2D覆域で同じ角度になるように決める(メディアン約±0.23度、平均2回で三角形の重みの広がり約±1.35度)。間引き(頂点・`azimuth_step`)は、平滑化した後の並びから取る。
-- **円環の平滑化 `smooth_circular(values, median_half, mean_half, mean_passes)`**: 端は反対側へつながる。①各iで前後`median_half`個の**中央値**(外れ値除去。段差の位置は保つ)→②その結果の前後`mean_half`個の**平均**を`mean_passes`回(段差をなだらかに。重ねるほど折れ目が曲線になる)。
-  **仰角方向の平滑化 `smooth_across_rings`**: 方位ごとに、隣のリングと`[1,2,1]/4`(端のリングは外側を自分と同じ値とみなす)。**リングの間引き `ring_stride(el, N)`**: `DOME_MIN_RING_STRIDE`から、`stride·2 <= 1/cos(el)`かつ`N`を割り切る間、2倍にする(最大`DOME_MAX_RING_STRIDE`)。
+- **平滑化はしない**。ドーム・2D覆域とも、計算結果(`DomeRing`・`LosPoint`の`range_m`)をそのまま頂点に使う(以前は方位角方向のメディアン→平均、ドームは仰角方向にも平滑化していたが、要望で撤去した。地形の細かい凹凸や1方位だけ遮蔽される所は、放射状の筋・ギザギザとしてそのまま出る)。
+  **リングの間引き `ring_stride(el, N)`**: `DOME_MIN_RING_STRIDE`から、`stride·2 <= 1/cos(el)`かつ`N`を割り切る間、2倍にする(最大`DOME_MAX_RING_STRIDE`)。
   **帯の三角形 `stitch_rings(lower, upper, push)`**: 上のリングの各辺`(u0,u1)`について、下のリングの対応する`ratio = n_lower/n_upper`本の辺ごとに`(l_a, l_b, u0)`、最後に`(u0, u1, l_next)`(`ratio=1`なら四角形を2枚の三角形に割るのと同じ。辺は、リングの辺が1回・それ以外が2回で、すき間がない=テストで確認)
 - **マーカー**: 観測点ごとに`anchor = mesh_transform.transform(lat, lon, ground + MARKER_M)`。すべて`DrawVertex::billboard`の三角形。ピンは頭の円(中心`(0,26)`から24枚の扇形)+頭の円への接線の先端三角形(`β = acos(r/(26 - tip_y))`, 接点`(±r·sin β, 26 - r·cos β)`)。
   積む順は①縁取り(`r=10+2.5`, `tip_y=-2.5·1.4`)→②本体(`r=10`, `tip_y=0`)→③中の点(縁取り色、半径4)
-- **3Dドーム `dome_geometry(data, mesh_origin, marker, rings)`**(1観測点ぶん。色は`coverage_colors(marker.id)`。`rings`は`start_dome_computation`=`DomeComputation(.., DOME_RING_ELEVATIONS_DEG, DOME_AZIMUTH_STEP)`の結果): リングごとに`smooth_circular(range, 1, 3, 2)`→`smooth_across_rings`(1回)で平滑化してから、`ring_stride`で間引いた頂点を置く。
+- **3Dドーム `dome_geometry(data, mesh_origin, marker, rings)`**(1観測点ぶん。色は`coverage_colors(marker.id)`。`rings`は`start_dome_computation`=`DomeComputation(.., DOME_RING_ELEVATIONS_DEG, DOME_AZIMUTH_STEP)`の結果): リングごとに、生の`range_m`のまま`ring_stride`で間引いた頂点を置く。
   頂点は`range`と仰角から`horizontal = range·cos(el)`、`(lat,lon) = local_transform.inverse(horizontal·sin az, horizontal·cos az)`、`h = observer_height + range·sin(el) + DOME_M`(`observer_height = ground + height_m`)。
-  隣接リングの間は`stitch_rings`で三角形にする(表裏とも見えるので巻き順は問わない)。最上段リングは、その平滑化半径の平均を高さとするアペックスへ、方位を`step_by(max(N/48,1))`に間引いた傘の三角形で閉じる(間引く理由は6.9節)
-- **2D覆域 `coverage_2d_geometry(data, mesh_origin, marker, points)`**(1観測点ぶん。塗り・輪郭線の色は`coverage_colors(marker.id)`。`points`は`start_coverage_computation`=`RangeComputation(AtAltitude, COVERAGE_AZIMUTH_STEP)`の結果): 3200方位の水平距離を`smooth_circular(_, 2, 6, 2)`(ドームと同じ角度の幅。低い高度で、島や岩の陰が細い放射状の楔になって境界がギザギザに見えるのをなだらかにする。細い切れ込み・突起は消え、数百方位の広い遮蔽は残る=テストで確認)。**覆域の高度ではなく地表に貼る**(`sample_heightmap + COVERAGE_AREA_M`。地図上の塗り分けオーバーレイであるため)。
+  隣接リングの間は`stitch_rings`で三角形にする(表裏とも見えるので巻き順は問わない)。最上段リングは、その半径の平均を高さとするアペックスへ、方位を`step_by(max(N/48,1))`に間引いた傘の三角形で閉じる(間引く理由は6.9節)
+- **2D覆域 `coverage_2d_geometry(data, mesh_origin, marker, points)`**(1観測点ぶん。塗り・輪郭線の色は`coverage_colors(marker.id)`。`points`は`start_coverage_computation`=`RangeComputation(AtAltitude, COVERAGE_AZIMUTH_STEP)`の結果): 3200方位の水平距離をそのまま境界にする(低い高度では、島や岩の陰が細い放射状の楔・ギザギザとしてそのまま出る)。**覆域の高度ではなく地表に貼る**(`sample_heightmap + COVERAGE_AREA_M`。地図上の塗り分けオーバーレイであるため)。
   塗りは`[center, boundary[i], boundary[i+1]]`のファン(星形なので自己交差しない)、輪郭は閉じた太い線。**描画は深度テストなし**(`draw_screen`+絶対座標のuniform。理由は6.9節)。3Dと2Dでバッファ・パイプラインが別で、モード切替時に使わない方を空にする
 
 ### 9.11 作図(`terrain::drawing`・`drawing_geometry`・`draw_tool`)
