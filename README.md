@@ -99,9 +99,11 @@ cargo install trunk --locked
 ルートからどちらのcrateも操作できる。
 
 ```powershell
+cargo fmt --check                                             # Rustコードの整形確認
+cargo clippy --workspace --all-targets -- -D warnings         # ワークスペース全体の静的検査
 cargo check -p sim3dview --target wasm32-unknown-unknown      # ライブラリ単体のコンパイル確認
 cargo check -p sim_frontend --target wasm32-unknown-unknown   # サンプルアプリの統合コンパイル確認
-cargo test -p sim3dview                                        # ライブラリの単体テスト(ネイティブで動く。ブラウザ不要)
+cargo test --workspace                                         # 両crateの単体テスト(ネイティブで動く。ブラウザ不要)
 ```
 
 単体テストは、合成した地形(`TerrainData::synthetic`)で標高サンプリング・LOD計画・カメラ(反転Z)・見通し計算・
@@ -115,15 +117,21 @@ Visual Studioインストール先に合わせて読み替えること。
 
 ```powershell
 $cmake = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
+$ctest = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe"
 $toolchain = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\vcpkg\scripts\buildsystems\vcpkg.cmake"
 
 & $cmake -S sample/sim_server -B sample/sim_server/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="$toolchain"
 & $cmake --build sample/sim_server/build --config Debug
+& $ctest --test-dir sample/sim_server/build -C Debug --output-on-failure
 
 # 地形データ前処理ツール(sim3dviewライブラリの一部。GDAL依存。sim_serverとは別のCMakeプロジェクト)
 & $cmake -S tools/geotiff_preprocess -B tools/geotiff_preprocess/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="$toolchain"
 & $cmake --build tools/geotiff_preprocess/build --config Debug
+& $ctest --test-dir tools/geotiff_preprocess/build -C Debug --output-on-failure
 ```
+
+CTestは、シミュレーションの状態遷移、HTTP Range・ETag・安全なパス要素の判定、前処理の
+タイル名・外接矩形・チャンク分割という、外部I/Oに依存しない中核ロジックを検証する。
 
 初回のconfigure時にvcpkgが依存を自動ビルドする(sim_serverは`libuv`/`openssl`/`zlib`=`sample/sim_server/vcpkg.json`、
 前処理ツールは`gdal`=`tools/geotiff_preprocess/vcpkg.json`)。sim_serverの`openssl`はHTTPS/WSS用。**GDALのフルビルドだけで15分前後かかる**

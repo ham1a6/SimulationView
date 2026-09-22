@@ -421,6 +421,8 @@ lon_deg: f64                   // set_origin時のみ使用
 
 ### 4.5 WebSocket再接続処理(フロント側)
 
+- 受信フレームの`[msg_type][MessagePack body]`の検証と復号は、DOM・Leptosに依存しない
+  `protocol::decode_frame()`が`ServerMessage`へ変換する。`ws.rs`は復号済みメッセージを対応するシグナルへ反映するだけとする
 - 再接続間隔は**指数バックオフ**(初回1秒、以後2倍ずつ、上限30秒でキャップ)
 - バックオフ間隔に**ジッター(±300ms)**を加える(サーバー再起動時のサンダリングハード回避)
 - **ブラウザタブが非表示の間は再接続の試行を一時停止**する(Page Visibility API)。タブがアクティブに
@@ -696,9 +698,14 @@ classDiagram
 `Access-Control-Allow-Origin: *`ヘッダーを付与する。想定CWD(カレントディレクトリ)は`sim_server/`
 (`assets/terrain/...`という相対パスでファイルを開くため)。
 
+Range解析、ETag照合、安全なパス要素の判定は`include/http_utils.hpp`の純粋関数へ分離し、
+`ws_server.cpp`のHTTP処理から利用する。シミュレーション本体はCMakeの`simulation_core`静的ライブラリとし、
+サーバー実行ファイルとCTestの双方から同じ実装をリンクする。
+
 ### 5.5 GeoTIFF前処理ツール(geotiff_preprocess)のクラス構成
 
-`tools/geotiff_preprocess/main.cpp`に実装(単一ファイル、`sim_server`本体とは別のCMakeプロジェクト・別実行ファイル。sim3dviewライブラリの一部としてリポジトリ直下の`tools/`に置く)。
+`tools/geotiff_preprocess/main.cpp`と`preprocess_core.hpp`に実装(`sim_server`本体とは別のCMakeプロジェクト・別実行ファイル。sim3dviewライブラリの一部としてリポジトリ直下の`tools/`に置く)。
+ファイル名解析・外接矩形・チャンク分割はGDALやファイルI/Oに依存しない`preprocess_core.hpp`へ分離し、CLI本体とCTestから共用する。
 
 | 関数/構造体 | 役割 |
 |---|---|
@@ -755,9 +762,9 @@ classDiagram
 | 3Dモデル(おまけ) | `terrain::models`(`gltf_import`・`placement`・`types`・`model.wgsl`)・`renderer::model_batch` | 航跡をglTFの3Dモデルで描く(6.13節) | 9.15 |
 | 計算 | `terrain::los`・`profile`・`pick`・`camera` | 見通し(`RayContext`)・断面・ピッキング・カメラ | 9.6・9.8 |
 | UI | `ui::terrain_view`(`mod.rs`=コンポーネント、`state`・`frame`・`lod_driver`・`overlay`・`labels`・`picking`・`models`) | 地図canvas | 9.13 |
-| | `ui::context_menu`(`MapMenuState`を含む)・`floating_panel`・`tabbed_panel`・`origin_dialog`・`drawing_editor`・`model_settings_dialog`・`util` ほか | 汎用部品・ダイアログ | 9.14 |
+| | `ui::pointer_drag`・`context_menu`(`MapMenuState`を含む)・`floating_panel`・`tabbed_panel`・`origin_dialog`・`drawing_editor`・`model_settings_dialog`・`util` ほか | 入力状態・汎用部品・ダイアログ | 9.14 |
 
-**テスト**: `cargo test -p sim3dview`(ネイティブ)。`TerrainData::synthetic`(`cfg(test)`)で合成地形を作り、標高サンプリング・丸み込みの`ground_at_enu`・LODの予算配分・反転Z・`screen_to_ray`・
+**テスト**: `cargo test --workspace`(ネイティブ)。`TerrainData::synthetic`(`cfg(test)`)で合成地形を作り、標高サンプリング・丸み込みの`ground_at_enu`・LODの予算配分・反転Z・`screen_to_ray`・
 電波の地平線(見通し)・視錐台カリングなどを検証する。WGSL(`terrain.wgsl`・`draw.wgsl`)は`naga`で構文・型を検証し、uniform・頂点のレイアウトがRust側の構造体と一致することを確かめる
 (方針は10節、テストの要点は9節の各「検証」)。
 
@@ -2056,7 +2063,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 
 **crate構成**: `sim3dview/Cargo.toml`の依存は`leptos 0.8 (csr)`・`wasm-bindgen`・`wasm-bindgen-futures`・`js-sys`・`serde`(derive)・`serde_json`・`gloo-net 0.7`・`gloo-timers 0.4 (futures)`・`log`・`wgpu 30`・`bytemuck (derive)`・`glam 0.33`・`earcutr 0.5`・
 `web-sys`(feature: `Event EventTarget PointerEvent WheelEvent MouseEvent HtmlCanvasElement ResizeObserver ResizeObserverEntry DomRectReadOnly DomRect Element Window Document Node HtmlElement CssStyleDeclaration Storage Navigator KeyboardEvent`)、dev: `naga 30 (wgsl-in)`。
-ワークスペースルートは`members = ["sim3dview", "sample/sim_frontend"]`、`[profile.release] opt-level = "s"`、ターゲット`wasm32-unknown-unknown`。確認: `cargo check -p sim3dview --target wasm32-unknown-unknown`・`cargo test -p sim3dview`。
+ワークスペースルートは`members = ["sim3dview", "sample/sim_frontend"]`、`[profile.release] opt-level = "s"`、ターゲット`wasm32-unknown-unknown`。確認: `cargo fmt --check`・`cargo clippy --workspace --all-targets -- -D warnings`・`cargo test --workspace`・両crateの`wasm32-unknown-unknown`向け`cargo check`。
 公開範囲は6.0節(アプリが使うものだけ`pub`)。`style/sim3dview.css`を同梱。
 
 **Leptos 0.8の落とし穴**(過去に踏んだもの。必ず守る):
@@ -2089,8 +2096,9 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 
 **地図コンポーネント `ui::terrain_view::TerrainView(preset)`**: ファイルは`mod.rs`(コンポーネント・イベント・Effect)・`state.rs`・`frame.rs`・`lod_driver.rs`・`overlay.rs`・`labels.rs`・`picking.rs`。
 
-- **`ViewState`**(`Rc<RefCell<..>>`。GPUを含むので`Send`でない): `renderer`・`terrain`・`mesh_origin`(現在GPUにあるメッシュの原点)・`camera: OrbitCamera`・`target_up`(注視点の地表標高)・ドラッグ管理(`dragging`・`last`・`down`)・
-  `radar_markers`/`drawings`/`tracks`・`labels`・`pick_anchors`・`hillshade`・`resident: HashMap<TileKey, TileLayout>`(いまGPUにある状態)・`loading`/`failed: HashSet<FetchKey>`(取得中/失敗=再試行しない)・`lod_pending`/`lod_soon_pending`。
+- **`ViewState`**(`Rc<RefCell<..>>`。GPUを含むので`Send`でない): `renderer`・`terrain`・`mesh_origin`(現在GPUにあるメッシュの原点)・`camera: OrbitCamera`・`target_up`(注視点の地表標高)・
+  `interaction: InteractionState`(`DragTracker`と入力状態)・`radar_markers`/`drawings`/`tracks`・`labels`・`pick_anchors`・`hillshade`・`lod: LodState`。
+  `LodState`は`resident: HashMap<TileKey, TileLayout>`(いまGPUにある状態)・`loading`/`failed: HashSet<FetchKey>`(取得中/失敗=再試行しない)・予約フラグをまとめる。
   `FetchKey = (TileKey, level, Option<chunk>)`(`None`=タイル1ファイル(level≤2))
 - **DOM**: `div.terrain-view > canvas.terrain-canvas`+原点指定/図形作成のヒントバー(`.origin-pick-hint`)+`.terrain-track-labels`(航跡ラベルの層)+`.terrain-view-controls`(2D/3D切替ボタン)+`.map-status`(状態文言。初期は「地形データを読み込み中...」)
 - **初期化 `try_init`**: canvasのサイズ確定(ResizeObserver)と地形データ取得(`TerrainStore`)は非同期かつ独立に完了するので、両方から呼び、揃った時点で初期化する(`canvas`が0サイズ・`data`なし・初期化済み/中は何もしない)。
@@ -2111,10 +2119,10 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 | 7 | `hillshade.enabled` | `renderer.set_hillshade`→`render_now`(メッシュ再作成不要) |
 
 - **原点変更(Effect 3)**: 新原点がNone・未初期化・現在のメッシュ原点と同じなら何もしない。`target_up = sample_heightmap(new_origin)`。**注視点**: `target.xy==0`(原点に追従)なら`target.z = target_up`、そうでなければ(パンして別の場所を見ていた)旧原点での緯度経度を求め、新原点の`ground_at_geodetic`のENUを`target`にする(同じ場所を見続ける)。
-  `set_ellipsoid_origin`→**常駐する全メッシュ**(`resident`)の頂点位置を新原点で作り直して`update_mesh_vertices`(頂点数・並び・インデックスは原点非依存で不変。再取得は不要)→`render`→`mesh_origin`更新→借用を`drop`してから`rebuild_*`・`render_now`
+  `set_ellipsoid_origin`→**常駐する全メッシュ**(`lod.resident`)の頂点位置を新原点で作り直して`update_mesh_vertices`(頂点数・並び・インデックスは原点非依存で不変。再取得は不要)→`render`→`mesh_origin`更新→借用を`drop`してから`rebuild_*`・`render_now`
 - **入力イベント**: 定数`ORBIT_SENSITIVITY=0.0075`、`CLICK_MAX_MOVE_PX=5`(押下位置からこれ未満の移動はドラッグでなくクリック)、ホイール係数1.12。
-  `pointerdown`=ドラッグ開始+`set_pointer_capture`。`pointermove`=(図形作成中で非ドラッグなら`request_animation_frame`で1フレームに1回へまとめて`pick`→`set_hover`)/ドラッグ中は3Dで`shift`なら`pan_orbit_target`後に`target.z = ground_at_enu(target.xy).up`・そうでなければ`orbit`、2Dは`pan(dx·wpp, -dy·wpp)`。
-  `pointerup`(左ボタン・移動5px未満のみ)=優先順に ①原点指定中なら`pick`が`Some`で`on_pick`(範囲外はモード維持) ②図形作成ツール選択中なら`tool.click` ③それ以外は`pick_track_at_client`→`tracks.select`(**何もない所は`None`=選択解除**)。
+  `pointerdown`=`interaction.drag.begin`+`set_pointer_capture`。`pointermove`=(図形作成中で非ドラッグなら`request_animation_frame`で1フレームに1回へまとめて`pick`→`set_hover`)/ドラッグ中は`DragTracker`の直前位置からの差分を使い、3Dで`shift`なら`pan_orbit_target`後に`target.z = ground_at_enu(target.xy).up`・そうでなければ`orbit`、2Dは`pan(dx·wpp, -dy·wpp)`。
+  `pointerup`は同じpointer IDだけを終了し、左ボタン・合計移動5px未満なら`MapClickMode`の優先順 ①原点指定中なら`pick`が`Some`で`on_pick`(範囲外はモード維持) ②図形作成ツール選択中なら`tool.click` ③それ以外は`pick_track_at_client`→`tracks.select`(**何もない所は`None`=選択解除**)を実行する。
   `wheel`=`zoom`。`contextmenu`=`prevent_default`。図形作成中なら`undo`。`ContextMenuState`と`MapMenuState`の**両方**があれば`position`(pick)と`track`(pick_track。あれば先に選択)を`MapMenuTarget`にしてメニューを出す(どちらもNoneなら出さない)。どちらか無ければ従来どおり観測点を追加。
   `dblclick`=`draw_tool.finish()`。`keydown`(window。ツール選択中のみ、`INPUT/TEXTAREA/SELECT`上は無視)=`Escape`→`cancel`、`Enter`→`finish`、`Backspace`→`undo`
 - **ピッキング(`picking.rs`)**: `pick_at_client`は`getBoundingClientRect`でcanvas内座標にして`pick::pick_lat_lon`。`pick_track_at_client`はCSS pxからcanvas内部解像度へ変換して`tracks::pick_track`(`PICK_RADIUS_PX`)
@@ -2138,7 +2146,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 | `MAX_CONCURRENT_TILE_FETCHES` | 16 | 同時取得数(6だと全タイルのレベル1取得に1分ほど) |
 | `DETAIL_CACHE_LIMIT_BYTES` | 300 MiB | 取得済みグリッドの保持上限 |
 
-`schedule_lod`(`lod_pending`か地形未取得なら何もしない。150ms後に`update_lod`)、`schedule_lod_soon`(同様に8ms)。`update_lod`: `dragging`中は`schedule_lod`して終了(ドラッグ中は重い処理を避ける)。
+`schedule_lod`(`lod.pending`か地形未取得なら何もしない。150ms後に`update_lod`)、`schedule_lod_soon`(同様に8ms)。`update_lod`: `interaction.drag.is_active()`なら`schedule_lod`して終了(ドラッグ中は重い処理を避ける)。
 `plan = lod::plan_levels(...)`(優先度順)。`over_budget(uploaded, cost) = uploaded > 0 && (経過 >= 12ms || uploaded + cost > 600,000)`(**1個は必ず進める**。0個だと永遠に終わらない)。
 `request(key, level, chunk)`は`failed`か`loading`に含まれれば何もせず、`loading.len() >= 16`なら後回し(`deferred`)、それ以外は`loading`に入れて取得予定へ積む。
 
@@ -2151,6 +2159,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 
 ### 9.14 UI部品(`sim3dview::ui`)
 
+- **`pointer_drag::{DragTracker, DragUpdate, DragEnd}`**: 同時に1本のpointer IDだけを追跡する純粋な状態管理。move時に直前位置からの`delta`と開始位置からの`total`、up時に`DragEnd`を返す。別pointerのmove/up/cancelは無視する。DOMのpointer captureは呼び出し側の責務。`TerrainView`・`FloatingPanel`・サンプルアプリの区画リサイザーで共用する
 - **`TabbedPanel(title?, tabs: Vec<Tab>, active: Option<RwSignal<usize>>)`**(`title`は省略可。省略/空文字なら見出しを出さない) + `tab(label, view)`: `active`を渡すと呼び出し側からタブを切り替えられる。**全タブの中身を初回に1度だけ生成してDOMに残し、非選択は`display:none`で隠す**(切替で作り直さない)。タブが1個でもタブバーは表示する
 - **`FloatingPanel(open, title, modal=true, draggable=false, initial_position, children)`**: 中身は常時マウントし`display`だけ切り替える。`modal`は半透明バックドロップ(`.floating-panel-backdrop`)+中央表示で、背景クリックか✕で閉じる。
   `modal=false`(ウインドウ)はバックドロップなし(`.floating-window-layer`は`pointer-events:none`、パネルだけ`auto`)で✕でだけ閉じる。既定位置`(80,60)`。`draggable`はタイトルバーのポインタ操作で動かし、

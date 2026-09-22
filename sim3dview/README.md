@@ -16,7 +16,7 @@ ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し(Line of 
   航跡表示(航空機等の現在位置とシンボル)
 - `ui`モジュール: 上記を使ったLeptosコンポーネント一式(3D/2D地形描画canvas、見通し範囲タブ、断面図タブ、
   タブ付きパネル、汎用フローティングパネル(モーダル/動かせるウインドウ)、原点設定・覆域高度設定ダイアログ、
-  作図エディタ、右クリックメニュー)
+  作図エディタ、右クリックメニュー)と、Pointer Events用の純粋なドラッグ状態管理
 - `style/sim3dview.css`: 上記コンポーネントのスタイル
 
 公開しているのは、アプリが使う`terrain::{camera, draw_tool, drawing, hillshade, markers, models, origin, origin_pick, recenter, store, tracks}`と
@@ -470,6 +470,9 @@ view! { <ContextMenu/> }
 
 ## 汎用UI部品の再利用
 
+- `ui::pointer_drag::DragTracker`: 同時に1本のpointerを追跡し、直前位置からの差分と開始位置からの
+  合計移動量を返す純粋な状態管理です。`set_pointer_capture`/`release_pointer_capture`などのDOM操作と、
+  移動量を何へ反映するかは呼び出し側が担当します。
 - `ui::tabbed_panel::{TabbedPanel, tab}`: タブ付きパネル。VAB設定など、独自タブを持つ
   パネルを作る際にも使えます。
 - `ui::floating_panel::FloatingPanel`: フローティングウインドウ。`OriginDialog`/`CoverageAltitudeDialog`が内部で

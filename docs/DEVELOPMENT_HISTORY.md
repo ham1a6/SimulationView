@@ -1617,9 +1617,9 @@ C++/Rust全ソースを通読し、`cargo check`(警告ゼロ化)・CMakeビル�
   `renderer.rs`(1163行)→`renderer/`(`pipelines`の`PipelineSpec`でパイプライン生成の5重コピーを1つに、`targets`・`uniforms`・`overlay`・`frustum`。
   `Cell`を`&mut self`に)。`ui/terrain_view.rs`(1470行)→`terrain_view/`(`state`・`frame`・`lod_driver`・`overlay`・`labels`・`picking`)。
   内部モジュールを`pub(crate)`に。詳細な構成はDETAILED_DESIGN.md 6.0節
-- **今回やらなかったもの(効果に対して変更が大きい・挙動が変わる)**:
-  `ViewState`のフィールドを入力/LOD/描画/ラベルに4分割すること、`on_pointer_up`の`MapClickMode`化、ポインタキャプチャ+ドラッグの3重実装(`floating_panel`・
-  `terrain_view`・サンプル`app.rs`)の共通化、`terrain_view/mod.rs`のコンポーネント本体(約650行)の分割。
+- **当時やらなかったもの(効果に対して変更が大きい・挙動が変わる)**:
+  `ViewState`の入力/LOD状態の集約、`on_pointer_up`の`MapClickMode`化、ポインタドラッグの3重実装(`floating_panel`・`terrain_view`・サンプル`app.rs`)の共通化は、
+  後の「リポジトリ全体の挙動維持リファクタリング」でテストを追加して実施した。`terrain_view/mod.rs`のコンポーネント本体(約650行)のさらなる分割は見送った。
   挙動が変わるもの: `pick`の刻み幅が距離に対して一定(約1.3km)で細い尾根を見逃しうる、`profile`の上限が1,000kmで打ち切り、`los`/`profile`の
   接平面近似`transform.inverse`、`cull_mode`の有効化(効果は小さい見込み。スカートの巻き順の確認が先)、取得に失敗したグリッドが再試行されない、
   線のjoin・インスタンス化、`opt-level = 3`の検討
@@ -1814,3 +1814,24 @@ C++/Rust全ソースを通読し、`cargo check`(警告ゼロ化)・CMakeビル�
   「進行方向」ボタンが有効になることを確認した。地図でシンボルをクリックして別の航跡を選択(航跡情報タブに詳細が出る)しても、断面図の中心(コンボボックスの選択)は
   変わらないままであることも確認した(独立していることの確認)。「基準位置」に戻すと印が消えることも確認した。
 - **ドキュメント**: `sim3dview/README.md`(断面図の中心の節)、`docs/DETAILED_DESIGN.md` 9.13節を更新。
+
+### リポジトリ全体の挙動維持リファクタリング(2026年9月)
+
+- **方針**: 通信フレーム、地形ファイル、既存の公開API、画面の挙動を変えず、純粋ロジックの境界と自動テストを増やした。
+  既知のLOD・ピッキング・描画品質の改善は、性能や見え方が変わるためこの変更には含めていない
+- **Rustの安全網**: リポジトリ全体を`cargo fmt`で統一し、Rust 1.98の
+  `cargo clippy --workspace --all-targets -- -D warnings`を警告なしにした。`cargo test --workspace`では
+  `sim3dview` 140件、`sim_frontend` 6件を実行し、両crateのwasm32向けcheckも通した
+- **Pointer Events**: pointer ID、直前差分、開始位置からの合計移動量を扱う公開の純粋型
+  `ui::pointer_drag::DragTracker`を追加し、地図、フローティングパネル、サンプルの区画リサイザーで共用した。
+  DOMのpointer captureは各コンポーネントに残し、状態遷移だけを共通化した
+- **地図状態**: 入力を`InteractionState`、LODの常駐・取得中・失敗・予約状態を`LodState`へ集約した。
+  短いクリックの処理順は`MapClickMode`へ明示し、原点指定、対話作図、航跡選択の優先順を単体テストで固定した
+- **通信**: `[msg_type][MessagePack body]`の復号を`protocol::decode_frame`へ移し、7種類すべての
+  `ServerMessage`、空フレーム、未知type、不正bodyをDOMなしでテストした。再接続待ち時間の上限と増加も純粋関数のテストで固定した
+- **C++**: `Simulation`を`simulation_core`ターゲットに分け、HTTPのRange・ETag・安全なパス判定を
+  `http_utils.hpp`へ、前処理のタイル名・外接矩形・チャンク分割を`preprocess_core.hpp`へ分離した。
+  それぞれCTestターゲットを追加し、サーバーとCLIがテスト対象と同じ実装を利用する構成にした
+- **検証環境の注意**: CMake configureは成功したが、Codexの実行環境では`Path`と`PATH`が重複して
+  MSBuildが起動前に失敗した。このため同じMSVCツールチェーンでC++テスト3本を直接コンパイル・実行し、
+  `ws_server.cpp`と前処理`main.cpp`も翻訳単位としてコンパイルして境界の接続を確認した
