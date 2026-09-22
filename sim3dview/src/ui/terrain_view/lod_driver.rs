@@ -41,15 +41,15 @@ pub(super) const DETAIL_CACHE_LIMIT_BYTES: usize = 300 * 1024 * 1024;
 pub(super) fn schedule_lod(state: &Rc<RefCell<ViewState>>) {
     {
         let mut s = state.borrow_mut();
-        if s.lod_pending || s.terrain.is_none() {
+        if s.lod.update_pending || s.terrain.is_none() {
             return;
         }
-        s.lod_pending = true;
+        s.lod.update_pending = true;
     }
     let state = state.clone();
     wasm_bindgen_futures::spawn_local(async move {
         gloo_timers::future::TimeoutFuture::new(LOD_DEBOUNCE_MS).await;
-        state.borrow_mut().lod_pending = false;
+        state.borrow_mut().lod.update_pending = false;
         update_lod(&state);
     });
 }
@@ -59,15 +59,15 @@ pub(super) fn schedule_lod(state: &Rc<RefCell<ViewState>>) {
 pub(super) fn schedule_lod_soon(state: &Rc<RefCell<ViewState>>) {
     {
         let mut s = state.borrow_mut();
-        if s.lod_soon_pending || s.terrain.is_none() {
+        if s.lod.update_soon_pending || s.terrain.is_none() {
             return;
         }
-        s.lod_soon_pending = true;
+        s.lod.update_soon_pending = true;
     }
     let state = state.clone();
     wasm_bindgen_futures::spawn_local(async move {
         gloo_timers::future::TimeoutFuture::new(LOD_CONTINUE_MS).await;
-        state.borrow_mut().lod_soon_pending = false;
+        state.borrow_mut().lod.update_soon_pending = false;
         update_lod(&state);
     });
 }
@@ -95,7 +95,7 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
             &transform,
             &camera,
             renderer.canvas_height_px() as f32,
-            &s.resident,
+            &s.lod.resident,
         );
         (terrain, origin, plan)
     };
@@ -124,13 +124,13 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
             (key, level, Some(chunk))
         };
         let mut s = state.borrow_mut();
-        if s.failed.contains(&fetch_key) || s.loading.contains(&fetch_key) {
+        if s.lod.failed.contains(&fetch_key) || s.lod.loading.contains(&fetch_key) {
             return false;
         }
-        if s.loading.len() >= MAX_CONCURRENT_TILE_FETCHES {
+        if s.lod.loading.len() >= MAX_CONCURRENT_TILE_FETCHES {
             return true; // 上限に達したので、あとの更新に回す。
         }
-        s.loading.insert(fetch_key);
+        s.lod.loading.insert(fetch_key);
         to_fetch.push(fetch_key);
         false
     };
@@ -140,7 +140,7 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
             continue;
         };
         let whole_key: MeshKey = (key.0, key.1, WHOLE_TILE);
-        let current: Option<Vec<u8>> = match state.borrow().resident.get(&key) {
+        let current: Option<Vec<u8>> = match state.borrow().lod.resident.get(&key) {
             Some(TileLayout::Chunks(v)) => Some(v.clone()),
             _ => None,
         };
@@ -157,7 +157,7 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
                             renderer.remove_mesh_faded((key.0, key.1, c as u8));
                         }
                     }
-                    s.resident.insert(key, TileLayout::Whole);
+                    s.lod.resident.insert(key, TileLayout::Whole);
                     drop(s);
                     terrain.set_whole_tile(key);
                     changed = true;
@@ -202,7 +202,9 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
                             renderer.remove_mesh_faded(whole_key);
                         }
                         let levels: Vec<u8> = available.iter().map(|&l| l as u8).collect();
-                        s.resident.insert(key, TileLayout::Chunks(levels.clone()));
+                        s.lod
+                            .resident
+                            .insert(key, TileLayout::Chunks(levels.clone()));
                         uploaded_vertices += cost;
                         changed = true;
                         levels
@@ -252,6 +254,7 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
                 if resident_changed {
                     state
                         .borrow_mut()
+                        .lod
                         .resident
                         .insert(key, TileLayout::Chunks(levels));
                 }
@@ -286,10 +289,10 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
             };
             {
                 let mut s = state.borrow_mut();
-                s.loading.remove(&fetch_key);
+                s.lod.loading.remove(&fetch_key);
                 if let Err(e) = result {
                     log::warn!("[terrain] tile fetch failed: {e}");
-                    s.failed.insert(fetch_key);
+                    s.lod.failed.insert(fetch_key);
                 }
             }
             // 取得が終わったら、デバウンスを待たずに続き(反映と、次の取得の補充)へ進む。
@@ -307,7 +310,7 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
             let (tx, ty) = (s.camera.target.x as f64, s.camera.target.y as f64);
             s.camera.target.z = heightmap::ground_at_enu(&terrain, &transform, tx, ty).2;
             let chunks = terrain.chunks_per_tile() * terrain.chunks_per_tile();
-            let resident = &s.resident;
+            let resident = &s.lod.resident;
             terrain.evict_unused(
                 |key, chunk, level| match resident.get(&key) {
                     Some(TileLayout::Chunks(levels)) => {

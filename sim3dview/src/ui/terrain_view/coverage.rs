@@ -273,7 +273,7 @@ pub(super) fn refresh_coverage(
             marker: *marker,
             mode,
             altitude_bits: altitude_m.to_bits(),
-            terrain: terrain_signature(&terrain, &s.resident, marker),
+            terrain: terrain_signature(&terrain, &s.lod.resident, marker),
         };
         let entry = s.coverage.markers.entry(marker.id).or_default();
         // 計算済み(同じ観測点・モード・高度・地形): ジオメトリだけ作り直す。進行中の計算は要らない。

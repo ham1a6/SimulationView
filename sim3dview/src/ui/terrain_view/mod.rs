@@ -23,7 +23,6 @@ mod picking;
 mod state;
 
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use leptos::prelude::*;
@@ -101,12 +100,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         labels: Vec::new(),
         pick_anchors: Vec::new(),
         hillshade,
-        resident: HashMap::new(),
-        loading: HashSet::new(),
-        failed: HashSet::new(),
-        lod_pending: false,
-        lod_soon_pending: false,
-        fade_frame_pending: false,
+        lod: LodState::default(),
         coverage: Default::default(),
     }));
 
@@ -308,7 +302,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             };
             // 水域レイヤー(楕円体の海抜0mの面)も新しい原点基準にする。
             renderer.set_ellipsoid_origin(&new_transform);
-            for (&key, resident) in st.resident.iter() {
+            for (&key, resident) in st.lod.resident.iter() {
                 let Some(tile) = terrain.tile(key) else {
                     continue;
                 };

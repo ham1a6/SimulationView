@@ -68,7 +68,7 @@ pub(super) fn try_init(
                     let mut s = state.borrow_mut();
                     s.target_up = target_up;
                     s.camera.target.z = target_up;
-                    s.resident = resident;
+                    s.lod.resident = resident;
                 }
                 renderer.set_hillshade(state.borrow().hillshade.enabled.get_untracked());
                 renderer.set_ellipsoid_origin(&transform);
@@ -130,11 +130,11 @@ pub(super) fn render_frame(state: &Rc<RefCell<ViewState>>) {
     }
     update_labels(s);
     // 地形のレベル切り替えのクロスフェード中は、時間が進むので次のフレームも描く(1つだけ予約する)。
-    if fading && !s.fade_frame_pending {
-        s.fade_frame_pending = true;
+    if fading && !s.lod.fade_frame_pending {
+        s.lod.fade_frame_pending = true;
         let state = state.clone();
         request_animation_frame(move || {
-            state.borrow_mut().fade_frame_pending = false;
+            state.borrow_mut().lod.fade_frame_pending = false;
             render_frame(&state);
         });
     }

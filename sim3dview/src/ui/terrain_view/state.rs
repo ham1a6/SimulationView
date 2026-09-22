@@ -23,6 +23,16 @@ pub(super) struct InteractionState {
     pub(super) drag: DragTracker,
 }
 
+#[derive(Default)]
+pub(super) struct LodState {
+    pub(super) resident: HashMap<TileKey, TileLayout>,
+    pub(super) loading: HashSet<FetchKey>,
+    pub(super) failed: HashSet<FetchKey>,
+    pub(super) update_pending: bool,
+    pub(super) update_soon_pending: bool,
+    pub(super) fade_frame_pending: bool,
+}
+
 pub(super) struct ViewState {
     pub(super) renderer: Option<TerrainRenderer>,
     pub(super) terrain: Option<Rc<TerrainData>>,
@@ -50,17 +60,7 @@ pub(super) struct ViewState {
     /// 陰影(ヒルシェード)のON/OFF。レンダラー作成時の初期値に使う(以後の変更はEffect 7が反映する)。
     pub(super) hillshade: HillshadeState,
     /// 各タイルの、いまGPUに載っている状態(全体1枚か、チャンクごとのレベルか。`terrain::lod`参照)。
-    pub(super) resident: HashMap<TileKey, TileLayout>,
-    /// 取得中のグリッド。
-    pub(super) loading: HashSet<FetchKey>,
-    /// 取得に失敗したグリッド。同じ取得を延々と繰り返さないよう覚えておく。
-    pub(super) failed: HashSet<FetchKey>,
-    /// LOD更新のタイマー待ち中か(連続する操作をまとめるため)。
-    pub(super) lod_pending: bool,
-    /// 取得の完了・メッシュ反映の続きによる、短い待ちのLOD更新の予約中か(`schedule_lod_soon`)。
-    pub(super) lod_soon_pending: bool,
-    /// 地形メッシュのクロスフェード(`TerrainRenderer::is_fading`)の描き直しを予約中か。
-    pub(super) fade_frame_pending: bool,
+    pub(super) lod: LodState,
     /// 覆域(3Dドーム・2D領域)の計算結果のキャッシュと、進行中の計算(`coverage`)。
     pub(super) coverage: CoverageState,
 }
