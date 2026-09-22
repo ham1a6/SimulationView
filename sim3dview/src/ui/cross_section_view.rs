@@ -1,7 +1,9 @@
 //! 右パネル下部: 断面図(地形断面図)。中央地図の3D視点ではなく、**中心**を通る、スライダーで指定した
-//! 方位角の直線に沿った地表断面を2D(距離 vs 標高の折れ線)で表示する。中心は、選択中の航跡のシンボルの位置
-//! (`TracksState::selected`)。何も選択されていなければ基準位置(マップ原点)。中心が距離0で、方位角の向きが正、
-//! 反対が負。片側の長さは選べる(`RANGE_OPTIONS_KM`)。選択中のシンボルは、断面の中心に、高度の位置で印を付ける。
+//! 方位角の直線に沿った地表断面を2D(距離 vs 標高の折れ線)で表示する。中心は、この画面内の
+//! **コンボボックスで選んだ航跡**の位置(地図上のシンボルクリックで変わる`TracksState::selected`とは
+//! 独立。以前はそちらを見ていたが、要望により「選択したものではなく、コンボボックスで選べる」形にした)。
+//! 何も選んでいなければ基準位置(マップ原点)。中心が距離0で、方位角の向きが正、
+//! 反対が負。片側の長さは選べる(`RANGE_OPTIONS_KM`)。選んだ航跡は、断面の中心に、高度の位置で印を付ける。
 //! 地形データ本体は`TerrainStore`を通じて中央地図と共有する(フェッチは1回だけ)。
 //! メインパネル上で追加したレーダー観測点(`RadarMarkersState`)がいずれか1つでも見通せる
 //! 断面上の区間は、地表トラックを緑の線で(`compute_coverage`)、さらに**上空を含めた
@@ -19,7 +21,7 @@ use crate::terrain::origin::Origin;
 use crate::terrain::origin::OriginState;
 use crate::terrain::profile::{build_profile_span, ProfilePoint};
 use crate::terrain::store::TerrainStore;
-use crate::terrain::tracks::{Track, TracksState};
+use crate::terrain::tracks::{Track, TrackId, TracksState};
 
 const VIEW_W: f64 = 400.0;
 const VIEW_H: f64 = 220.0;
@@ -279,9 +281,44 @@ pub fn CrossSectionView() -> impl IntoView {
     // 中心から片側の長さ(km)。
     let range_km = RwSignal::new(DEFAULT_RANGE_KM);
 
-    // 選択中のシンボルの、断面を作り直す単位に丸めた位置。選択の変更・一定以上の移動のときだけ変わる。
+    // 断面の中心にする航跡のID(コンボボックスで選ぶ。Noneなら基準位置)。地図上のシンボル
+    // クリックによる`TracksState::selected`とは別の、この画面だけのローカルな選択状態。
+    let center_track_id = RwSignal::new(None::<TrackId>);
+    // 選んだ航跡が一覧から消えたら(サーバー側で消滅)、選択を解除する(`TracksState::set`が
+    // 自分の`selected`にしているのと同じ扱い)。`entries`を読む(トラッキングする)ので、
+    // 一覧が届くたびに走るが、実際に変えるのは消えたときだけ。
+    if let Some(tracks) = tracks {
+        Effect::new(move |_| {
+            let still_exists = center_track_id
+                .get_untracked()
+                .is_none_or(|id| tracks.entries.with(|es| es.iter().any(|e| e.track.id == id)));
+            if !still_exists {
+                center_track_id.set(None);
+            }
+        });
+    }
+    // コンボボックスの選択肢(id・ラベル)。位置は~20Hzで更新されるが、選択肢自体(トラックの
+    // 増減・ラベル)が実際に変わったときだけ下流(`<select>`の再構築)へ通知したいので、
+    // `Memo`にする(Leptosの`Memo`は計算結果が前回と同じなら通知しない)。
+    let track_options = Memo::new(move |_| {
+        tracks
+            .map(|t| t.entries.with(|es| es.iter().map(|e| (e.track.id, e.track.label.clone())).collect::<Vec<_>>()))
+            .unwrap_or_default()
+    });
+    // 中心にする航跡の現在値(リアクティブに追跡する版・しない版)。断面の再計算・シンボルの
+    // 印の両方から使う(`TracksState::selected_track`/`selected_track_untracked`と同じ使い分け)。
+    let center_track = move || -> Option<Track> {
+        let id = center_track_id.get()?;
+        tracks?.entries.with(|es| es.iter().find(|e| e.track.id == id).map(|e| e.track.clone()))
+    };
+    let center_track_untracked = move || -> Option<Track> {
+        let id = center_track_id.get_untracked()?;
+        tracks?.entries.with_untracked(|es| es.iter().find(|e| e.track.id == id).map(|e| e.track.clone()))
+    };
+
+    // 選んだ航跡の、断面を作り直す単位に丸めた位置。選択の変更・一定以上の移動のときだけ変わる。
     let center_key = Memo::new(move |_| {
-        let track = tracks?.selected_track()?;
+        let track = center_track()?;
         Some((
             track.id,
             (track.lat_deg / CENTER_STEP_DEG).round() as i64,
@@ -304,8 +341,9 @@ pub fn CrossSectionView() -> impl IntoView {
             lat_deg: data.metadata.default_origin.lat_deg,
             lon_deg: data.metadata.default_origin.lon_deg,
         });
-        // 中心: 選択中のシンボルの位置、無ければ基準位置(原点)。位置の更新では作り直さない(`center_key`が刻む)ので、追跡しないで読む。
-        let track = tracks.and_then(|t| t.selected_track_untracked());
+        // 中心: コンボボックスで選んだ航跡の位置、無ければ基準位置(原点)。位置の更新では作り直さない
+        // (`center_key`が刻む)ので、追跡しないで読む。
+        let track = center_track_untracked();
         let center = track.as_ref().map_or(base, |t| Origin { lat_deg: t.lat_deg, lon_deg: t.lon_deg });
 
         let points = build_profile_span(&data, &center, azimuth_deg, range_m, range_m);
@@ -372,8 +410,8 @@ pub fn CrossSectionView() -> impl IntoView {
         // 中心(距離0)の位置。
         let center_x = PAD_L + (sec.back_m / span) * plot_w;
 
-        // 選択中のシンボル: 中心の真上に、高度の位置で印を付ける(位置・高度の更新には、断面を作り直さずに追従する)。
-        let symbol = tracks.and_then(|t| t.selected_track()).map(|track| {
+        // 選んだ航跡のシンボル: 中心の真上に、高度の位置で印を付ける(位置・高度の更新には、断面を作り直さずに追従する)。
+        let symbol = center_track().map(|track| {
             let altitude = symbol_altitude_msl(&track, sec.center_ground_m);
             let y = y_of(altitude.clamp(sec.min_elev, sec.sky_ceiling));
             let ground_y = y_of(sec.center_ground_m);
@@ -427,11 +465,7 @@ pub fn CrossSectionView() -> impl IntoView {
         .into_any()
     };
 
-    let center_label = move || match tracks.and_then(|t| t.selected_track()) {
-        Some(track) => format!("中心: {}", track.label),
-        None => "中心: 基準位置".to_string(),
-    };
-    let has_track = move || tracks.is_some_and(|t| t.selected_track().is_some());
+    let has_track = move || center_track().is_some();
 
     view! {
         <div class="cross-section-view">
@@ -457,9 +491,33 @@ pub fn CrossSectionView() -> impl IntoView {
                 </span>
             </div>
             <div class="cross-section-controls cross-section-center-row">
-                <span class="cross-section-center" title="選択中の航跡のシンボルがあれば、その位置。無ければ基準位置(原点)">
-                    {center_label}
-                </span>
+                <label class="cross-section-range-label cross-section-center-label" title="断面の中心にする航跡。選ばなければ基準位置(原点)">
+                    "中心"
+                    <select
+                        id="cross-section-center"
+                        on:change=move |ev| {
+                            let v = event_target_value(&ev);
+                            center_track_id.set(if v.is_empty() { None } else { v.parse::<TrackId>().ok() });
+                        }
+                    >
+                        <option value="" selected=move || center_track_id.get().is_none()>
+                            "基準位置"
+                        </option>
+                        {move || {
+                            track_options
+                                .get()
+                                .into_iter()
+                                .map(|(id, label)| {
+                                    view! {
+                                        <option value=id.to_string() selected=move || center_track_id.get() == Some(id)>
+                                            {label}
+                                        </option>
+                                    }
+                                })
+                                .collect::<Vec<_>>()
+                        }}
+                    </select>
+                </label>
                 <label class="cross-section-range-label">
                     "片側"
                     <select
@@ -484,10 +542,10 @@ pub fn CrossSectionView() -> impl IntoView {
                 </label>
                 <button
                     class="cross-section-heading-btn"
-                    title="方位角を、選択中のシンボルの進行方向に合わせる"
+                    title="方位角を、選んだ航跡の進行方向に合わせる"
                     disabled=move || !has_track()
                     on:click=move |_| {
-                        if let Some(track) = tracks.and_then(|t| t.selected_track_untracked()) {
+                        if let Some(track) = center_track_untracked() {
                             azimuth.set(track.heading_deg.rem_euclid(360.0).round() % 360.0);
                         }
                     }

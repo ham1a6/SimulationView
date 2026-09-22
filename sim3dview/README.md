@@ -210,8 +210,9 @@ view! { <LosView/> } // RadarMarkersState・TerrainStore contextが必要
 **複数の覆域の同時表示**: 覆域(3Dドーム・2D領域)は、既定では選択中の観測点だけです。`RadarMarkersState::show_all_coverage`を`true`にすると
 (`LosView`の「すべての観測点の覆域を同時に表示」チェックボックスと同じ)、**すべての観測点の覆域を同時に**出します。観測点ごとに色が違います(`coverage_colors(id)`)。
 
-**断面図の中心**: `ui::cross_section_view::CrossSectionView`は、選択中の航跡のシンボル(`TracksState::selected`。`TracksState`を`provide_context`していれば)の位置を中心に、
-方位角の直線に沿った断面を出します。何も選択されていなければ基準位置(`OriginState`)が中心です。片側の長さを選べ、「進行方向」ボタンで方位角をシンボルの進行方向に合わせられます。
+**断面図の中心**: `ui::cross_section_view::CrossSectionView`は、画面内のコンボボックスで選んだ航跡(`TracksState`を`provide_context`していれば、その一覧から選べます。
+地図上のシンボルクリックで変わる`TracksState::selected`とは独立したローカルな選択です)の位置を中心に、方位角の直線に沿った断面を出します。何も選んでいなければ基準位置
+(`OriginState`)が中心です。片側の長さを選べ、「進行方向」ボタンで方位角を選んだ航跡の進行方向に合わせられます。
 
 ## スクリーンショット・画面録画
 

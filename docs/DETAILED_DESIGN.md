@@ -2113,11 +2113,14 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 - **`CoverageAltitudeDialog`**: 数値入力1つで`radar_markers.coverage_altitude_m`を更新する(再構築は`TerrainView`のEffect 4がシグナル経由で行う。通信なし)
 - **`LosView`**(見通し範囲タブ): 観測点の一覧(選択・アンテナ高(`max(v,0)`)・範囲(km。`max(v,1)*1000`)・削除)+極座標図(SVG `viewBox 300×300`、`PAD=26`、`RADIUS=124`)。選択中の観測点を原点として`RangeComputation(Visible, 3200方位)`を`run_in_slices`で小分けにして非同期に計算する(`selected_marker`のMemoが変わったときだけ計算し直し、途中の計算は世代で取り消す。計算中は「見通し範囲を計算中...」)。
   各点は`r = clamp(range_m/max_range,0,1)*RADIUS`、`x = 150 + r·sin(az)`、`y = 150 - r·cos(az)`。距離グリッド円(0.25/0.5/0.75/1.0倍)・十字軸・N/E/S/Wのラベル・最大距離ラベルを描く。観測点が無ければ「メインパネル(中央の地図)を右クリックして、レーダー観測点を追加してください」
-- **`CrossSectionView`**(断面図タブ): 方位角スライダー(0..359)。**中心を通る断面**: `points = build_profile_span(data, center, azimuth, range, range)`。中心は、**選択中の航跡のシンボルの位置**(`TracksState::selected`)、
-  何も選択されていなければ**基準位置**(`OriginState`)。距離は中心が0で方位角の向きが正・反対が負(先頭`-back`〜末尾`+forward`。片側は地形データの端で打ち切る)。片側の長さは`<select>`(10/25/50/100/200/500km、既定100km)。
-  選択中のシンボルは、断面の中心に縦の点線と印(高度の位置。`AboveGround`は中心の地表の標高に足す)とラベル(名前・高度)を描き、高度が上端を超えるなら上端を広げる(`SYMBOL_HEADROOM_M=1500`)。
-  「進行方向」ボタンは、方位角を選択中のシンボルの`heading_deg`に合わせる(シンボルがなければ無効)。中心の行に「中心: 名前/基準位置」を出す。`TracksState`は任意のcontext(なければいつも基準位置)。
-  **再計算の刻み**: 断面(折れ線・覆域の判定=重い)は、`Effect`で、中心・方位角・長さ・観測点・地形が変わったときだけ作り直す。シンボルは毎秒何度も動くので、中心は`CENTER_STEP_DEG=0.005`(約500m)に丸めたキー(`Memo`)で変化を見て、`selected_track_untracked`で追跡せずに位置を読む。
+- **`CrossSectionView`**(断面図タブ): 方位角スライダー(0..359)。**中心を通る断面**: `points = build_profile_span(data, center, azimuth, range, range)`。中心は、**この画面内の`<select>`(コンボボックス)で選んだ航跡の位置**
+  (地図上のシンボルクリックで変わる`TracksState::selected`とは独立したローカル状態`center_track_id: RwSignal<Option<TrackId>>`。以前は`TracksState::selected`を見ていたが、
+  「選択したものではなく、コンボボックスで選べるようにしたい」との要望で切り離した)。何も選んでいなければ**基準位置**(`OriginState`)。距離は中心が0で方位角の向きが正・反対が負(先頭`-back`〜末尾`+forward`。片側は地形データの端で打ち切る)。片側の長さは`<select>`(10/25/50/100/200/500km、既定100km)。
+  選んだ航跡は、断面の中心に縦の点線と印(高度の位置。`AboveGround`は中心の地表の標高に足す)とラベル(名前・高度)を描き、高度が上端を超えるなら上端を広げる(`SYMBOL_HEADROOM_M=1500`)。
+  「進行方向」ボタンは、方位角を選んだ航跡の`heading_deg`に合わせる(選んでいなければ無効)。中心の`<select>`の選択肢は`(TrackId, label)`のペア(`track_options`、下記)。`TracksState`は任意のcontext(なければいつも基準位置で、コンボボックスは「基準位置」のみ)。
+  **再計算の刻み**: 断面(折れ線・覆域の判定=重い)は、`Effect`で、中心・方位角・長さ・観測点・地形が変わったときだけ作り直す。航跡は毎秒何度も動くので、中心は`CENTER_STEP_DEG=0.005`(約500m)に丸めたキー(`Memo`)で変化を見て、`center_track_untracked`(選んだIDから`entries`を`with_untracked`で引く。`TracksState::selected_track_untracked`と同じ考え方)で追跡せずに位置を読む。
+  コンボボックスの選択肢(`track_options`)も同じ理由で`Memo`にしてある: `entries`は位置更新のたびに丸ごと置き換わる(約20Hz)が、`(id, label)`のペアの並びだけを射影すれば、実際に航跡が増減・改名されたときしか値が変わらず、`Memo`は前回と同じ値なら下流(`<option>`群の再構築)へ通知しない。射影せずに`entries`をそのまま使うと、位置が動くたびに`<select>`の中身を毎回作り直すことになる。
+  選んだ航跡が一覧から消えたら(`entries`にそのIDが無くなったら)`center_track_id`を`None`に戻す`Effect`を1つ持つ(`TracksState::set`が自分の`selected`にしているのと同じ扱い)。
   シンボルの印(位置・高度)は、断面とは別に、更新に追従して描く(SVGの数個の要素だけなので軽い)。SVG `400×220`、`PAD_L=46`・`PAD_R=10`・`PAD_T=10`・`PAD_B=22`、`SKY_MARGIN_M=10_000`(Y軸の上端=最高標高+10km)。
   覆域(観測点が1つ以上のとき): `covered[i] = いずれかの観測点で is_visible(...)`の連続区間を地表トラックとして描く。上空の覆域は`boundary[i] = 全観測点の min_visible_altitude の最小値`から天井までの帯(どの観測点の範囲にも入らなければ`None`で区間を切る)
 - **`DrawingEditor`**: ツールボタン(`ToolKind::ALL`)・新規図形の見た目/高度・一覧(表示チェック・名前・削除。行の右クリックで名前変更/複製/表示切替/削除)・編集フォーム(名前・位置(緯度経度。点ごと)・種類ごとのパラメータ・高度(基準+値、**全点に適用**)・見た目)。

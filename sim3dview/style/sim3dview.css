@@ -177,13 +177,13 @@
     justify-content: space-between;
 }
 
-.cross-section-center {
+/* 「中心」の選択(コンボボックス)は、「片側」より幅を優先して取る(航跡名が長くても収まりやすいよう)。 */
+.cross-section-center-label {
     flex: 1 1 auto;
-    font-size: 0.78rem;
-    color: #ccc;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+}
+
+.cross-section-center-label select {
+    max-width: 100%;
 }
 
 .cross-section-range-label {
