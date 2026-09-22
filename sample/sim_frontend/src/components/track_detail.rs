@@ -12,7 +12,22 @@ use sim3dview::terrain::origin::OriginState;
 use sim3dview::terrain::tracks::{Track, TracksState};
 
 const COMPASS: [&str; 16] = [
-    "北", "北北東", "北東", "東北東", "東", "東南東", "南東", "南南東", "南", "南南西", "南西", "西南西", "西", "西北西", "北西", "北北西",
+    "北",
+    "北北東",
+    "北東",
+    "東北東",
+    "東",
+    "東南東",
+    "南東",
+    "南南東",
+    "南",
+    "南南西",
+    "南西",
+    "西南西",
+    "西",
+    "西北西",
+    "北西",
+    "北北西",
 ];
 
 /// 方位(度、北から時計回り)の16方位の名前。
@@ -27,7 +42,8 @@ fn distance_and_bearing(lat0: f64, lon0: f64, lat1: f64, lon1: f64) -> (f64, f64
     let dlon = (lon1 - lon0).to_radians();
     let a = ((p1 - p0) * 0.5).sin().powi(2) + p0.cos() * p1.cos() * (dlon * 0.5).sin().powi(2);
     let distance = 2.0 * EARTH_RADIUS_M * a.sqrt().min(1.0).asin();
-    let bearing = (dlon.sin() * p1.cos()).atan2(p0.cos() * p1.sin() - p0.sin() * p1.cos() * dlon.cos());
+    let bearing =
+        (dlon.sin() * p1.cos()).atan2(p0.cos() * p1.sin() - p0.sin() * p1.cos() * dlon.cos());
     (distance, bearing.to_degrees().rem_euclid(360.0))
 }
 
@@ -49,7 +65,14 @@ fn format_altitude(altitude: Altitude) -> String {
 /// 針路・速度・原点からの位置関係など、値から作る表示文字列(名前・種別などは`view!`で直接書く)。
 fn derived_rows(track: &Track, origin: Option<(f64, f64)>) -> Vec<(&'static str, String)> {
     let mut rows = vec![
-        ("針路", format!("{:03.0}°({})", track.heading_deg.rem_euclid(360.0), compass_name(track.heading_deg))),
+        (
+            "針路",
+            format!(
+                "{:03.0}°({})",
+                track.heading_deg.rem_euclid(360.0),
+                compass_name(track.heading_deg)
+            ),
+        ),
         (
             "速度",
             format!(
@@ -64,7 +87,12 @@ fn derived_rows(track: &Track, origin: Option<(f64, f64)>) -> Vec<(&'static str,
         let (distance, bearing) = distance_and_bearing(lat0, lon0, track.lat_deg, track.lon_deg);
         rows.push((
             "原点から",
-            format!("{:.1} km / 方位{:03.0}°({})", distance / 1000.0, bearing, compass_name(bearing)),
+            format!(
+                "{:.1} km / 方位{:03.0}°({})",
+                distance / 1000.0,
+                bearing,
+                compass_name(bearing)
+            ),
         ));
     }
     rows
@@ -161,6 +189,9 @@ mod tests {
         assert_eq!(format_latitude(-12.5), "12.500000°S");
         assert_eq!(format_longitude(139.5), "139.500000°E");
         assert_eq!(format_altitude(Altitude::Msl(4000.4)), "4000 m(海抜)");
-        assert_eq!(format_altitude(Altitude::AboveGround(120.0)), "120 m(地表から)");
+        assert_eq!(
+            format_altitude(Altitude::AboveGround(120.0)),
+            "120 m(地表から)"
+        );
     }
 }

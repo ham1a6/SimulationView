@@ -24,14 +24,21 @@ pub(crate) fn import_glb(bytes: &[u8]) -> Result<ModelMesh, String> {
     for buffer in gltf.buffers() {
         match buffer.source() {
             gltf::buffer::Source::Bin => {
-                buffers.push(gltf.blob.as_deref().ok_or("GLBにバイナリチャンクがありません")?);
+                buffers.push(
+                    gltf.blob
+                        .as_deref()
+                        .ok_or("GLBにバイナリチャンクがありません")?,
+                );
             }
             gltf::buffer::Source::Uri(_) => {
                 return Err("外部ファイルやdata URIのバッファは対応していません(.glb形式で書き出してください)".to_string());
             }
         }
     }
-    let scene = gltf.default_scene().or_else(|| gltf.scenes().next()).ok_or("glTFにシーンがありません")?;
+    let scene = gltf
+        .default_scene()
+        .or_else(|| gltf.scenes().next())
+        .ok_or("glTFにシーンがありません")?;
     let mut builder = Builder::default();
     for node in scene.nodes() {
         builder.visit(&node, Mat4::IDENTITY, &buffers, 0)?;
@@ -51,7 +58,13 @@ fn to_body(v: Vec3) -> [f32; 3] {
 }
 
 impl Builder {
-    fn visit(&mut self, node: &gltf::Node, parent: Mat4, buffers: &[&[u8]], depth: usize) -> Result<(), String> {
+    fn visit(
+        &mut self,
+        node: &gltf::Node,
+        parent: Mat4,
+        buffers: &[&[u8]],
+        depth: usize,
+    ) -> Result<(), String> {
         if depth > MAX_NODE_DEPTH {
             return Err("ノードの入れ子が深すぎます".to_string());
         }
@@ -67,14 +80,23 @@ impl Builder {
         Ok(())
     }
 
-    fn add_primitive(&mut self, primitive: &gltf::Primitive, world: Mat4, buffers: &[&[u8]]) -> Result<(), String> {
+    fn add_primitive(
+        &mut self,
+        primitive: &gltf::Primitive,
+        world: Mat4,
+        buffers: &[&[u8]],
+    ) -> Result<(), String> {
         if primitive.mode() != gltf::mesh::Mode::Triangles {
             return Ok(());
         }
         let reader = primitive.reader(|buffer| buffers.get(buffer.index()).copied());
-        let positions: Vec<[f32; 3]> = reader.read_positions().ok_or("POSITIONのないメッシュがあります")?.collect();
+        let positions: Vec<[f32; 3]> = reader
+            .read_positions()
+            .ok_or("POSITIONのないメッシュがあります")?
+            .collect();
         let normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|n| n.collect());
-        let colors: Option<Vec<[f32; 4]>> = reader.read_colors(0).map(|c| c.into_rgba_f32().collect());
+        let colors: Option<Vec<[f32; 4]>> =
+            reader.read_colors(0).map(|c| c.into_rgba_f32().collect());
         let mut indices: Vec<u32> = match reader.read_indices() {
             Some(i) => i.into_u32().collect(),
             None => (0..positions.len() as u32).collect(),
@@ -88,15 +110,27 @@ impl Builder {
         {
             return Err("頂点属性の数が一致しません".to_string());
         }
-        let base = primitive.material().pbr_metallic_roughness().base_color_factor();
+        let base = primitive
+            .material()
+            .pbr_metallic_roughness()
+            .base_color_factor();
 
         // 法線の変換は、拡大縮小・せん断があっても向きを保つ「逆転置行列」。特異な行列(潰れたノード)は、そのまま使う。
         let linear = Mat3::from_mat4(world);
-        let normal_matrix = if linear.determinant().abs() > 1e-12 { linear.inverse().transpose() } else { linear };
+        let normal_matrix = if linear.determinant().abs() > 1e-12 {
+            linear.inverse().transpose()
+        } else {
+            linear
+        };
         let convert = |position: [f32; 3], normal: Vec3, color: [f32; 4]| ModelVertex {
             position: to_body(world.transform_point3(Vec3::from(position))),
             normal: to_body((normal_matrix * normal).normalize_or_zero()),
-            color: [color[0] * base[0], color[1] * base[1], color[2] * base[2], 1.0],
+            color: [
+                color[0] * base[0],
+                color[1] * base[1],
+                color[2] * base[2],
+                1.0,
+            ],
         };
         let color_of = |i: usize| colors.as_ref().map_or([1.0; 4], |c| c[i]);
 
@@ -108,18 +142,24 @@ impl Builder {
             // 法線があれば、頂点を共有したまま(なめらかな陰影)。
             Some(normals) => {
                 for (i, position) in positions.iter().enumerate() {
-                    self.vertices.push(convert(*position, Vec3::from(normals[i]), color_of(i)));
+                    self.vertices
+                        .push(convert(*position, Vec3::from(normals[i]), color_of(i)));
                 }
                 self.indices.extend(indices.iter().map(|&i| first + i));
             }
             // 無ければ、三角形ごとに頂点を分けて面の法線を付ける(角ばった陰影)。
             None => {
-                for triangle in indices.chunks_exact(3) {
-                    let p = [triangle[0], triangle[1], triangle[2]].map(|i| Vec3::from(positions[i as usize]));
+                for triangle in indices.as_chunks::<3>().0 {
+                    let p = [triangle[0], triangle[1], triangle[2]]
+                        .map(|i| Vec3::from(positions[i as usize]));
                     let face = (p[1] - p[0]).cross(p[2] - p[0]);
                     for &i in triangle {
                         self.indices.push(self.vertices.len() as u32);
-                        self.vertices.push(convert(positions[i as usize], face, color_of(i as usize)));
+                        self.vertices.push(convert(
+                            positions[i as usize],
+                            face,
+                            color_of(i as usize),
+                        ));
                     }
                 }
             }
@@ -131,11 +171,19 @@ impl Builder {
         if self.indices.is_empty() {
             return Err("描画できる三角形メッシュがありません".to_string());
         }
-        let radius_m = self.vertices.iter().map(|v| Vec3::from(v.position).length()).fold(0.0, f32::max);
+        let radius_m = self
+            .vertices
+            .iter()
+            .map(|v| Vec3::from(v.position).length())
+            .fold(0.0, f32::max);
         if !radius_m.is_finite() || radius_m <= 0.0 {
             return Err("モデルの大きさが0または不正です".to_string());
         }
-        Ok(ModelMesh { vertices: self.vertices, indices: self.indices, radius_m })
+        Ok(ModelMesh {
+            vertices: self.vertices,
+            indices: self.indices,
+            radius_m,
+        })
     }
 }
 
@@ -145,7 +193,11 @@ pub(crate) mod tests {
 
     /// テスト用の最小のGLBを作る: 1つの三角形(glTF座標で(0,0,0)(1,0,0)(0,1,0))を、`translation`だけ動かしたノードに置く。
     /// `with_normals`がfalseなら法線なし。`base_color`はマテリアルの基本色。
-    pub(crate) fn triangle_glb(translation: [f32; 3], with_normals: bool, base_color: [f32; 4]) -> Vec<u8> {
+    pub(crate) fn triangle_glb(
+        translation: [f32; 3],
+        with_normals: bool,
+        base_color: [f32; 4],
+    ) -> Vec<u8> {
         let positions: [[f32; 3]; 3] = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
         let normals: [[f32; 3]; 3] = [[0.0, 0.0, 1.0]; 3];
         let mut bin: Vec<u8> = Vec::new();
@@ -162,14 +214,18 @@ pub(crate) mod tests {
                 }
             }
         }
-        let mut views = vec![format!(r#"{{"buffer":0,"byteOffset":0,"byteLength":36}}"#)];
+        let mut views = vec![r#"{"buffer":0,"byteOffset":0,"byteLength":36}"#.to_string()];
         let mut accessors = vec![
             r#"{"bufferView":0,"componentType":5126,"count":3,"type":"VEC3","min":[0,0,0],"max":[1,1,0]}"#.to_string(),
         ];
         let mut attributes = r#""POSITION":0"#.to_string();
         if with_normals {
-            views.push(format!(r#"{{"buffer":0,"byteOffset":{normals_offset},"byteLength":36}}"#));
-            accessors.push(r#"{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"}"#.to_string());
+            views.push(format!(
+                r#"{{"buffer":0,"byteOffset":{normals_offset},"byteLength":36}}"#
+            ));
+            accessors.push(
+                r#"{"bufferView":1,"componentType":5126,"count":3,"type":"VEC3"}"#.to_string(),
+            );
             attributes.push_str(r#","NORMAL":1"#);
         }
         let json = format!(
@@ -193,7 +249,7 @@ pub(crate) mod tests {
         while json_bytes.len() % 4 != 0 {
             json_bytes.push(b' ');
         }
-        while bin.len() % 4 != 0 {
+        while !bin.len().is_multiple_of(4) {
             bin.push(0);
         }
         let total = 12 + 8 + json_bytes.len() + 8 + bin.len();
@@ -224,7 +280,8 @@ pub(crate) mod tests {
 
     #[test]
     fn node_transform_and_base_color_are_baked_into_the_vertices() {
-        let mesh = import_glb(&triangle_glb([0.0, 0.0, 10.0], true, [0.5, 0.25, 1.0, 0.3])).unwrap();
+        let mesh =
+            import_glb(&triangle_glb([0.0, 0.0, 10.0], true, [0.5, 0.25, 1.0, 0.3])).unwrap();
         // ノードの平行移動(glTFの+Z=前へ10m)が頂点に入る。
         assert_eq!(mesh.vertices[0].position, [0.0, 10.0, 0.0]);
         // 基本色が頂点色に掛かる(アルファは常に1)。
@@ -253,22 +310,36 @@ pub(crate) mod tests {
             ("vehicle", 8.0..10.0),
             ("missile", 4.5..5.5),
         ];
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../sample/sim_frontend/assets/models/");
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../sample/sim_frontend/assets/models/"
+        );
         for (name, length_range) in expected {
-            let bytes = std::fs::read(format!("{dir}{name}.glb"))
-                .unwrap_or_else(|e| panic!("{name}.glbを読めません(python scripts/gen_sample_models.pyで生成): {e}"));
+            let bytes = std::fs::read(format!("{dir}{name}.glb")).unwrap_or_else(|e| {
+                panic!("{name}.glbを読めません(python scripts/gen_sample_models.pyで生成): {e}")
+            });
             let mesh = import_glb(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
             let ys = mesh.vertices.iter().map(|v| v.position[1]);
             let length = ys.clone().fold(f32::MIN, f32::max) - ys.fold(f32::MAX, f32::min);
-            assert!(length_range.contains(&length), "{name}: 前後の長さ{length}m");
-            assert!(mesh.radius_m > 1.0 && mesh.radius_m < 100.0, "{name}: radius={}", mesh.radius_m);
+            assert!(
+                length_range.contains(&length),
+                "{name}: 前後の長さ{length}m"
+            );
+            assert!(
+                mesh.radius_m > 1.0 && mesh.radius_m < 100.0,
+                "{name}: radius={}",
+                mesh.radius_m
+            );
             // 法線は単位ベクトルで、各三角形の面の向き(右手系の外積)が3頂点の法線の平均と同じ側を向く。
             let mut mismatched = 0;
-            for t in mesh.indices.chunks_exact(3) {
+            for t in mesh.indices.as_chunks::<3>().0 {
                 let v = [t[0], t[1], t[2]].map(|i| mesh.vertices[i as usize]);
                 for vertex in &v {
                     let n = Vec3::from(vertex.normal);
-                    assert!((n.length() - 1.0).abs() < 1e-3, "{name}: 法線が単位長でない");
+                    assert!(
+                        (n.length() - 1.0).abs() < 1e-3,
+                        "{name}: 法線が単位長でない"
+                    );
                 }
                 let face = (Vec3::from(v[1].position) - Vec3::from(v[0].position))
                     .cross(Vec3::from(v[2].position) - Vec3::from(v[0].position));

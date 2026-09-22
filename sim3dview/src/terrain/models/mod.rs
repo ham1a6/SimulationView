@@ -68,7 +68,11 @@ pub struct ModelSource {
 impl ModelSource {
     /// URLだけ指定する(単位はメートル、前は+Z)。
     pub fn new(url: impl Into<String>) -> Self {
-        Self { url: url.into(), scale: 1.0, yaw_offset_deg: 0.0 }
+        Self {
+            url: url.into(),
+            scale: 1.0,
+            yaw_offset_deg: 0.0,
+        }
     }
 }
 
@@ -126,21 +130,42 @@ mod tests {
         let owner = leptos::reactive::owner::Owner::new();
         owner.with(|| {
             let state = ModelsState::new();
-            assert_eq!(state.mode.get_untracked(), ModelDisplayMode::SwitchToSymbol, "既定は距離で切り替え");
+            assert_eq!(
+                state.mode.get_untracked(),
+                ModelDisplayMode::SwitchToSymbol,
+                "既定は距離で切り替え"
+            );
             state.set_source(SymbolKind::Aircraft, ModelSource::new("a.glb"));
             state.set_source(SymbolKind::Ship, ModelSource::new("s.glb"));
-            state.set_source(SymbolKind::Aircraft, ModelSource { scale: 0.01, ..ModelSource::new("b.glb") });
+            state.set_source(
+                SymbolKind::Aircraft,
+                ModelSource {
+                    scale: 0.01,
+                    ..ModelSource::new("b.glb")
+                },
+            );
             let sources = state.sources.get_untracked();
             assert_eq!(sources.len(), 2);
-            assert_eq!((sources[&SymbolKind::Aircraft].url.as_str(), sources[&SymbolKind::Aircraft].scale), ("b.glb", 0.01));
+            assert_eq!(
+                (
+                    sources[&SymbolKind::Aircraft].url.as_str(),
+                    sources[&SymbolKind::Aircraft].scale
+                ),
+                ("b.glb", 0.01)
+            );
             state.clear_source(SymbolKind::Ship);
-            assert!(!state.sources.get_untracked().contains_key(&SymbolKind::Ship));
+            assert!(!state
+                .sources
+                .get_untracked()
+                .contains_key(&SymbolKind::Ship));
         });
     }
 
     #[test]
     fn mode_labels_are_japanese() {
         assert_eq!(ModelDisplayMode::Off.label(), "シンボルのみ");
-        assert!(ModelDisplayMode::MinScreenSize.label().contains("最小サイズ"));
+        assert!(ModelDisplayMode::MinScreenSize
+            .label()
+            .contains("最小サイズ"));
     }
 }

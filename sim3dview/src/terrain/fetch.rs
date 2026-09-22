@@ -20,21 +20,35 @@ pub async fn fetch_metadata(base_url: &str) -> Result<TerrainMetadata, String> {
 }
 
 fn decode_i16_le(bytes: &[u8]) -> Vec<i16> {
-    bytes.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect()
+    bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| i16::from_le_bytes(*c))
+        .collect()
 }
 
-pub(crate) async fn fetch_binary(url: &str, range: Option<(usize, usize)>) -> Result<Vec<u8>, String> {
+pub(crate) async fn fetch_binary(
+    url: &str,
+    range: Option<(usize, usize)>,
+) -> Result<Vec<u8>, String> {
     let mut request = gloo_net::http::Request::get(url);
     if let Some((start, end)) = range {
         // Rangeは単純な`bytes=start-end`ならCORSのプリフライトなしで送れる。
         request = request.header("Range", &format!("bytes={start}-{end}"));
     }
-    let response = request.send().await.map_err(|e| format!("{url} fetch failed: {e}"))?;
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("{url} fetch failed: {e}"))?;
     if !response.ok() {
         return Err(format!("{url} fetch failed: HTTP {}", response.status()));
     }
     let status = response.status();
-    let body = response.binary().await.map_err(|e| format!("{url} read failed: {e}"))?;
+    let body = response
+        .binary()
+        .await
+        .map_err(|e| format!("{url} read failed: {e}"))?;
     match range {
         // サーバーがRangeを無視して全体(200)を返した場合は、必要な範囲を切り出す。
         Some((start, end)) if status == 200 => body
@@ -79,7 +93,12 @@ pub async fn load_terrain(base_url: &str) -> Result<TerrainData, String> {
             expected_len
         ));
     }
-    Ok(TerrainData::new(metadata, base_url.to_string(), index, decode_i16_le(&bytes)))
+    Ok(TerrainData::new(
+        metadata,
+        base_url.to_string(),
+        index,
+        decode_i16_le(&bytes),
+    ))
 }
 
 /// タイル名("N035E138"形式。`geotiff_preprocess`の出力ファイル名と一致させる)。
@@ -111,7 +130,10 @@ pub async fn fetch_tile_level(
     let bytes = fetch_binary(&url, None).await?;
     let expected = chunk_count * (chunk_cells + 1) * (chunk_cells + 1) * 2;
     if bytes.len() != expected {
-        return Err(format!("{url} size mismatch: got {} bytes, expected {expected}", bytes.len()));
+        return Err(format!(
+            "{url} size mismatch: got {} bytes, expected {expected}",
+            bytes.len()
+        ));
     }
     Ok(decode_i16_le(&bytes))
 }
@@ -150,7 +172,10 @@ mod tests {
 
     #[test]
     fn decode_reads_little_endian_i16() {
-        assert_eq!(decode_i16_le(&[0x34, 0x12, 0xff, 0xff, 0x00, 0x80]), vec![0x1234, -1, i16::MIN]);
+        assert_eq!(
+            decode_i16_le(&[0x34, 0x12, 0xff, 0xff, 0x00, 0x80]),
+            vec![0x1234, -1, i16::MIN]
+        );
         // 端数のバイトは捨てる。
         assert_eq!(decode_i16_le(&[1, 0, 9]), vec![1]);
     }

@@ -28,7 +28,9 @@ const JITTER_MS: f64 = 300.0; // ±300ms
 pub enum ConnectionStatus {
     Connecting,
     Connected,
-    Reconnecting { attempt: u32 },
+    Reconnecting {
+        attempt: u32,
+    },
     /// タブが非表示のため再接続を一時停止中。
     PausedHidden,
 }
@@ -285,11 +287,13 @@ impl WsConnection {
 
         let attempt = inner.reconnect_attempt;
         inner.reconnect_attempt = attempt.saturating_add(1);
-        self.signals
-            .status
-            .set(ConnectionStatus::Reconnecting { attempt: attempt + 1 });
+        self.signals.status.set(ConnectionStatus::Reconnecting {
+            attempt: attempt + 1,
+        });
 
-        let base_ms = INITIAL_BACKOFF_MS.saturating_mul(1u32 << attempt.min(5)).min(MAX_BACKOFF_MS);
+        let base_ms = INITIAL_BACKOFF_MS
+            .saturating_mul(1u32 << attempt.min(5))
+            .min(MAX_BACKOFF_MS);
         let jitter_ms = (js_sys::Math::random() * (2.0 * JITTER_MS) - JITTER_MS).round() as i64;
         let delay_ms = (base_ms as i64 + jitter_ms).clamp(200, MAX_BACKOFF_MS as i64) as u32;
 

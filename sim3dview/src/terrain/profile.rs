@@ -3,9 +3,9 @@
 //! (距離, 標高)の点列を作る(2D表示用)。距離は中心が0で、方位角の向きが正、その反対が負。
 //! `max_valid_distance`は`terrain::los`(見通し範囲)とも共有している。
 
-use super::loader::TerrainData;
 use super::geodesy::EnuTransform;
 use super::heightmap::sample_heightmap;
+use super::loader::TerrainData;
 use super::origin::Origin;
 pub struct ProfilePoint {
     pub distance_m: f64,
@@ -92,7 +92,12 @@ pub fn build_profile_span(
             let distance = -back + total * (i as f64) / (NUM_SAMPLES as f64);
             let (lat, lon) = transform.inverse(dir_east * distance, dir_north * distance);
             let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0);
-            ProfilePoint { distance_m: distance, elevation_m: elevation, lat_deg: lat, lon_deg: lon }
+            ProfilePoint {
+                distance_m: distance,
+                elevation_m: elevation,
+                lat_deg: lat,
+                lon_deg: lon,
+            }
         })
         .collect()
 }
@@ -103,7 +108,10 @@ mod tests {
     use crate::terrain::geodesy::Ellipsoid;
     fn transform(lat: f64, lon: f64) -> EnuTransform {
         EnuTransform::new(
-            &Origin { lat_deg: lat, lon_deg: lon },
+            &Origin {
+                lat_deg: lat,
+                lon_deg: lon,
+            },
             &Ellipsoid::WGS84,
         )
     }
@@ -129,7 +137,10 @@ mod tests {
         // 東へ15度(約1,600km)先まで地形がある場合でも、1,000kmで打ち切る。
         let data = TerrainData::synthetic(0, 100, 30, 30, |_, _| 0);
         let t = transform(15.0, 115.0);
-        assert_eq!(max_valid_distance(&data, &t, 1.0, 0.0), SEARCH_UPPER_BOUND_M);
+        assert_eq!(
+            max_valid_distance(&data, &t, 1.0, 0.0),
+            SEARCH_UPPER_BOUND_M
+        );
     }
 
     /// 中心を通る断面: 中心の位置が距離0になり、方位角の向きが正・反対が負。片側が地形データの端に近ければ、その側だけ短くなる。
@@ -137,19 +148,31 @@ mod tests {
     fn centered_profile_passes_through_the_center_and_stops_at_the_data_edge() {
         let data = TerrainData::synthetic(30, 120, 1, 1, east_slope);
         // 東端(経度121度)まで約24km、西端まで約72kmの点。東西に±100km取ろうとしても、データの端で切れる。
-        let center = Origin { lat_deg: 30.5, lon_deg: 120.75 };
+        let center = Origin {
+            lat_deg: 30.5,
+            lon_deg: 120.75,
+        };
         let p = build_profile_span(&data, &center, 90.0, 100_000.0, 100_000.0);
         assert_eq!(p.len(), NUM_SAMPLES + 1);
         let (first, last) = (p[0].distance_m, p[NUM_SAMPLES].distance_m);
         assert!((first + 72_000.0).abs() < 2_000.0, "西端 {first}");
         assert!((last - 24_000.0).abs() < 1_000.0, "東端 {last}");
         // 距離0の点は、中心の標高(東へ1度で600m上がる斜面の、経度120.75度=450m)。
-        let at_center = p.iter().min_by(|a, b| a.distance_m.abs().total_cmp(&b.distance_m.abs())).unwrap();
+        let at_center = p
+            .iter()
+            .min_by(|a, b| a.distance_m.abs().total_cmp(&b.distance_m.abs()))
+            .unwrap();
         assert!(at_center.distance_m.abs() < (last - first) / NUM_SAMPLES as f64);
-        assert!((at_center.elevation_m - 450.0).abs() < 25.0, "{}", at_center.elevation_m);
+        assert!(
+            (at_center.elevation_m - 450.0).abs() < 25.0,
+            "{}",
+            at_center.elevation_m
+        );
         // 距離は単調増加で等間隔。
         let step = p[1].distance_m - p[0].distance_m;
-        assert!(p.windows(2).all(|w| ((w[1].distance_m - w[0].distance_m) - step).abs() < 1e-6));
+        assert!(p
+            .windows(2)
+            .all(|w| ((w[1].distance_m - w[0].distance_m) - step).abs() < 1e-6));
         // 東へ進むほど高い。
         assert!(p.windows(2).all(|w| w[1].elevation_m >= w[0].elevation_m));
         // 範囲を狭くすると、その範囲で切れる。
@@ -160,20 +183,32 @@ mod tests {
         let one_way = build_profile_span(&data, &center, 90.0, 0.0, SEARCH_UPPER_BOUND_M);
         let old = build_profile(&data, &center, 90.0);
         assert_eq!(one_way.len(), old.len());
-        assert!(one_way.iter().zip(&old).all(|(a, b)| a.distance_m == b.distance_m));
+        assert!(one_way
+            .iter()
+            .zip(&old)
+            .all(|(a, b)| a.distance_m == b.distance_m));
     }
 
     #[test]
     fn profile_samples_evenly_from_the_origin_to_the_edge() {
         let data = TerrainData::synthetic(30, 120, 1, 1, east_slope);
-        let origin = Origin { lat_deg: 30.5, lon_deg: 120.5 };
+        let origin = Origin {
+            lat_deg: 30.5,
+            lon_deg: 120.5,
+        };
         let east = build_profile(&data, &origin, 90.0);
         assert_eq!(east.len(), NUM_SAMPLES + 1);
         assert_eq!(east[0].distance_m, 0.0);
         assert!((east[0].elevation_m - 300.0).abs() < 1.0); // 原点の標高
-        // 東へ進むほど高くなり、最後は東端(経度121度=600m)付近。
-        assert!(east.windows(2).all(|w| w[1].elevation_m >= w[0].elevation_m));
-        assert!((east[NUM_SAMPLES].elevation_m - 600.0).abs() < 25.0, "{}", east[NUM_SAMPLES].elevation_m);
+                                                            // 東へ進むほど高くなり、最後は東端(経度121度=600m)付近。
+        assert!(east
+            .windows(2)
+            .all(|w| w[1].elevation_m >= w[0].elevation_m));
+        assert!(
+            (east[NUM_SAMPLES].elevation_m - 600.0).abs() < 25.0,
+            "{}",
+            east[NUM_SAMPLES].elevation_m
+        );
         // 等間隔。
         let step = east[1].distance_m;
         assert!((east[NUM_SAMPLES].distance_m - step * NUM_SAMPLES as f64).abs() < 1e-6);

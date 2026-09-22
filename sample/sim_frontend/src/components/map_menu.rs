@@ -14,8 +14,8 @@ use sim3dview::terrain::origin_pick::OriginPickState;
 use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::terrain::tracks::TracksState;
 use sim3dview::ui::context_menu::MenuItem;
-use sim3dview::ui::util::copy_to_clipboard;
 use sim3dview::ui::context_menu::{MapMenuState, MapMenuTarget};
+use sim3dview::ui::util::copy_to_clipboard;
 
 /// 項目が操作する状態。すべて`Copy`(シグナルの束)なので、項目のコールバックへそのまま持ち込める。
 #[derive(Clone, Copy)]
@@ -33,7 +33,10 @@ fn build_items(target: MapMenuTarget, d: Deps) -> Vec<MenuItem> {
 
     if let Some(id) = target.track {
         let track = d.tracks.entries.with_untracked(|entries| {
-            entries.iter().find(|e| e.track.id == id).map(|e| e.track.clone())
+            entries
+                .iter()
+                .find(|e| e.track.id == id)
+                .map(|e| e.track.clone())
         });
         if let Some(track) = track {
             items.push(MenuItem::label(format!(
@@ -43,8 +46,12 @@ fn build_items(target: MapMenuTarget, d: Deps) -> Vec<MenuItem> {
                 track.affiliation.label()
             )));
             let (lat, lon) = (track.lat_deg, track.lon_deg);
-            items.push(MenuItem::action("中心点をこの航跡へ", move || d.recenter.request_at(lat, lon)));
-            items.push(MenuItem::action("選択を解除", move || d.tracks.select(None)));
+            items.push(MenuItem::action("中心点をこの航跡へ", move || {
+                d.recenter.request_at(lat, lon)
+            }));
+            items.push(MenuItem::action("選択を解除", move || {
+                d.tracks.select(None)
+            }));
         }
     }
 
@@ -53,18 +60,27 @@ fn build_items(target: MapMenuTarget, d: Deps) -> Vec<MenuItem> {
             items.push(MenuItem::separator());
         }
         items.push(MenuItem::label(format!("緯度 {lat:.5}°  経度 {lon:.5}°")));
-        items.push(MenuItem::action("ここにレーダー観測点を追加", move || {
-            d.radar_markers.add(lat, lon);
-        }));
+        items.push(MenuItem::action(
+            "ここにレーダー観測点を追加",
+            move || {
+                d.radar_markers.add(lat, lon);
+            },
+        ));
         // 原点の変更はシミュレーション停止中のみサーバーが受理する(受理されなければCommandErrorが返る)。
-        items.push(MenuItem::action("ここを原点に設定", move || d.origin_pick.on_pick.run((lat, lon))));
-        items.push(MenuItem::action("ここを中心点にする", move || d.recenter.request_at(lat, lon)));
+        items.push(MenuItem::action("ここを原点に設定", move || {
+            d.origin_pick.on_pick.run((lat, lon))
+        }));
+        items.push(MenuItem::action("ここを中心点にする", move || {
+            d.recenter.request_at(lat, lon)
+        }));
         items.push(MenuItem::separator());
         items.push(MenuItem::submenu(
             "ここに図形を作成",
             ToolKind::ALL
                 .into_iter()
-                .map(|kind| MenuItem::action(kind.label(), move || d.draw_tool.start_at(kind, lat, lon)))
+                .map(|kind| {
+                    MenuItem::action(kind.label(), move || d.draw_tool.start_at(kind, lat, lon))
+                })
                 .collect(),
         ));
         items.push(MenuItem::action("緯度経度をコピー", move || {
@@ -78,9 +94,11 @@ fn build_items(target: MapMenuTarget, d: Deps) -> Vec<MenuItem> {
 /// 各`State`が`provide_context`されたあとに、1度だけ呼ぶこと。
 pub fn provide_map_menu() {
     let deps = Deps {
-        radar_markers: use_context::<RadarMarkersState>().expect("RadarMarkersState context not found"),
+        radar_markers: use_context::<RadarMarkersState>()
+            .expect("RadarMarkersState context not found"),
         origin_pick: use_context::<OriginPickState>().expect("OriginPickState context not found"),
-        recenter: use_context::<RecenterRequestState>().expect("RecenterRequestState context not found"),
+        recenter: use_context::<RecenterRequestState>()
+            .expect("RecenterRequestState context not found"),
         draw_tool: use_context::<DrawToolState>().expect("DrawToolState context not found"),
         tracks: use_context::<TracksState>().expect("TracksState context not found"),
     };

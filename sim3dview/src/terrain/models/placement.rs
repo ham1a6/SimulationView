@@ -68,19 +68,36 @@ pub(crate) fn build_placements(ctx: &BuildContext, entries: &[TrackEntry]) -> Ve
 }
 
 /// 機体座標→ENU座標の回転(地点の東・北・上と、ヘディング・ピッチ・ロールから)。
-pub(crate) fn attitude(frame: [[f32; 3]; 3], heading_deg: f32, pitch_deg: f32, roll_deg: f32) -> Mat3 {
+pub(crate) fn attitude(
+    frame: [[f32; 3]; 3],
+    heading_deg: f32,
+    pitch_deg: f32,
+    roll_deg: f32,
+) -> Mat3 {
     let local = Mat3::from_rotation_z(-heading_deg.to_radians())
         * Mat3::from_rotation_x(pitch_deg.to_radians())
         * Mat3::from_rotation_y(roll_deg.to_radians());
-    Mat3::from_cols(Vec3::from(frame[0]), Vec3::from(frame[1]), Vec3::from(frame[2])) * local
+    Mat3::from_cols(
+        Vec3::from(frame[0]),
+        Vec3::from(frame[1]),
+        Vec3::from(frame[2]),
+    ) * local
 }
 
 /// モデル1つの変換行列(機体座標→ENU座標)。モデルの前が、機体の前から(上から見て)時計回りに`source.yaw_offset_deg`だけ
 /// ずれて作られているとき、その分を打ち消して前へ合わせる。`source.scale`と`extra_scale`(最小画面サイズの拡大)を掛けてから、
 /// 向きと位置を与える。
-pub(crate) fn instance_matrix(placement: &ModelPlacement, source: &ModelSource, extra_scale: f32) -> Mat4 {
-    let rotation = attitude(placement.frame, placement.heading_deg, placement.pitch_deg, placement.roll_deg)
-        * Mat3::from_rotation_z(source.yaw_offset_deg.to_radians());
+pub(crate) fn instance_matrix(
+    placement: &ModelPlacement,
+    source: &ModelSource,
+    extra_scale: f32,
+) -> Mat4 {
+    let rotation = attitude(
+        placement.frame,
+        placement.heading_deg,
+        placement.pitch_deg,
+        placement.roll_deg,
+    ) * Mat3::from_rotation_z(source.yaw_offset_deg.to_radians());
     Mat4::from_translation(Vec3::from(placement.position))
         * Mat4::from_mat3(rotation)
         * Mat4::from_scale(Vec3::splat(source.scale * extra_scale))
@@ -100,9 +117,10 @@ impl ViewMetrics {
     pub(crate) fn new(camera: &Camera, viewport_height_px: f32) -> Self {
         let (ortho_view_height_m, tan_half_fov_y) = match camera.projection {
             Projection::Perspective { fov_y_radians } => (None, (fov_y_radians * 0.5).tan()),
-            Projection::Orthographic { view_height_m } => {
-                (Some(view_height_m), (ORTHO_EQUIVALENT_FOV_Y_DEG.to_radians() * 0.5).tan())
-            }
+            Projection::Orthographic { view_height_m } => (
+                Some(view_height_m),
+                (ORTHO_EQUIVALENT_FOV_Y_DEG.to_radians() * 0.5).tan(),
+            ),
         };
         Self {
             eye: camera.eye,
@@ -140,7 +158,9 @@ pub(crate) struct DisplaySettings {
 pub(crate) enum Representation {
     Symbol,
     /// モデルで描く。`scale`は「最小画面サイズ」で実寸より大きくする倍率(1なら実寸)。
-    Model { scale: f32 },
+    Model {
+        scale: f32,
+    },
 }
 
 /// モデルで描くかシンボルで描くかを決める。`radius_m`はモデルの実寸の半径(`source.scale`込み)、
@@ -159,7 +179,8 @@ pub(crate) fn choose_representation(
     match settings.mode {
         ModelDisplayMode::Off => Representation::Symbol,
         ModelDisplayMode::SwitchToSymbol => {
-            let limit = settings.switch_distance_m * if was_model { SWITCH_HYSTERESIS } else { 1.0 };
+            let limit =
+                settings.switch_distance_m * if was_model { SWITCH_HYSTERESIS } else { 1.0 };
             if depth_m <= limit {
                 Representation::Model { scale: 1.0 }
             } else {
@@ -198,20 +219,31 @@ pub(crate) fn plan_models(
         return plan;
     }
     for placement in placements {
-        let Some(source) = sources.get(&placement.kind) else { continue };
-        let Some(radius) = radius_of(&source.url) else { continue };
+        let Some(source) = sources.get(&placement.kind) else {
+            continue;
+        };
+        let Some(radius) = radius_of(&source.url) else {
+            continue;
+        };
         let depth = metrics.depth_m(Vec3::from(placement.position));
         let radius_m = radius * source.scale;
-        let Representation::Model { scale } =
-            choose_representation(settings, metrics, depth, radius_m, previous.contains(&placement.id))
-        else {
+        let Representation::Model { scale } = choose_representation(
+            settings,
+            metrics,
+            depth,
+            radius_m,
+            previous.contains(&placement.id),
+        ) else {
             continue;
         };
         let [r, g, b] = placement.tint;
-        plan.instances.entry(source.url.clone()).or_default().push(ModelInstance {
-            model: instance_matrix(placement, source, scale).to_cols_array_2d(),
-            tint: [r, g, b, AFFILIATION_TINT],
-        });
+        plan.instances
+            .entry(source.url.clone())
+            .or_default()
+            .push(ModelInstance {
+                model: instance_matrix(placement, source, scale).to_cols_array_2d(),
+                tint: [r, g, b, AFFILIATION_TINT],
+            });
         plan.shown.insert(placement.id);
     }
     plan
@@ -243,8 +275,14 @@ mod tests {
         assert!(close(forward(90.0), [1.0, 0.0, 0.0]), "東");
         assert!(close(forward(180.0), [0.0, -1.0, 0.0]), "南");
         // 右(1,0,0)は、進行方向の右手(北向きなら東)。
-        assert!(close(attitude(FLAT, 0.0, 0.0, 0.0) * Vec3::X, [1.0, 0.0, 0.0]));
-        assert!(close(attitude(FLAT, 90.0, 0.0, 0.0) * Vec3::X, [0.0, -1.0, 0.0]), "東向きの右は南");
+        assert!(close(
+            attitude(FLAT, 0.0, 0.0, 0.0) * Vec3::X,
+            [1.0, 0.0, 0.0]
+        ));
+        assert!(
+            close(attitude(FLAT, 90.0, 0.0, 0.0) * Vec3::X, [0.0, -1.0, 0.0]),
+            "東向きの右は南"
+        );
     }
 
     #[test]
@@ -254,7 +292,10 @@ mod tests {
         let right_wing = attitude(FLAT, 0.0, 0.0, 30.0) * Vec3::X;
         assert!(right_wing.z < -0.49 && right_wing.z > -0.51, "{right_wing}");
         // ロールは機首の向きを変えない。
-        assert!(close(attitude(FLAT, 0.0, 0.0, 30.0) * Vec3::Y, [0.0, 1.0, 0.0]));
+        assert!(close(
+            attitude(FLAT, 0.0, 0.0, 30.0) * Vec3::Y,
+            [0.0, 1.0, 0.0]
+        ));
         // 機体の上は、水平飛行なら地点の上。
         assert!(close(attitude(FLAT, 45.0, 0.0, 0.0) * Vec3::Z, UP));
     }
@@ -269,7 +310,11 @@ mod tests {
     }
 
     fn source(scale: f32, yaw_offset_deg: f32) -> ModelSource {
-        ModelSource { url: "m.glb".to_string(), scale, yaw_offset_deg }
+        ModelSource {
+            url: "m.glb".to_string(),
+            scale,
+            yaw_offset_deg,
+        }
     }
 
     fn placement() -> ModelPlacement {
@@ -292,8 +337,18 @@ mod tests {
         assert!(close(m.transform_point3(Vec3::ZERO), [100.0, 200.0, 300.0]));
         assert!(close(m.transform_point3(Vec3::Y), [106.0, 200.0, 300.0]));
         // モデルの前が機体の右(+x。前から時計回りに90度)に作られているとき、yaw_offset=90でその向きが機体の前へ戻る。
-        let offset = instance_matrix(&ModelPlacement { heading_deg: 0.0, ..placement() }, &source(1.0, 90.0), 1.0);
-        assert!(close(offset.transform_point3(Vec3::X), [100.0, 201.0, 300.0]), "モデルの+x側が機体の前(北)へ");
+        let offset = instance_matrix(
+            &ModelPlacement {
+                heading_deg: 0.0,
+                ..placement()
+            },
+            &source(1.0, 90.0),
+            1.0,
+        );
+        assert!(
+            close(offset.transform_point3(Vec3::X), [100.0, 201.0, 300.0]),
+            "モデルの+x側が機体の前(北)へ"
+        );
     }
 
     fn metrics(mode: ViewMode, distance: f32) -> ViewMetrics {
@@ -305,7 +360,11 @@ mod tests {
     }
 
     fn settings(mode: ModelDisplayMode) -> DisplaySettings {
-        DisplaySettings { mode, switch_distance_m: 3000.0, min_screen_px: 32.0 }
+        DisplaySettings {
+            mode,
+            switch_distance_m: 3000.0,
+            min_screen_px: 32.0,
+        }
     }
 
     #[test]
@@ -315,7 +374,10 @@ mod tests {
         let depth = m.depth_m(Vec3::ZERO);
         assert!((depth - 10_000.0).abs() < 1.0, "{depth}");
         let px = m.pixels_per_meter(depth);
-        assert!((px - 1000.0 / (2.0 * 10_000.0 * 25f32.to_radians().tan())).abs() < 1e-4, "{px}");
+        assert!(
+            (px - 1000.0 / (2.0 * 10_000.0 * 25f32.to_radians().tan())).abs() < 1e-4,
+            "{px}"
+        );
         // 正射影: 縦幅10,000mが1000px。1mは0.1px。奥行きは透視投影で同じ縦幅が映る距離に換算される。
         let ortho = metrics(ViewMode::TwoD, 10_000.0);
         let depth = ortho.depth_m(Vec3::new(500.0, 0.0, 0.0));
@@ -334,7 +396,10 @@ mod tests {
         assert_eq!(choose(3400.0, true), Representation::Symbol);
         // カメラの後ろ・モード無効はシンボル。
         assert_eq!(choose(-5.0, false), Representation::Symbol);
-        assert_eq!(choose_representation(settings(ModelDisplayMode::Off), &m, 10.0, 10.0, true), Representation::Symbol);
+        assert_eq!(
+            choose_representation(settings(ModelDisplayMode::Off), &m, 10.0, 10.0, true),
+            Representation::Symbol
+        );
     }
 
     #[test]
@@ -346,29 +411,67 @@ mod tests {
         let near = 100.0;
         let size_px = 2.0 * radius * m.pixels_per_meter(near);
         assert!(size_px > 32.0);
-        assert_eq!(choose_representation(s, &m, near, radius, false), Representation::Model { scale: 1.0 });
+        assert_eq!(
+            choose_representation(s, &m, near, radius, false),
+            Representation::Model { scale: 1.0 }
+        );
         // 遠くて小さければ、画面で最小サイズ(32px)になる倍率へ。
         let far = 100_000.0;
-        let Representation::Model { scale } = choose_representation(s, &m, far, radius, false) else { panic!() };
+        let Representation::Model { scale } = choose_representation(s, &m, far, radius, false)
+        else {
+            panic!()
+        };
         assert!(scale > 1.0);
         let shown_px = 2.0 * radius * scale * m.pixels_per_meter(far);
         assert!((shown_px - 32.0).abs() < 0.01, "shown_px={shown_px}");
         // 倍率には上限がある。
-        let Representation::Model { scale } = choose_representation(s, &m, 1e12, radius, false) else { panic!() };
+        let Representation::Model { scale } = choose_representation(s, &m, 1e12, radius, false)
+        else {
+            panic!()
+        };
         assert_eq!(scale, MAX_MIN_SIZE_SCALE);
     }
 
     #[test]
     fn plan_groups_instances_by_model_and_skips_unloaded_or_unassigned_kinds() {
         let m = metrics(ViewMode::ThreeD, 1000.0);
-        let near = ModelPlacement { position: [0.0, 0.0, 0.0], ..placement() };
-        let far = ModelPlacement { id: 2, position: [50_000.0, 0.0, 0.0], ..placement() };
-        let ship = ModelPlacement { id: 3, kind: SymbolKind::Ship, ..near.clone() };
-        let vehicle = ModelPlacement { id: 4, kind: SymbolKind::Vehicle, ..near.clone() };
+        let near = ModelPlacement {
+            position: [0.0, 0.0, 0.0],
+            ..placement()
+        };
+        let far = ModelPlacement {
+            id: 2,
+            position: [50_000.0, 0.0, 0.0],
+            ..placement()
+        };
+        let ship = ModelPlacement {
+            id: 3,
+            kind: SymbolKind::Ship,
+            ..near.clone()
+        };
+        let vehicle = ModelPlacement {
+            id: 4,
+            kind: SymbolKind::Vehicle,
+            ..near.clone()
+        };
         let sources = HashMap::from([
             (SymbolKind::Aircraft, source(1.0, 0.0)),
-            (SymbolKind::Ship, ModelSource { url: "ship.glb".to_string(), scale: 1.0, yaw_offset_deg: 0.0 }),
-            (SymbolKind::Vehicle, ModelSource { url: "vehicle.glb".to_string(), scale: 1.0, yaw_offset_deg: 0.0 }),
+            (
+                SymbolKind::Ship,
+                ModelSource {
+                    url: "ship.glb".to_string(),
+                    scale: 1.0,
+                    yaw_offset_deg: 0.0,
+                },
+            ),
+            (
+                SymbolKind::Vehicle,
+                ModelSource {
+                    url: "vehicle.glb".to_string(),
+                    scale: 1.0,
+                    yaw_offset_deg: 0.0,
+                },
+            ),
         ]);
         // 船のモデルは読み込み前(None)、地上車両は読み込み済み。
         let radius_of = |url: &str| (url != "ship.glb").then_some(10.0);
@@ -380,19 +483,36 @@ mod tests {
             &m,
             &HashSet::new(),
         );
-        assert_eq!(plan.shown, HashSet::from([1, 4]), "遠い機(2)と読み込み前の船(3)はシンボルのまま");
+        assert_eq!(
+            plan.shown,
+            HashSet::from([1, 4]),
+            "遠い機(2)と読み込み前の船(3)はシンボルのまま"
+        );
         assert_eq!(plan.instances["m.glb"].len(), 1);
         assert_eq!(plan.instances["vehicle.glb"].len(), 1);
         let tint = plan.instances["m.glb"][0].tint;
         assert_eq!(tint, [1.0, 0.0, 0.0, AFFILIATION_TINT]);
         // モードOffなら何も描かない。
-        let off = plan_models(&[placement()], &sources, &radius_of, settings(ModelDisplayMode::Off), &m, &HashSet::new());
+        let off = plan_models(
+            &[placement()],
+            &sources,
+            &radius_of,
+            settings(ModelDisplayMode::Off),
+            &m,
+            &HashSet::new(),
+        );
         assert_eq!(off, ModelPlan::default());
     }
 
     #[test]
     fn placements_use_the_track_position_attitude_and_local_frame() {
-        let transform = EnuTransform::new(&Origin { lat_deg: 35.0, lon_deg: 135.0 }, &Ellipsoid::WGS84);
+        let transform = EnuTransform::new(
+            &Origin {
+                lat_deg: 35.0,
+                lon_deg: 135.0,
+            },
+            &Ellipsoid::WGS84,
+        );
         let ground = |_: f64, _: f64| 100.0;
         let ctx = BuildContext {
             mesh_transform: &transform,
@@ -416,11 +536,37 @@ mod tests {
             },
             trail: vec![],
         };
-        let placements = build_placements(&ctx, &[track(1, Altitude::Msl(1000.0)), track(2, Altitude::AboveGround(0.0))]);
-        assert!(close(Vec3::from(placements[0].position), [0.0, 0.0, 1000.0]), "原点の真上1000m");
-        assert!((placements[1].position[2] - (100.0 + GROUND_LIFT_M as f32)).abs() < 1e-3, "地表+持ち上げ");
-        assert_eq!((placements[0].heading_deg, placements[0].pitch_deg, placements[0].roll_deg), (45.0, 5.0, -20.0));
-        assert_eq!(placements[0].tint, [Affiliation::Hostile.color().r, Affiliation::Hostile.color().g, Affiliation::Hostile.color().b]);
+        let placements = build_placements(
+            &ctx,
+            &[
+                track(1, Altitude::Msl(1000.0)),
+                track(2, Altitude::AboveGround(0.0)),
+            ],
+        );
+        assert!(
+            close(Vec3::from(placements[0].position), [0.0, 0.0, 1000.0]),
+            "原点の真上1000m"
+        );
+        assert!(
+            (placements[1].position[2] - (100.0 + GROUND_LIFT_M as f32)).abs() < 1e-3,
+            "地表+持ち上げ"
+        );
+        assert_eq!(
+            (
+                placements[0].heading_deg,
+                placements[0].pitch_deg,
+                placements[0].roll_deg
+            ),
+            (45.0, 5.0, -20.0)
+        );
+        assert_eq!(
+            placements[0].tint,
+            [
+                Affiliation::Hostile.color().r,
+                Affiliation::Hostile.color().g,
+                Affiliation::Hostile.color().b
+            ]
+        );
         assert!(close(Vec3::from(placements[0].frame[2]), UP), "原点の上");
     }
 }

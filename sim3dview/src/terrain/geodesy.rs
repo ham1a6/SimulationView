@@ -16,7 +16,10 @@ pub struct Ellipsoid {
 impl Ellipsoid {
     /// WGS84。地形データ(ALOS DSM)の`metadata.json`もこの値。地形データを読む前に楕円体が必要な
     /// 場面(作図の距離・方位の計算など)と、単体テストで使う。
-    pub const WGS84: Ellipsoid = Ellipsoid { a_m: 6_378_137.0, inv_f: 298.257_222_101 };
+    pub const WGS84: Ellipsoid = Ellipsoid {
+        a_m: 6_378_137.0,
+        inv_f: 298.257_222_101,
+    };
 }
 
 /// 緯度経度(+標高)からENU座標(東=X, 北=Y, 上=Z)へ変換する。DETAILED_DESIGN.md 3.2節の変換式そのもの。
@@ -109,7 +112,13 @@ impl EnuTransform {
 
     /// `transform`のf64版(遠方の地表の上座標を丸めずに扱いたい呼び出し側用)。
     pub fn transform_f64(&self, lat_deg: f64, lon_deg: f64, h: f64) -> [f64; 3] {
-        let (x, y, z) = geodetic_to_ecef(lat_deg.to_radians(), lon_deg.to_radians(), h, self.a, self.e2);
+        let (x, y, z) = geodetic_to_ecef(
+            lat_deg.to_radians(),
+            lon_deg.to_radians(),
+            h,
+            self.a,
+            self.e2,
+        );
         self.ecef_to_enu(x, y, z)
     }
 
@@ -168,14 +177,25 @@ mod tests {
     use super::*;
 
     fn transform_at(lat: f64, lon: f64) -> EnuTransform {
-        EnuTransform::new(&Origin { lat_deg: lat, lon_deg: lon }, &Ellipsoid::WGS84)
+        EnuTransform::new(
+            &Origin {
+                lat_deg: lat,
+                lon_deg: lon,
+            },
+            &Ellipsoid::WGS84,
+        )
     }
 
     // 原点から数千km離れた点でも、transform_f64とenu_to_geodeticが往復で一致すること。
     #[test]
     fn enu_round_trip_far_from_origin() {
         let t = transform_at(35.355556, 138.859722);
-        for &(lat, lon, h) in &[(24.34, 124.16, 0.0), (33.0, 130.0, 500.0), (37.5, 127.0, 100.0), (49.0, 121.0, 3000.0)] {
+        for &(lat, lon, h) in &[
+            (24.34, 124.16, 0.0),
+            (33.0, 130.0, 500.0),
+            (37.5, 127.0, 100.0),
+            (49.0, 121.0, 3000.0),
+        ] {
             let [e, n, u] = t.transform_f64(lat, lon, h);
             let (lat2, lon2, h2) = t.enu_to_geodetic(e, n, u);
             assert!((lat - lat2).abs() < 1e-9, "lat {lat} vs {lat2}");
@@ -199,7 +219,10 @@ mod tests {
     fn axes_point_east_north_up() {
         let t = transform_at(35.0, 135.0);
         let [e, n, u] = t.transform_f64(35.0, 135.0, 250.0);
-        assert!(e.abs() < 1e-6 && n.abs() < 1e-6 && (u - 250.0).abs() < 1e-6, "{e} {n} {u}");
+        assert!(
+            e.abs() < 1e-6 && n.abs() < 1e-6 && (u - 250.0).abs() < 1e-6,
+            "{e} {n} {u}"
+        );
         let [e, n, _] = t.transform_f64(35.0, 135.001, 0.0);
         assert!(e > 80.0 && e < 100.0 && n.abs() < 0.1, "east: {e} {n}"); // 経度0.001度 ≒ 91m
         let [e, n, _] = t.transform_f64(35.001, 135.0, 0.0);
@@ -222,7 +245,7 @@ mod tests {
         assert!(f([0.0, 0.0, 0.0]).abs() < 1e-6);
         assert!(f([0.0, 0.0, 1000.0]) > 0.0); // 面の外(上空)
         assert!(f([0.0, 0.0, -1000.0]) < 0.0); // 面の内側(地下)
-        // 遠方でも、その地点の楕円体上の点(標高0m)で0に近い。
+                                               // 遠方でも、その地点の楕円体上の点(標高0m)で0に近い。
         let far = t.transform_f64(30.0, 130.0, 0.0);
         assert!(f(far).abs() < 1e-6, "f={}", f(far));
     }
@@ -233,12 +256,20 @@ mod tests {
         let t = transform_at(35.0, 135.0);
         let close = |a: [f32; 3], b: [f32; 3]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-5);
         let [east, north, up] = t.local_frame(35.0, 135.0);
-        assert!(close(east, [1.0, 0.0, 0.0]) && close(north, [0.0, 1.0, 0.0]) && close(up, [0.0, 0.0, 1.0]));
+        assert!(
+            close(east, [1.0, 0.0, 0.0])
+                && close(north, [0.0, 1.0, 0.0])
+                && close(up, [0.0, 0.0, 1.0])
+        );
         // 東へ約9.1度(北緯35度で経度約11度)離れた地点: 上は東へ約9度かたむく(原点から見て東の地点の「上」は東向きの成分を持つ)。
         let far = t.local_frame(35.0, 146.0);
         let [e, n, u] = far.map(glam::Vec3::from_array);
         assert!(u.x > 0.15 && u.x < 0.2, "up.x={}", u.x);
-        assert!((e.length() - 1.0).abs() < 1e-5 && (n.length() - 1.0).abs() < 1e-5 && (u.length() - 1.0).abs() < 1e-5);
+        assert!(
+            (e.length() - 1.0).abs() < 1e-5
+                && (n.length() - 1.0).abs() < 1e-5
+                && (u.length() - 1.0).abs() < 1e-5
+        );
         assert!(e.dot(n).abs() < 1e-5 && e.dot(u).abs() < 1e-5 && n.dot(u).abs() < 1e-5);
         assert!(e.cross(n).dot(u) > 0.99, "右手系");
     }

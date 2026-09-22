@@ -12,7 +12,9 @@ pub struct HillshadeState {
 
 impl HillshadeState {
     pub fn new(enabled: bool) -> Self {
-        Self { enabled: RwSignal::new(enabled) }
+        Self {
+            enabled: RwSignal::new(enabled),
+        }
     }
 }
 

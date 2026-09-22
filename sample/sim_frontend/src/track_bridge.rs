@@ -34,7 +34,11 @@ fn to_library_track(t: &protocol::Track) -> Track {
         label: t.label.clone(),
         lat_deg: t.lat_deg,
         lon_deg: t.lon_deg,
-        altitude: if t.alt_ref == 1 { Altitude::AboveGround(t.alt_m) } else { Altitude::Msl(t.alt_m) },
+        altitude: if t.alt_ref == 1 {
+            Altitude::AboveGround(t.alt_m)
+        } else {
+            Altitude::Msl(t.alt_m)
+        },
         heading_deg: t.heading_deg,
         speed_mps: t.speed_mps,
         pitch_deg: t.pitch_deg,

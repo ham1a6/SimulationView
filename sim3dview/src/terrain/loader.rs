@@ -128,7 +128,12 @@ pub struct TerrainData {
 }
 
 impl TerrainData {
-    pub(super) fn new(metadata: TerrainMetadata, base_url: String, index: TileIndex, base: Vec<i16>) -> Self {
+    pub(super) fn new(
+        metadata: TerrainMetadata,
+        base_url: String,
+        index: TileIndex,
+        base: Vec<i16>,
+    ) -> Self {
         let b = metadata.geodetic_bounds;
         let rows = (b.max_lat - b.min_lat).round() as i32;
         let cols = (b.max_lon - b.min_lon).round() as i32;
@@ -247,7 +252,9 @@ impl TerrainData {
         if level >= self.num_levels() {
             return;
         }
-        let Some(slot) = self.slot(level, chunk) else { return };
+        let Some(slot) = self.slot(level, chunk) else {
+            return;
+        };
         let nodes = self.chunk_cells(level) + 1;
         if data.len() != nodes * nodes {
             return;
@@ -259,7 +266,10 @@ impl TerrainData {
         if slot.is_none() {
             self.cached_bytes.set(self.cached_bytes.get() + bytes);
         }
-        *slot = Some(CachedGrid { data: Rc::new(data), last_used: Cell::new(self.stamp.get()) });
+        *slot = Some(CachedGrid {
+            data: Rc::new(data),
+            last_used: Cell::new(self.stamp.get()),
+        });
     }
 
     /// タイル1枚分・1レベルのファイル(全チャンクのレコードを連結したもの)を、チャンクごとに
@@ -308,8 +318,12 @@ impl TerrainData {
             let tx = (fx - i0 as f64).clamp(0.0, 1.0) as f32;
             let ty = (fy - j0 as f64).clamp(0.0, 1.0) as f32;
             let at = |j: usize, i: usize| grid[j * nodes + i];
-            let (v00, v10, v01, v11) =
-                (at(j0, i0), at(j0, i0 + 1), at(j0 + 1, i0), at(j0 + 1, i0 + 1));
+            let (v00, v10, v01, v11) = (
+                at(j0, i0),
+                at(j0, i0 + 1),
+                at(j0 + 1, i0),
+                at(j0 + 1, i0 + 1),
+            );
             if v00 == NO_DATA || v10 == NO_DATA || v01 == NO_DATA || v11 == NO_DATA {
                 return 0.0;
             }
@@ -321,7 +335,10 @@ impl TerrainData {
 
         if level > 0 {
             let detail = tile.detail.borrow();
-            if let Some(Some(cached)) = self.slot(level, cy * k + cx).and_then(|slot| detail.get(slot)) {
+            if let Some(Some(cached)) = self
+                .slot(level, cy * k + cx)
+                .and_then(|slot| detail.get(slot))
+            {
                 let n_level = self.level_cells(level) as f64;
                 let cells = self.chunk_cells(level);
                 return bilinear(
@@ -333,7 +350,12 @@ impl TerrainData {
             }
         }
         let cells = self.level_cells(0);
-        bilinear(self.whole_grid(tile), cells, u * cells as f64, v * cells as f64)
+        bilinear(
+            self.whole_grid(tile),
+            cells,
+            u * cells as f64,
+            v * cells as f64,
+        )
     }
 
     /// 取得済みの細かいレベルのグリッドの合計バイト数。
@@ -367,7 +389,9 @@ impl TerrainData {
             let mut detail = self.tiles[ti].detail.borrow_mut();
             if let Some(g) = detail[si].take() {
                 self.cached_bytes.set(
-                    self.cached_bytes.get().saturating_sub(g.data.len() * std::mem::size_of::<i16>()),
+                    self.cached_bytes
+                        .get()
+                        .saturating_sub(g.data.len() * std::mem::size_of::<i16>()),
                 );
             }
         }
@@ -414,7 +438,10 @@ impl TerrainData {
             },
             ellipsoid: Ellipsoid::WGS84,
             has_texture: false,
-            default_origin: DefaultOrigin { lat_deg: min_lat as f64 + 0.5, lon_deg: min_lon as f64 + 0.5 },
+            default_origin: DefaultOrigin {
+                lat_deg: min_lat as f64 + 0.5,
+                lon_deg: min_lon as f64 + 0.5,
+            },
         };
         let cells0 = metadata.tile_levels[0] as usize;
         let mut entries = Vec::new();
@@ -435,10 +462,20 @@ impl TerrainData {
                         base.push(h);
                     }
                 }
-                entries.push(TileIndexEntry { lat, lon, elevation_min: lo, elevation_max: hi });
+                entries.push(TileIndexEntry {
+                    lat,
+                    lon,
+                    elevation_min: lo,
+                    elevation_max: hi,
+                });
             }
         }
-        Self::new(metadata, "http://test".to_string(), TileIndex { tiles: entries }, base)
+        Self::new(
+            metadata,
+            "http://test".to_string(),
+            TileIndex { tiles: entries },
+            base,
+        )
     }
 }
 
@@ -479,7 +516,13 @@ mod tests {
 
     #[test]
     fn bilinear_treats_no_data_neighbours_as_sea_level() {
-        let data = one_tile(|lat, lon| if lon > 120.5 { NO_DATA } else { slope(lat, lon) });
+        let data = one_tile(|lat, lon| {
+            if lon > 120.5 {
+                NO_DATA
+            } else {
+                slope(lat, lon)
+            }
+        });
         let tile = data.tile(KEY).unwrap();
         assert!(data.sample_bilinear(tile, 0.2, 0.5) > 0.0);
         assert_eq!(data.sample_bilinear(tile, 0.9, 0.5), 0.0);
@@ -528,11 +571,14 @@ mod tests {
         let record = nodes * nodes;
         let mut all = Vec::new();
         for chunk in 0..data.chunk_count() {
-            all.extend(std::iter::repeat(chunk as i16 + 1).take(record));
+            all.extend(std::iter::repeat_n(chunk as i16 + 1, record));
         }
         data.insert_tile_level(KEY, 1, &all);
         for chunk in 0..data.chunk_count() {
-            assert_eq!(data.chunk_grid(tile, 1, chunk).unwrap()[0], chunk as i16 + 1);
+            assert_eq!(
+                data.chunk_grid(tile, 1, chunk).unwrap()[0],
+                chunk as i16 + 1
+            );
         }
         assert_eq!(data.cached_bytes(), data.chunk_count() * record * 2);
         assert_eq!(data.best_cached_level(tile, 0, 2), 1);

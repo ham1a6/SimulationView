@@ -24,7 +24,8 @@ pub(super) struct PipelineSpec<'a> {
 }
 
 pub(super) fn create_pipeline(device: &wgpu::Device, spec: &PipelineSpec) -> wgpu::RenderPipeline {
-    let buffers: Vec<Option<wgpu::VertexBufferLayout>> = spec.vertex_layout.iter().cloned().map(Some).collect();
+    let buffers: Vec<Option<wgpu::VertexBufferLayout>> =
+        spec.vertex_layout.iter().cloned().map(Some).collect();
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(spec.label),
         layout: Some(spec.layout),
@@ -60,7 +61,10 @@ pub(super) fn create_pipeline(device: &wgpu::Device, spec: &PipelineSpec) -> wgp
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
-        multisample: wgpu::MultisampleState { count: spec.samples, ..Default::default() },
+        multisample: wgpu::MultisampleState {
+            count: spec.samples,
+            ..Default::default()
+        },
         multiview_mask: None,
         cache: None,
     })
@@ -149,10 +153,14 @@ impl Pipelines {
         );
         // クロスフェード中のメッシュ。地形と同じ設定で、フラグメントがディザで`discard`する
         // (`discard`を持つシェーダーは早期深度テストが効きにくいので、切り替え中のメッシュだけに使う)。
-        let fade_bind_group_layout = uniform_layout(device, "fade_bind_group_layout", wgpu::ShaderStages::VERTEX);
+        let fade_bind_group_layout =
+            uniform_layout(device, "fade_bind_group_layout", wgpu::ShaderStages::VERTEX);
         let fade_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("terrain_fade_pipeline_layout"),
-            bind_group_layouts: &[Some(camera_bind_group_layout), Some(&fade_bind_group_layout)],
+            bind_group_layouts: &[
+                Some(camera_bind_group_layout),
+                Some(&fade_bind_group_layout),
+            ],
             immediate_size: 0,
         });
         let terrain_fade = create_pipeline(
@@ -207,7 +215,8 @@ impl Pipelines {
             label: Some("draw_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("../draw.wgsl").into()),
         });
-        let draw_bind_group_layout = uniform_layout(device, "draw_bind_group_layout", wgpu::ShaderStages::VERTEX);
+        let draw_bind_group_layout =
+            uniform_layout(device, "draw_bind_group_layout", wgpu::ShaderStages::VERTEX);
         let draw_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("draw_pipeline_layout"),
             bind_group_layouts: &[Some(&draw_bind_group_layout)],
@@ -230,9 +239,18 @@ impl Pipelines {
                 },
             )
         };
-        let draw_opaque = draw("draw_opaque_pipeline", (true, wgpu::CompareFunction::Greater));
-        let draw_blend = draw("draw_blend_pipeline", (false, wgpu::CompareFunction::Greater));
-        let draw_screen = draw("draw_screen_pipeline", (false, wgpu::CompareFunction::Always));
+        let draw_opaque = draw(
+            "draw_opaque_pipeline",
+            (true, wgpu::CompareFunction::Greater),
+        );
+        let draw_blend = draw(
+            "draw_blend_pipeline",
+            (false, wgpu::CompareFunction::Greater),
+        );
+        let draw_screen = draw(
+            "draw_screen_pipeline",
+            (false, wgpu::CompareFunction::Always),
+        );
 
         Self {
             terrain,

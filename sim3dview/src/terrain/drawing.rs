@@ -74,23 +74,39 @@ pub struct Style {
 impl Style {
     /// 塗りだけ(輪郭線なし)。
     pub const fn filled(color: Color) -> Self {
-        Self { fill: Some(color), stroke: None, stroke_width_px: 2.0 }
+        Self {
+            fill: Some(color),
+            stroke: None,
+            stroke_width_px: 2.0,
+        }
     }
 
     /// 線・輪郭線だけ(塗りなし)。折れ線はこれを使う。
     pub const fn stroked(color: Color, width_px: f32) -> Self {
-        Self { fill: None, stroke: Some(color), stroke_width_px: width_px }
+        Self {
+            fill: None,
+            stroke: Some(color),
+            stroke_width_px: width_px,
+        }
     }
 
     pub const fn fill_and_stroke(fill: Color, stroke: Color, width_px: f32) -> Self {
-        Self { fill: Some(fill), stroke: Some(stroke), stroke_width_px: width_px }
+        Self {
+            fill: Some(fill),
+            stroke: Some(stroke),
+            stroke_width_px: width_px,
+        }
     }
 }
 
 impl Default for Style {
     /// 半透明の青い塗り+青い輪郭線(太さ2px)。
     fn default() -> Self {
-        Self::fill_and_stroke(Color::rgba(0.2, 0.6, 1.0, 0.35), Color::rgb(0.2, 0.6, 1.0), 2.0)
+        Self::fill_and_stroke(
+            Color::rgba(0.2, 0.6, 1.0, 0.35),
+            Color::rgb(0.2, 0.6, 1.0),
+            2.0,
+        )
     }
 }
 
@@ -118,15 +134,31 @@ pub enum Corner {
 /// 図形を置く位置。種類ごとの意味はモジュールの説明を参照。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Position {
-    World { lat_deg: f64, lon_deg: f64, altitude: Altitude },
+    World {
+        lat_deg: f64,
+        lon_deg: f64,
+        altitude: Altitude,
+    },
     /// `corner`から見て右へ`x_px`・下へ`y_px`(画面の向き。右下の角なら負の値で内側へ寄る)。
-    Screen { corner: Corner, x_px: f64, y_px: f64 },
-    View { right_m: f64, up_m: f64, forward_m: f64 },
+    Screen {
+        corner: Corner,
+        x_px: f64,
+        y_px: f64,
+    },
+    View {
+        right_m: f64,
+        up_m: f64,
+        forward_m: f64,
+    },
 }
 
 impl Position {
     pub const fn world(lat_deg: f64, lon_deg: f64, altitude: Altitude) -> Self {
-        Self::World { lat_deg, lon_deg, altitude }
+        Self::World {
+            lat_deg,
+            lon_deg,
+            altitude,
+        }
     }
 
     pub const fn screen(corner: Corner, x_px: f64, y_px: f64) -> Self {
@@ -134,7 +166,11 @@ impl Position {
     }
 
     pub const fn view(right_m: f64, up_m: f64, forward_m: f64) -> Self {
-        Self::View { right_m, up_m, forward_m }
+        Self::View {
+            right_m,
+            up_m,
+            forward_m,
+        }
     }
 
     pub fn space(&self) -> Space {
@@ -161,21 +197,43 @@ pub enum Shape {
     /// 円。
     Circle { center: Position, radius: f64 },
     /// 矩形。`rotation_deg`だけ時計回りに回す。
-    Rect { center: Position, width: f64, height: f64, rotation_deg: f64 },
+    Rect {
+        center: Position,
+        width: f64,
+        height: f64,
+        rotation_deg: f64,
+    },
     /// 多角形(3点以上、自己交差しない)。全頂点を**先頭の点の高度**の面に置く。
     Polygon { points: Vec<Position> },
     /// 扇形(レーダーの覆域など)。`start_deg`から`end_deg`まで時計回り。
-    Sector { center: Position, radius: f64, start_deg: f64, end_deg: f64 },
+    Sector {
+        center: Position,
+        radius: f64,
+        start_deg: f64,
+        end_deg: f64,
+    },
 
     // ---- 3D図形(立体)。`World`では位置を通る鉛直線を軸にする ----
     /// 球。位置は中心。
     Sphere { center: Position, radius: f64 },
     /// 直方体。位置は底面の中心。`size_m`は[東西(横), 南北(奥行), 高さ]で、`heading_deg`だけ時計回りに回す。
-    Cuboid { base_center: Position, size_m: [f64; 3], heading_deg: f64 },
+    Cuboid {
+        base_center: Position,
+        size_m: [f64; 3],
+        heading_deg: f64,
+    },
     /// 円柱。位置は底面の中心。
-    Cylinder { base_center: Position, radius: f64, height: f64 },
+    Cylinder {
+        base_center: Position,
+        radius: f64,
+        height: f64,
+    },
     /// 円錐。位置は底面の中心。
-    Cone { base_center: Position, radius: f64, height: f64 },
+    Cone {
+        base_center: Position,
+        radius: f64,
+        height: f64,
+    },
 
     // ---- 線 ----
     /// 折れ線(2点以上)。`World`では点ごとに高度を持てて、点の間は大円に沿って細かく分割する。
@@ -238,7 +296,13 @@ impl Shape {
     /// 地形の高さで形が決まるか(`AboveGround`の位置を持つか)。地形のLODが変わったら描き直す必要がある。
     pub fn depends_on_terrain(&self) -> bool {
         self.positions().iter().any(|p| {
-            matches!(p, Position::World { altitude: Altitude::AboveGround(_), .. })
+            matches!(
+                p,
+                Position::World {
+                    altitude: Altitude::AboveGround(_),
+                    ..
+                }
+            )
         })
     }
 }
@@ -263,7 +327,10 @@ pub struct DrawingState {
 
 impl DrawingState {
     pub fn new() -> Self {
-        Self { items: RwSignal::new(Vec::new()), next_id: RwSignal::new(1) }
+        Self {
+            items: RwSignal::new(Vec::new()),
+            next_id: RwSignal::new(1),
+        }
     }
 
     /// 図形を追加して、そのIDを返す。後ろに追加したものほど手前に描く
@@ -271,7 +338,14 @@ impl DrawingState {
     pub fn add(&self, shape: Shape, style: Style) -> DrawingId {
         let id = self.next_id.get_untracked();
         self.next_id.set(id + 1);
-        self.items.update(|list| list.push(Drawing { id, shape, style, visible: true }));
+        self.items.update(|list| {
+            list.push(Drawing {
+                id,
+                shape,
+                style,
+                visible: true,
+            })
+        });
         id
     }
 

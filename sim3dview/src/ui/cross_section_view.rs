@@ -39,8 +39,14 @@ const SYMBOL_HEADROOM_M: f32 = 1_500.0;
 
 /// 断面上の点群から実際の標高範囲(最小・最大)を求める。
 fn elevation_bounds(points: &[ProfilePoint]) -> (f32, f32) {
-    let min_elev = points.iter().map(|p| p.elevation_m).fold(f32::INFINITY, f32::min);
-    let max_elev = points.iter().map(|p| p.elevation_m).fold(f32::NEG_INFINITY, f32::max);
+    let min_elev = points
+        .iter()
+        .map(|p| p.elevation_m)
+        .fold(f32::INFINITY, f32::min);
+    let max_elev = points
+        .iter()
+        .map(|p| p.elevation_m)
+        .fold(f32::NEG_INFINITY, f32::max);
     (min_elev, max_elev)
 }
 
@@ -87,12 +93,24 @@ fn build_svg_paths(
 }
 
 /// 断面上の各点が、配置済みレーダーのいずれかから見えるか(地表トラックが覆域内か)を判定する。
-fn compute_coverage(data: &TerrainData, points: &[ProfilePoint], markers: &[RadarMarker]) -> Vec<bool> {
+fn compute_coverage(
+    data: &TerrainData,
+    points: &[ProfilePoint],
+    markers: &[RadarMarker],
+) -> Vec<bool> {
     points
         .iter()
         .map(|p| {
             markers.iter().any(|m| {
-                is_visible(data, m.lat_deg, m.lon_deg, m.height_m, m.max_range_m, p.lat_deg, p.lon_deg)
+                is_visible(
+                    data,
+                    m.lat_deg,
+                    m.lon_deg,
+                    m.height_m,
+                    m.max_range_m,
+                    p.lat_deg,
+                    p.lon_deg,
+                )
             })
         })
         .collect()
@@ -164,7 +182,9 @@ fn compute_airspace_boundary(
                         p.lon_deg,
                     )
                 })
-                .fold(None, |acc: Option<f64>, h| Some(acc.map_or(h, |a| a.min(h))))
+                .fold(None, |acc: Option<f64>, h| {
+                    Some(acc.map_or(h, |a| a.min(h)))
+                })
         })
         .collect()
 }
@@ -271,7 +291,8 @@ fn symbol_altitude_msl(track: &Track, center_ground_m: f32) -> f32 {
 pub fn CrossSectionView() -> impl IntoView {
     let origin_state = use_context::<OriginState>().expect("OriginState context not found");
     let terrain_store = use_context::<TerrainStore>().expect("TerrainStore context not found");
-    let radar_markers = use_context::<RadarMarkersState>().expect("RadarMarkersState context not found");
+    let radar_markers =
+        use_context::<RadarMarkersState>().expect("RadarMarkersState context not found");
     // 未提供なら、いつも原点(基準位置)が中心(上と同じく後付けのオプション機能)。
     let tracks = use_context::<TracksState>();
     terrain_store.ensure_loaded();
@@ -289,9 +310,11 @@ pub fn CrossSectionView() -> impl IntoView {
     // 一覧が届くたびに走るが、実際に変えるのは消えたときだけ。
     if let Some(tracks) = tracks {
         Effect::new(move |_| {
-            let still_exists = center_track_id
-                .get_untracked()
-                .is_none_or(|id| tracks.entries.with(|es| es.iter().any(|e| e.track.id == id)));
+            let still_exists = center_track_id.get_untracked().is_none_or(|id| {
+                tracks
+                    .entries
+                    .with(|es| es.iter().any(|e| e.track.id == id))
+            });
             if !still_exists {
                 center_track_id.set(None);
             }
@@ -302,18 +325,32 @@ pub fn CrossSectionView() -> impl IntoView {
     // `Memo`にする(Leptosの`Memo`は計算結果が前回と同じなら通知しない)。
     let track_options = Memo::new(move |_| {
         tracks
-            .map(|t| t.entries.with(|es| es.iter().map(|e| (e.track.id, e.track.label.clone())).collect::<Vec<_>>()))
+            .map(|t| {
+                t.entries.with(|es| {
+                    es.iter()
+                        .map(|e| (e.track.id, e.track.label.clone()))
+                        .collect::<Vec<_>>()
+                })
+            })
             .unwrap_or_default()
     });
     // 中心にする航跡の現在値(リアクティブに追跡する版・しない版)。断面の再計算・シンボルの
     // 印の両方から使う(`TracksState::selected_track`/`selected_track_untracked`と同じ使い分け)。
     let center_track = move || -> Option<Track> {
         let id = center_track_id.get()?;
-        tracks?.entries.with(|es| es.iter().find(|e| e.track.id == id).map(|e| e.track.clone()))
+        tracks?.entries.with(|es| {
+            es.iter()
+                .find(|e| e.track.id == id)
+                .map(|e| e.track.clone())
+        })
     };
     let center_track_untracked = move || -> Option<Track> {
         let id = center_track_id.get_untracked()?;
-        tracks?.entries.with_untracked(|es| es.iter().find(|e| e.track.id == id).map(|e| e.track.clone()))
+        tracks?.entries.with_untracked(|es| {
+            es.iter()
+                .find(|e| e.track.id == id)
+                .map(|e| e.track.clone())
+        })
     };
 
     // 選んだ航跡の、断面を作り直す単位に丸めた位置。選択の変更・一定以上の移動のときだけ変わる。
@@ -344,7 +381,10 @@ pub fn CrossSectionView() -> impl IntoView {
         // 中心: コンボボックスで選んだ航跡の位置、無ければ基準位置(原点)。位置の更新では作り直さない
         // (`center_key`が刻む)ので、追跡しないで読む。
         let track = center_track_untracked();
-        let center = track.as_ref().map_or(base, |t| Origin { lat_deg: t.lat_deg, lon_deg: t.lon_deg });
+        let center = track.as_ref().map_or(base, |t| Origin {
+            lat_deg: t.lat_deg,
+            lon_deg: t.lon_deg,
+        });
 
         let points = build_profile_span(&data, &center, azimuth_deg, range_m, range_m);
         if points.len() < 2 {
@@ -360,7 +400,8 @@ pub fn CrossSectionView() -> impl IntoView {
         // シンボルが上空にいるときは、高度が入るまで上端を広げる。
         let mut sky_ceiling = max_elev + SKY_MARGIN_M;
         if let Some(t) = &track {
-            sky_ceiling = sky_ceiling.max(symbol_altitude_msl(t, center_ground_m) + SYMBOL_HEADROOM_M);
+            sky_ceiling =
+                sky_ceiling.max(symbol_altitude_msl(t, center_ground_m) + SYMBOL_HEADROOM_M);
         }
 
         let Some((line_d, area_d)) = build_svg_paths(&points, min_elev, sky_ceiling, span) else {
@@ -404,7 +445,9 @@ pub fn CrossSectionView() -> impl IntoView {
         let plot_w = VIEW_W - PAD_L - PAD_R;
         let plot_h = VIEW_H - PAD_T - PAD_B;
         let elev_range = (sec.sky_ceiling - sec.min_elev).max(1.0);
-        let y_of = |elev: f32| PAD_T + plot_h - ((elev - sec.min_elev) as f64 / elev_range as f64) * plot_h;
+        let y_of = |elev: f32| {
+            PAD_T + plot_h - ((elev - sec.min_elev) as f64 / elev_range as f64) * plot_h
+        };
         let max_elev_y = y_of(sec.max_elev);
         let span = (sec.back_m + sec.forward_m).max(1.0);
         // 中心(距離0)の位置。

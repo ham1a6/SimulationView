@@ -11,7 +11,10 @@ pub struct Tab {
 
 /// タブ1個分を作る。`view!{...}`の戻り値等、`IntoView`を実装する値なら何でも渡せる。
 pub fn tab(label: &'static str, view: impl IntoView + 'static) -> Tab {
-    Tab { label, view: view.into_any() }
+    Tab {
+        label,
+        view: view.into_any(),
+    }
 }
 
 #[component]

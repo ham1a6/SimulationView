@@ -25,8 +25,19 @@ const AZIMUTHS_PER_STEP: usize = 4;
 /// 観測点の覆域の色の見本(左半分=3Dドーム、右半分=2D覆域)のCSS。
 fn swatch_style(marker_id: u64) -> String {
     let (dome, area, _) = coverage_colors(marker_id);
-    let rgb = |c: [f32; 3]| format!("rgb({:.0},{:.0},{:.0})", c[0] * 255.0, c[1] * 255.0, c[2] * 255.0);
-    format!("background: linear-gradient(90deg, {} 50%, {} 50%)", rgb(dome), rgb(area))
+    let rgb = |c: [f32; 3]| {
+        format!(
+            "rgb({:.0},{:.0},{:.0})",
+            c[0] * 255.0,
+            c[1] * 255.0,
+            c[2] * 255.0
+        )
+    };
+    format!(
+        "background: linear-gradient(90deg, {} 50%, {} 50%)",
+        rgb(dome),
+        rgb(area)
+    )
 }
 
 fn build_boundary_path(points: &[LosPoint], max_range_m: f64) -> String {
@@ -50,7 +61,8 @@ fn build_boundary_path(points: &[LosPoint], max_range_m: f64) -> String {
 #[component]
 pub fn LosView() -> impl IntoView {
     let terrain_store = use_context::<TerrainStore>().expect("TerrainStore context not found");
-    let radar_markers = use_context::<RadarMarkersState>().expect("RadarMarkersState context not found");
+    let radar_markers =
+        use_context::<RadarMarkersState>().expect("RadarMarkersState context not found");
     terrain_store.ensure_loaded();
 
     let list_view = move || {
@@ -137,7 +149,9 @@ pub fn LosView() -> impl IntoView {
     // 選択中のレーダー(パラメータの編集も含めて、変わったときだけ計算し直す)。
     let selected_marker = Memo::new(move |_| {
         let id = radar_markers.selected.get()?;
-        radar_markers.markers.with(|list| list.iter().find(|m| m.id == id).copied())
+        radar_markers
+            .markers
+            .with(|list| list.iter().find(|m| m.id == id).copied())
     });
     // 見通し範囲の計算結果。計算は重いので、小分けにして非同期で進める(画面が固まらないように)。
     let result: RwSignal<Option<(RadarMarker, Vec<LosPoint>)>> = RwSignal::new(None);
@@ -154,10 +168,21 @@ pub fn LosView() -> impl IntoView {
         };
         let generation = generation.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
-            let params = LosParams { observer_height_m: marker.height_m, max_range_m: marker.max_range_m };
-            let mut computation =
-                RangeComputation::new(&data, &origin, &params, RangeKind::Visible, CHART_AZIMUTH_STEP);
+            let origin = Origin {
+                lat_deg: marker.lat_deg,
+                lon_deg: marker.lon_deg,
+            };
+            let params = LosParams {
+                observer_height_m: marker.height_m,
+                max_range_m: marker.max_range_m,
+            };
+            let mut computation = RangeComputation::new(
+                &data,
+                &origin,
+                &params,
+                RangeKind::Visible,
+                CHART_AZIMUTH_STEP,
+            );
             let finished = run_in_slices(
                 || computation.advance(&data, AZIMUTHS_PER_STEP),
                 || generation.get() != this_generation,

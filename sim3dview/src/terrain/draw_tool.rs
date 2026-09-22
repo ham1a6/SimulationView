@@ -67,7 +67,12 @@ impl ToolKind {
     /// 確定までに必要なクリック数。多角形・折れ線(何点でも置ける)は`None`。
     fn fixed_points(self) -> Option<usize> {
         match self {
-            Self::Circle | Self::Rect | Self::Sphere | Self::Cuboid | Self::Cylinder | Self::Cone => Some(2),
+            Self::Circle
+            | Self::Rect
+            | Self::Sphere
+            | Self::Cuboid
+            | Self::Cylinder
+            | Self::Cone => Some(2),
             Self::Sector => Some(3),
             Self::Polygon | Self::Polyline => None,
         }
@@ -125,7 +130,13 @@ fn local(from: LatLon, to: LatLon) -> [f64; 2] {
 
 /// `from`から東へ`east`・北へ`north`メートル進んだ点。
 fn offset(from: LatLon, east: f64, north: f64) -> LatLon {
-    destination(from.0, from.1, east.atan2(north), east.hypot(north), radius_at(from.0))
+    destination(
+        from.0,
+        from.1,
+        east.atan2(north),
+        east.hypot(north),
+        radius_at(from.0),
+    )
 }
 
 fn distance(a: LatLon, b: LatLon) -> f64 {
@@ -148,7 +159,10 @@ pub fn build_shape(kind: ToolKind, pts: &[LatLon], altitude: Altitude) -> Option
     match kind {
         ToolKind::Circle => {
             let [c, e, ..] = pts else { return None };
-            Some(Shape::Circle { center: at(*c, altitude), radius: sized(distance(*c, *e))? })
+            Some(Shape::Circle {
+                center: at(*c, altitude),
+                radius: sized(distance(*c, *e))?,
+            })
         }
         ToolKind::Sphere => {
             let [c, e, ..] = pts else { return None };
@@ -157,7 +171,10 @@ pub fn build_shape(kind: ToolKind, pts: &[LatLon], altitude: Altitude) -> Option
                 Altitude::AboveGround(offset) => Altitude::AboveGround(offset + radius),
                 msl => msl,
             };
-            Some(Shape::Sphere { center: at(*c, alt), radius })
+            Some(Shape::Sphere {
+                center: at(*c, alt),
+                radius,
+            })
         }
         ToolKind::Cylinder | ToolKind::Cone => {
             let [c, e, ..] = pts else { return None };
@@ -165,9 +182,17 @@ pub fn build_shape(kind: ToolKind, pts: &[LatLon], altitude: Altitude) -> Option
             let base_center = at(*c, altitude);
             let height = radius * 2.0;
             Some(if kind == ToolKind::Cylinder {
-                Shape::Cylinder { base_center, radius, height }
+                Shape::Cylinder {
+                    base_center,
+                    radius,
+                    height,
+                }
             } else {
-                Shape::Cone { base_center, radius, height }
+                Shape::Cone {
+                    base_center,
+                    radius,
+                    height,
+                }
             })
         }
         ToolKind::Rect | ToolKind::Cuboid => {
@@ -176,9 +201,18 @@ pub fn build_shape(kind: ToolKind, pts: &[LatLon], altitude: Altitude) -> Option
             let (width, depth) = (sized(dx.abs())?, sized(dy.abs())?);
             let center = at(offset(*a, dx / 2.0, dy / 2.0), altitude);
             Some(if kind == ToolKind::Rect {
-                Shape::Rect { center, width, height: depth, rotation_deg: 0.0 }
+                Shape::Rect {
+                    center,
+                    width,
+                    height: depth,
+                    rotation_deg: 0.0,
+                }
             } else {
-                Shape::Cuboid { base_center: center, size_m: [width, depth, (width + depth) / 2.0], heading_deg: 0.0 }
+                Shape::Cuboid {
+                    base_center: center,
+                    size_m: [width, depth, (width + depth) / 2.0],
+                    heading_deg: 0.0,
+                }
             })
         }
         ToolKind::Sector => {
@@ -194,16 +228,23 @@ pub fn build_shape(kind: ToolKind, pts: &[LatLon], altitude: Altitude) -> Option
                 end_deg: start_deg + sweep,
             })
         }
-        ToolKind::Polygon => (pts.len() >= 3)
-            .then(|| Shape::Polygon { points: pts.iter().map(|p| at(*p, altitude)).collect() }),
-        ToolKind::Polyline => (pts.len() >= 2)
-            .then(|| Shape::Polyline { points: pts.iter().map(|p| at(*p, altitude)).collect() }),
+        ToolKind::Polygon => (pts.len() >= 3).then(|| Shape::Polygon {
+            points: pts.iter().map(|p| at(*p, altitude)).collect(),
+        }),
+        ToolKind::Polyline => (pts.len() >= 2).then(|| Shape::Polyline {
+            points: pts.iter().map(|p| at(*p, altitude)).collect(),
+        }),
     }
 }
 
 /// 作成中に見せる仮の図形。置いた点+カーソル位置で図形が作れればそれ、作れなければ(2点以上あれば)
 /// それらをつないだ折れ線(扇形・多角形の途中経過)。
-fn preview_shape(kind: ToolKind, pts: &[LatLon], hover: Option<LatLon>, altitude: Altitude) -> Option<Shape> {
+fn preview_shape(
+    kind: ToolKind,
+    pts: &[LatLon],
+    hover: Option<LatLon>,
+    altitude: Altitude,
+) -> Option<Shape> {
     let mut all = pts.to_vec();
     all.extend(hover);
     if let Some(shape) = build_shape(kind, &all, altitude) {
@@ -332,7 +373,10 @@ impl DrawToolState {
                         self.drawings.update(id, |d| d.visible = s.visible);
                     }
                 }
-                Ok(file) => log::warn!("[draw_tool] 保存された図形の版({})に未対応のため読み込まない", file.version),
+                Ok(file) => log::warn!(
+                    "[draw_tool] 保存された図形の版({})に未対応のため読み込まない",
+                    file.version
+                ),
                 Err(e) => log::warn!("[draw_tool] 保存された図形を読み込めない: {e}"),
             }
         }
@@ -343,11 +387,20 @@ impl DrawToolState {
                     .iter()
                     .filter_map(|u| {
                         let d = items.iter().find(|d| d.id == u.id)?;
-                        Some(SavedShape { name: u.name.clone(), shape: d.shape.clone(), style: d.style, visible: d.visible })
+                        Some(SavedShape {
+                            name: u.name.clone(),
+                            shape: d.shape.clone(),
+                            style: d.style,
+                            visible: d.visible,
+                        })
                     })
                     .collect::<Vec<_>>()
             });
-            let json = serde_json::to_string(&SavedFile { version: SAVE_VERSION, shapes: saved }).unwrap_or_default();
+            let json = serde_json::to_string(&SavedFile {
+                version: SAVE_VERSION,
+                shapes: saved,
+            })
+            .unwrap_or_default();
             if prev.as_deref() != Some(json.as_str()) {
                 write_storage(key, &json);
             }
@@ -398,7 +451,11 @@ impl DrawToolState {
     /// 次に何をすればよいかの案内(ツール未選択なら空)。
     pub fn hint(&self) -> String {
         match self.tool.get() {
-            Some(kind) => format!("{}: {}", kind.label(), kind.hint(self.points.with(|p| p.len()))),
+            Some(kind) => format!(
+                "{}: {}",
+                kind.label(),
+                kind.hint(self.points.with(|p| p.len()))
+            ),
             None => String::new(),
         }
     }
@@ -406,17 +463,24 @@ impl DrawToolState {
     /// 多角形・折れ線を確定できる状態か(確定ボタンの有効/無効)。
     pub fn can_finish(&self) -> bool {
         match self.tool.get() {
-            Some(kind) if kind.fixed_points().is_none() => self.points.with(|p| p.len() >= kind.min_points()),
+            Some(kind) if kind.fixed_points().is_none() => {
+                self.points.with(|p| p.len() >= kind.min_points())
+            }
             _ => false,
         }
     }
 
     /// 地図上の点(緯度, 経度)をクリックした。必要な点が揃った図形は確定する。
     pub fn click(&self, lat_deg: f64, lon_deg: f64) {
-        let Some(kind) = self.tool.get_untracked() else { return };
+        let Some(kind) = self.tool.get_untracked() else {
+            return;
+        };
         let p = (lat_deg, lon_deg);
         let mut pts = self.points.get_untracked();
-        if pts.last().is_some_and(|last| distance(*last, p) < MIN_POINT_SPACING_M) {
+        if pts
+            .last()
+            .is_some_and(|last| distance(*last, p) < MIN_POINT_SPACING_M)
+        {
             return;
         }
         pts.push(p);
@@ -447,7 +511,9 @@ impl DrawToolState {
 
     /// 多角形・折れ線を確定する。点が足りなければ何もしない。
     pub fn finish(&self) {
-        let Some(kind) = self.tool.get_untracked() else { return };
+        let Some(kind) = self.tool.get_untracked() else {
+            return;
+        };
         if kind.fixed_points().is_some() {
             return;
         }
@@ -473,7 +539,11 @@ impl DrawToolState {
     fn commit(&self, kind: ToolKind, shape: Shape) {
         let serial = self.serial.get_untracked() + 1;
         self.serial.set(serial);
-        let id = self.add_user_shape(format!("{} {serial}", kind.label()), shape, self.new_style.get_untracked());
+        let id = self.add_user_shape(
+            format!("{} {serial}", kind.label()),
+            shape,
+            self.new_style.get_untracked(),
+        );
         self.select(Some(id));
     }
 
@@ -481,7 +551,8 @@ impl DrawToolState {
         let id = self.drawings.add(shape, style);
         self.shapes.update(|list| list.push(UserShape { id, name }));
         // 復元した図形の数だけ通し番号を進めておく(名前が重複しにくくなる)。
-        self.serial.update(|n| *n = (*n).max(self.shapes.with_untracked(|l| l.len() as u32)));
+        self.serial
+            .update(|n| *n = (*n).max(self.shapes.with_untracked(|l| l.len() as u32)));
         id
     }
 
@@ -504,19 +575,26 @@ impl DrawToolState {
     /// 図形を複製して、複製を選択する(重なって見分けが付かないよう、東北へ図形の大きさの半分ほどずらす)。
     /// 一覧に無い図形なら何もしない。
     pub fn duplicate(&self, id: DrawingId) {
-        let Some(name) = self.shapes.with_untracked(|l| l.iter().find(|u| u.id == id).map(|u| u.name.clone())) else {
+        let Some(name) = self
+            .shapes
+            .with_untracked(|l| l.iter().find(|u| u.id == id).map(|u| u.name.clone()))
+        else {
             return;
         };
-        let Some((mut shape, style)) = self
-            .drawings
-            .items
-            .with_untracked(|items| items.iter().find(|d| d.id == id).map(|d| (d.shape.clone(), d.style)))
-        else {
+        let Some((mut shape, style)) = self.drawings.items.with_untracked(|items| {
+            items
+                .iter()
+                .find(|d| d.id == id)
+                .map(|d| (d.shape.clone(), d.style))
+        }) else {
             return;
         };
         let shift = characteristic_size_m(&shape) * 0.5;
         for p in shape.positions_mut() {
-            if let Position::World { lat_deg, lon_deg, .. } = p {
+            if let Position::World {
+                lat_deg, lon_deg, ..
+            } = p
+            {
                 (*lat_deg, *lon_deg) = offset((*lat_deg, *lon_deg), shift, shift);
             }
         }
@@ -557,7 +635,12 @@ impl DrawToolState {
             if pts.is_empty() {
                 return None;
             }
-            preview_shape(kind, &pts, self.hover.get_untracked(), self.new_altitude.get_untracked())
+            preview_shape(
+                kind,
+                &pts,
+                self.hover.get_untracked(),
+                self.new_altitude.get_untracked(),
+            )
         });
         // 仮の図形は、線の色を「なし」にしていても見えるようにする(折れ線は線の色だけで描くため)。
         let mut style = self.new_style.get_untracked();
@@ -567,12 +650,22 @@ impl DrawToolState {
 
     fn refresh_highlight(&self) {
         let shape = self.selected.get_untracked().and_then(|id| {
-            self.drawings.items.with_untracked(|items| items.iter().find(|d| d.id == id).map(|d| highlight_shape(&d.shape)))
+            self.drawings.items.with_untracked(|items| {
+                items
+                    .iter()
+                    .find(|d| d.id == id)
+                    .map(|d| highlight_shape(&d.shape))
+            })
         });
         Self::sync_temp(self.drawings, self.highlight, shape, highlight_style());
     }
 
-    fn sync_temp(drawings: DrawingState, slot: RwSignal<Option<DrawingId>>, shape: Option<Shape>, style: Style) {
+    fn sync_temp(
+        drawings: DrawingState,
+        slot: RwSignal<Option<DrawingId>>,
+        shape: Option<Shape>,
+        style: Style,
+    ) {
         match (shape, slot.get_untracked()) {
             (Some(shape), Some(id)) => drawings.update(id, |d| {
                 d.shape = shape;
@@ -618,7 +711,9 @@ mod tests {
 
     #[test]
     fn circle_radius_is_click_distance() {
-        let Some(Shape::Circle { radius, .. }) = build_shape(ToolKind::Circle, &[ORIGIN, at(3_000.0, 4_000.0)], GROUND) else {
+        let Some(Shape::Circle { radius, .. }) =
+            build_shape(ToolKind::Circle, &[ORIGIN, at(3_000.0, 4_000.0)], GROUND)
+        else {
             panic!("円が作れない");
         };
         assert!((radius - 5_000.0).abs() < 1.0, "radius={radius}");
@@ -634,8 +729,14 @@ mod tests {
 
     #[test]
     fn rect_is_centered_between_corners() {
-        let Some(Shape::Rect { center: Position::World { lat_deg, lon_deg, .. }, width, height, rotation_deg }) =
-            build_shape(ToolKind::Rect, &[ORIGIN, at(2_000.0, -1_000.0)], GROUND)
+        let Some(Shape::Rect {
+            center: Position::World {
+                lat_deg, lon_deg, ..
+            },
+            width,
+            height,
+            rotation_deg,
+        }) = build_shape(ToolKind::Rect, &[ORIGIN, at(2_000.0, -1_000.0)], GROUND)
         else {
             panic!("矩形が作れない");
         };
@@ -648,26 +749,47 @@ mod tests {
     #[test]
     fn sector_sweeps_clockwise_from_start_to_end() {
         // 北(0度)→東(90度)。
-        let Some(Shape::Sector { radius, start_deg, end_deg, .. }) =
-            build_shape(ToolKind::Sector, &[ORIGIN, at(0.0, 1_000.0), at(1_000.0, 0.0)], GROUND)
+        let Some(Shape::Sector {
+            radius,
+            start_deg,
+            end_deg,
+            ..
+        }) = build_shape(
+            ToolKind::Sector,
+            &[ORIGIN, at(0.0, 1_000.0), at(1_000.0, 0.0)],
+            GROUND,
+        )
         else {
             panic!("扇形が作れない");
         };
         assert!((radius - 1_000.0).abs() < 1.0);
-        assert!(start_deg.abs() < 0.1 && (end_deg - 90.0).abs() < 0.1, "{start_deg} {end_deg}");
+        assert!(
+            start_deg.abs() < 0.1 && (end_deg - 90.0).abs() < 0.1,
+            "{start_deg} {end_deg}"
+        );
         // 東(90度)→北(0度)は、時計回りに270度。
-        let Some(Shape::Sector { start_deg, end_deg, .. }) =
-            build_shape(ToolKind::Sector, &[ORIGIN, at(1_000.0, 0.0), at(0.0, 1_000.0)], GROUND)
+        let Some(Shape::Sector {
+            start_deg, end_deg, ..
+        }) = build_shape(
+            ToolKind::Sector,
+            &[ORIGIN, at(1_000.0, 0.0), at(0.0, 1_000.0)],
+            GROUND,
+        )
         else {
             panic!("扇形が作れない");
         };
-        assert!((end_deg - start_deg - 270.0).abs() < 0.1, "{start_deg} {end_deg}");
+        assert!(
+            (end_deg - start_deg - 270.0).abs() < 0.1,
+            "{start_deg} {end_deg}"
+        );
     }
 
     #[test]
     fn sphere_rests_on_ground() {
-        let Some(Shape::Sphere { center: Position::World { altitude, .. }, radius }) =
-            build_shape(ToolKind::Sphere, &[ORIGIN, at(500.0, 0.0)], GROUND)
+        let Some(Shape::Sphere {
+            center: Position::World { altitude, .. },
+            radius,
+        }) = build_shape(ToolKind::Sphere, &[ORIGIN, at(500.0, 0.0)], GROUND)
         else {
             panic!("球が作れない");
         };

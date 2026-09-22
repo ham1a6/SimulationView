@@ -3,10 +3,9 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-
+use super::state::*;
 use crate::terrain::pick;
 use crate::terrain::tracks::{self, TrackId};
-use super::state::*;
 
 /// この距離(CSSピクセル)未満の移動なら、ドラッグではなく単発クリックとして扱う。
 pub(super) const CLICK_MAX_MOVE_PX: f64 = 5.0;
@@ -50,7 +49,16 @@ pub(super) fn pick_track_at_client(
     let y = (client_y - rect.top()) as f32 * canvas.height() as f32 / rect.height().max(1.0) as f32;
     let s = state.borrow();
     let renderer = s.renderer.as_ref()?;
-    let view_proj = s.camera.to_camera(renderer.aspect_ratio()).view_proj_matrix();
+    let view_proj = s
+        .camera
+        .to_camera(renderer.aspect_ratio())
+        .view_proj_matrix();
     let (width, height) = renderer.canvas_size_px();
-    tracks::pick_track(&s.pick_anchors, &view_proj, (width as f32, height as f32), (x, y), tracks::PICK_RADIUS_PX)
+    tracks::pick_track(
+        &s.pick_anchors,
+        &view_proj,
+        (width as f32, height as f32),
+        (x, y),
+        tracks::PICK_RADIUS_PX,
+    )
 }

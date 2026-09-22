@@ -27,8 +27,8 @@ use super::frame::render_frame;
 use super::state::ViewState;
 use crate::terrain::camera::ViewMode;
 use crate::terrain::loader::{TerrainData, TileKey};
-use crate::terrain::los::{DomeRing, LosPoint};
 use crate::terrain::lod::TileLayout;
+use crate::terrain::los::{DomeRing, LosPoint};
 use crate::terrain::markers::{self, RadarMarker, RadarMarkersState};
 use crate::terrain::mesh::TerrainVertex;
 use crate::terrain::origin::Origin;
@@ -61,7 +61,9 @@ struct CoverageKey {
 impl CoverageKey {
     /// 地形以外(観測点・モード・高度)が同じか。地形だけが違うなら、計算し直している間も前の覆域を出す。
     fn same_request(&self, other: &Self) -> bool {
-        self.marker == other.marker && self.mode == other.mode && self.altitude_bits == other.altitude_bits
+        self.marker == other.marker
+            && self.mode == other.mode
+            && self.altitude_bits == other.altitude_bits
     }
 }
 
@@ -106,7 +108,11 @@ pub(super) struct CoverageState {
 
 /// 観測点の範囲(最大観測範囲)に重なる、いま出している地形のチャンクのレベルの組を1つの値にしたもの。
 /// これが変わったら、標高のサンプリング結果が変わるので覆域を計算し直す。範囲の外のチャンクは含めない。
-fn terrain_signature(terrain: &TerrainData, resident: &HashMap<TileKey, TileLayout>, marker: &RadarMarker) -> u64 {
+fn terrain_signature(
+    terrain: &TerrainData,
+    resident: &HashMap<TileKey, TileLayout>,
+    marker: &RadarMarker,
+) -> u64 {
     let lat_span = marker.max_range_m / 111_000.0;
     let lon_span = lat_span / marker.lat_deg.to_radians().cos().max(0.05);
     let (lat0, lat1) = (marker.lat_deg - lat_span, marker.lat_deg + lat_span);
@@ -140,17 +146,39 @@ fn terrain_signature(terrain: &TerrainData, resident: &HashMap<TileKey, TileLayo
 }
 
 /// 計算結果から頂点を作る(すでに同じ内容(キーとメッシュ原点)のものがあれば何もしない)。
-fn ensure_built(entry: &mut MarkerCoverage, terrain: &TerrainData, mesh_origin: Origin, key: &CoverageKey, data: &CoverageData) {
-    if entry.built.as_ref().is_some_and(|b| &b.key == key && b.origin == mesh_origin) {
+fn ensure_built(
+    entry: &mut MarkerCoverage,
+    terrain: &TerrainData,
+    mesh_origin: Origin,
+    key: &CoverageKey,
+    data: &CoverageData,
+) {
+    if entry
+        .built
+        .as_ref()
+        .is_some_and(|b| &b.key == key && b.origin == mesh_origin)
+    {
         return;
     }
     let geometry = match data {
-        CoverageData::Dome(rings) => Geometry::Dome(markers::dome_geometry(terrain, &mesh_origin, &key.marker, rings)),
-        CoverageData::Area(points) => {
-            Geometry::Area(markers::coverage_2d_geometry(terrain, &mesh_origin, &key.marker, points))
-        }
+        CoverageData::Dome(rings) => Geometry::Dome(markers::dome_geometry(
+            terrain,
+            &mesh_origin,
+            &key.marker,
+            rings,
+        )),
+        CoverageData::Area(points) => Geometry::Area(markers::coverage_2d_geometry(
+            terrain,
+            &mesh_origin,
+            &key.marker,
+            points,
+        )),
     };
-    entry.built = Some(BuiltGeometry { key: key.clone(), origin: mesh_origin, geometry });
+    entry.built = Some(BuiltGeometry {
+        key: key.clone(),
+        origin: mesh_origin,
+        geometry,
+    });
 }
 
 /// 表示する観測点のジオメトリをつないで、GPUへ載せる(すでに同じ内容が載っていれば何もしない)。
@@ -162,7 +190,10 @@ fn sync_gpu(s: &mut ViewState) {
         let Some(built) = s.coverage.markers.get(id).and_then(|m| m.built.as_ref()) else {
             continue;
         };
-        let matches_mode = matches!((&built.geometry, mode), (Geometry::Dome(_), ViewMode::ThreeD) | (Geometry::Area(_), ViewMode::TwoD));
+        let matches_mode = matches!(
+            (&built.geometry, mode),
+            (Geometry::Dome(_), ViewMode::ThreeD) | (Geometry::Area(_), ViewMode::TwoD)
+        );
         if matches_mode {
             parts.push((*id, built.key.clone(), built.origin));
         }
@@ -173,7 +204,13 @@ fn sync_gpu(s: &mut ViewState) {
     let mut dome: Vec<TerrainVertex> = Vec::new();
     let mut area: Vec<DrawVertex> = Vec::new();
     for (id, _, _) in &parts {
-        match s.coverage.markers.get(id).and_then(|m| m.built.as_ref()).map(|b| &b.geometry) {
+        match s
+            .coverage
+            .markers
+            .get(id)
+            .and_then(|m| m.built.as_ref())
+            .map(|b| &b.geometry)
+        {
             Some(Geometry::Dome(v)) => dome.extend_from_slice(v),
             Some(Geometry::Area(v)) => area.extend_from_slice(v),
             None => {}
@@ -192,7 +229,11 @@ fn sync_gpu(s: &mut ViewState) {
 /// (終わったら自動で反映して描き直す)。表示しない観測点の進行中の計算は取り消す。
 /// `terrain_changed`は、地形のレベルの切り替えをきっかけとした呼び出しか(その場合は少し待ってから計算を始める)。
 /// 描画自体は呼び出し側で`render_now`(または`render_frame`)すること。
-pub(super) fn refresh_coverage(state: &Rc<RefCell<ViewState>>, radar_markers: RadarMarkersState, terrain_changed: bool) {
+pub(super) fn refresh_coverage(
+    state: &Rc<RefCell<ViewState>>,
+    radar_markers: RadarMarkersState,
+    terrain_changed: bool,
+) {
     let mut guard = state.borrow_mut();
     let s = &mut *guard;
     let (Some(terrain), Some(mesh_origin)) = (s.terrain.clone(), s.mesh_origin) else {
@@ -204,7 +245,10 @@ pub(super) fn refresh_coverage(state: &Rc<RefCell<ViewState>>, radar_markers: Ra
         all.clone()
     } else {
         let selected = radar_markers.selected.get_untracked();
-        all.iter().filter(|m| Some(m.id) == selected).copied().collect()
+        all.iter()
+            .filter(|m| Some(m.id) == selected)
+            .copied()
+            .collect()
     };
     let altitude_m = match mode {
         ViewMode::ThreeD => 0.0,
@@ -212,7 +256,9 @@ pub(super) fn refresh_coverage(state: &Rc<RefCell<ViewState>>, radar_markers: Ra
     };
 
     // 削除された観測点の状態は捨てる(進行中の計算は、状態が無いので結果を捨てる)。表示しない観測点の計算は取り消す。
-    s.coverage.markers.retain(|id, _| all.iter().any(|m| m.id == *id));
+    s.coverage
+        .markers
+        .retain(|id, _| all.iter().any(|m| m.id == *id));
     s.coverage.visible = wanted.iter().map(|m| m.id).collect();
     for (id, entry) in s.coverage.markers.iter_mut() {
         if entry.pending.is_some() && !s.coverage.visible.contains(id) {
@@ -231,7 +277,12 @@ pub(super) fn refresh_coverage(state: &Rc<RefCell<ViewState>>, radar_markers: Ra
         };
         let entry = s.coverage.markers.entry(marker.id).or_default();
         // 計算済み(同じ観測点・モード・高度・地形): ジオメトリだけ作り直す。進行中の計算は要らない。
-        if let Some(data) = entry.cache.as_ref().filter(|c| c.key == key).map(|c| c.data.clone()) {
+        if let Some(data) = entry
+            .cache
+            .as_ref()
+            .filter(|c| c.key == key)
+            .map(|c| c.data.clone())
+        {
             entry.generation += 1;
             entry.pending = None;
             ensure_built(entry, &terrain, mesh_origin, &key, &data);
@@ -243,7 +294,11 @@ pub(super) fn refresh_coverage(state: &Rc<RefCell<ViewState>>, radar_markers: Ra
         }
         // 新しい計算を始める。地形以外(観測点・モード・高度)が変わったなら、前の覆域は正しくないので出さない。
         // 地形だけが変わったなら、計算が終わるまで前の覆域を出しておく(ちらつかない)。
-        if entry.built.as_ref().is_some_and(|b| !b.key.same_request(&key)) {
+        if entry
+            .built
+            .as_ref()
+            .is_some_and(|b| !b.key.same_request(&key))
+        {
             entry.built = None;
         }
         entry.generation += 1;
@@ -254,7 +309,14 @@ pub(super) fn refresh_coverage(state: &Rc<RefCell<ViewState>>, radar_markers: Ra
     drop(guard);
 
     for (key, generation) in jobs {
-        spawn_job(state.clone(), terrain.clone(), key, generation, altitude_m, terrain_changed);
+        spawn_job(
+            state.clone(),
+            terrain.clone(),
+            key,
+            generation,
+            altitude_m,
+            terrain_changed,
+        );
     }
 }
 
@@ -274,7 +336,14 @@ fn spawn_job(
         }
         let is_stale = {
             let state = state.clone();
-            move || state.borrow().coverage.markers.get(&id).is_none_or(|m| m.generation != generation)
+            move || {
+                state
+                    .borrow()
+                    .coverage
+                    .markers
+                    .get(&id)
+                    .is_none_or(|m| m.generation != generation)
+            }
         };
         if is_stale() {
             return;
@@ -282,12 +351,21 @@ fn spawn_job(
         let data = match key.mode {
             ViewMode::ThreeD => {
                 let mut computation = markers::start_dome_computation(&terrain, &key.marker);
-                let finished = run_in_slices(|| computation.advance(&terrain, AZIMUTHS_PER_STEP), &is_stale).await;
+                let finished = run_in_slices(
+                    || computation.advance(&terrain, AZIMUTHS_PER_STEP),
+                    &is_stale,
+                )
+                .await;
                 finished.then(|| CoverageData::Dome(computation.finish()))
             }
             ViewMode::TwoD => {
-                let mut computation = markers::start_coverage_computation(&terrain, &key.marker, altitude_m);
-                let finished = run_in_slices(|| computation.advance(&terrain, AZIMUTHS_PER_STEP), &is_stale).await;
+                let mut computation =
+                    markers::start_coverage_computation(&terrain, &key.marker, altitude_m);
+                let finished = run_in_slices(
+                    || computation.advance(&terrain, AZIMUTHS_PER_STEP),
+                    &is_stale,
+                )
+                .await;
                 finished.then(|| CoverageData::Area(computation.finish()))
             }
         };
@@ -306,7 +384,10 @@ fn spawn_job(
             }
             entry.pending = None;
             let data = Rc::new(data);
-            entry.cache = Some(CoverageCache { key: key.clone(), data: data.clone() });
+            entry.cache = Some(CoverageCache {
+                key: key.clone(),
+                data: data.clone(),
+            });
             if let Some(mesh_origin) = mesh_origin {
                 ensure_built(entry, &terrain, mesh_origin, &key, &data);
             }

@@ -30,25 +30,27 @@ use leptos::prelude::*;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
+use self::{frame::*, overlay::*, picking::*, state::*};
 use crate::terrain::camera::{CameraPreset, OrbitCamera, ViewMode};
 use crate::terrain::capture::CaptureState;
 use crate::terrain::draw_tool::DrawToolState;
 use crate::terrain::drawing::DrawingState;
+use crate::terrain::geodesy::EnuTransform;
+use crate::terrain::heightmap;
+use crate::terrain::hillshade::HillshadeState;
 use crate::terrain::loader::WHOLE_TILE;
 use crate::terrain::lod::TileLayout;
 use crate::terrain::markers::RadarMarkersState;
-use crate::terrain::models::ModelsState;
-use crate::terrain::geodesy::EnuTransform;
-use crate::terrain::heightmap;
 use crate::terrain::mesh;
+use crate::terrain::models::ModelsState;
 use crate::terrain::origin::OriginState;
 use crate::terrain::origin_pick::OriginPickState;
-use crate::terrain::hillshade::HillshadeState;
 use crate::terrain::recenter::RecenterRequestState;
 use crate::terrain::store::TerrainStore;
 use crate::terrain::tracks::TracksState;
 use crate::ui::context_menu::{ContextMenuState, MapMenuState, MapMenuTarget};
-use self::{frame::*, overlay::*, picking::*, state::*};
+
+type PendingHover = Rc<RefCell<Option<(web_sys::HtmlCanvasElement, (f64, f64))>>>;
 
 #[component]
 pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
@@ -56,7 +58,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let status = RwSignal::new("地形データを読み込み中...".to_string());
     let origin_state = use_context::<OriginState>().expect("OriginState context not found");
     let terrain_store = use_context::<TerrainStore>().expect("TerrainStore context not found");
-    let radar_markers = use_context::<RadarMarkersState>().expect("RadarMarkersState context not found");
+    let radar_markers =
+        use_context::<RadarMarkersState>().expect("RadarMarkersState context not found");
     // 未提供でもデフォルト(何もしない)で動作するよう、他のcontextと違いunwrap_or_defaultにしてある
     // (既存の利用側コードに影響を与えない、後から追加したオプション機能のため)。
     let recenter_request = use_context::<RecenterRequestState>().unwrap_or_default();
@@ -160,19 +163,20 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             };
 
             let apply_size_for_resize = apply_size.clone();
-            let closure = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
-                let Some(entry) = entries
-                    .get(0)
-                    .dyn_into::<web_sys::ResizeObserverEntry>()
-                    .ok()
-                else {
-                    return;
-                };
-                let rect = entry.content_rect();
-                let width = rect.width().round().max(0.0) as u32;
-                let height = rect.height().round().max(0.0) as u32;
-                apply_size_for_resize(width, height);
-            });
+            let closure =
+                Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
+                    let Some(entry) = entries
+                        .get(0)
+                        .dyn_into::<web_sys::ResizeObserverEntry>()
+                        .ok()
+                    else {
+                        return;
+                    };
+                    let rect = entry.content_rect();
+                    let width = rect.width().round().max(0.0) as u32;
+                    let height = rect.height().round().max(0.0) as u32;
+                    apply_size_for_resize(width, height);
+                });
 
             let observer = web_sys::ResizeObserver::new(closure.as_ref().unchecked_ref())
                 .expect("ResizeObserver::new failed");
@@ -198,7 +202,9 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 let rect = canvas_for_visibility.get_bounding_client_rect();
                 let width = rect.width().round().max(0.0) as u32;
                 let height = rect.height().round().max(0.0) as u32;
-                if width != canvas_for_visibility.width() || height != canvas_for_visibility.height() {
+                if width != canvas_for_visibility.width()
+                    || height != canvas_for_visibility.height()
+                {
                     apply_size(width, height);
                 }
             });
@@ -242,7 +248,14 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 .clone()
                 .dyn_into()
                 .expect("canvas node_ref should be an HtmlCanvasElement");
-            try_init(state.clone(), canvas, Some(data), origin_state, status, radar_markers);
+            try_init(
+                state.clone(),
+                canvas,
+                Some(data),
+                origin_state,
+                status,
+                radar_markers,
+            );
         });
     }
 
@@ -270,14 +283,14 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             // 表示が飛んでしまわないよう、同じ緯度経度を見続けるよう新しいENU座標へ変換し直す。
             let follows_origin = s.camera.target.x == 0.0 && s.camera.target.y == 0.0;
             s.target_up =
-                heightmap::sample_heightmap(&terrain, new_origin.lat_deg, new_origin.lon_deg).unwrap_or(0.0);
+                heightmap::sample_heightmap(&terrain, new_origin.lat_deg, new_origin.lon_deg)
+                    .unwrap_or(0.0);
             if follows_origin {
                 // 高さも新しい原点の地表標高へ更新する(古い標高のままだと、原点移動後に
                 // ズームインした際カメラが地面に埋まって真っ黒になりうる)。
                 s.camera.target.z = s.target_up;
             } else if let Some(old_origin) = s.mesh_origin {
-                let old_transform =
-                    EnuTransform::new(&old_origin, &terrain.metadata.ellipsoid);
+                let old_transform = EnuTransform::new(&old_origin, &terrain.metadata.ellipsoid);
                 let (lat, lon, _) = heightmap::ground_at_enu(
                     &terrain,
                     &old_transform,
@@ -300,10 +313,13 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             // 水域レイヤー(楕円体の海抜0mの面)も新しい原点基準にする。
             renderer.set_ellipsoid_origin(&new_transform);
             for (&key, resident) in st.resident.iter() {
-                let Some(tile) = terrain.tile(key) else { continue };
+                let Some(tile) = terrain.tile(key) else {
+                    continue;
+                };
                 match resident {
                     TileLayout::Whole => {
-                        let vertices = mesh::build_whole_tile_vertices(&terrain, tile, &new_transform);
+                        let vertices =
+                            mesh::build_whole_tile_vertices(&terrain, tile, &new_transform);
                         renderer.update_mesh_vertices((key.0, key.1, WHOLE_TILE), &vertices);
                     }
                     TileLayout::Chunks(levels) => {
@@ -412,7 +428,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 // (Shift+ドラッグでの移動と同じ。古い高さのままだとズームインしたときカメラが地面に埋まる)。
                 (Some((lat, lon)), Some(terrain), Some(mesh_origin)) => {
                     let transform = EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
-                    let (east, north, up) = heightmap::ground_at_geodetic(&terrain, &transform, lat, lon);
+                    let (east, north, up) =
+                        heightmap::ground_at_geodetic(&terrain, &transform, lat, lon);
                     s.camera.target.x = east;
                     s.camera.target.y = north;
                     s.camera.target.z = up;
@@ -459,8 +476,10 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             let Some(canvas_el) = canvas_ref.get_untracked() else {
                 return;
             };
-            let canvas: web_sys::HtmlCanvasElement =
-                (*canvas_el).clone().dyn_into().expect("canvas node_ref should be an HtmlCanvasElement");
+            let canvas: web_sys::HtmlCanvasElement = (*canvas_el)
+                .clone()
+                .dyn_into()
+                .expect("canvas node_ref should be an HtmlCanvasElement");
             capture::save_screenshot(&canvas);
         });
     }
@@ -530,15 +549,19 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
 
     let state_pm = state.clone();
     // 次のフレームで反映する予定のカーソル位置(canvasとclient座標)。
-    let hover_pending: Rc<RefCell<Option<(web_sys::HtmlCanvasElement, (f64, f64))>>> = Rc::new(RefCell::new(None));
+    let hover_pending: PendingHover = Rc::new(RefCell::new(None));
     let on_pointer_move = move |ev: leptos::ev::PointerEvent| {
         // 図形の作成中は、カーソルの指す地点へ仮の図形の先端を追従させる(ドラッグ中は動かさない)。
         // 仮の図形を更新するたびに作図全体の再構築+描画が走るので、マウス移動は1フレームに1回へまとめる。
         if let Some(tool) = draw_tool.filter(|t| t.wants_hover()) {
             if !state_pm.borrow().dragging {
-                if let Some(canvas) = ev.target().and_then(|t| t.dyn_into::<web_sys::HtmlCanvasElement>().ok()) {
+                if let Some(canvas) = ev
+                    .target()
+                    .and_then(|t| t.dyn_into::<web_sys::HtmlCanvasElement>().ok())
+                {
                     let pos = (ev.client_x() as f64, ev.client_y() as f64);
-                    let already_scheduled = hover_pending.borrow_mut().replace((canvas, pos)).is_some();
+                    let already_scheduled =
+                        hover_pending.borrow_mut().replace((canvas, pos)).is_some();
                     if !already_scheduled {
                         let hover_pending = hover_pending.clone();
                         let state = state_pm.clone();
@@ -570,8 +593,12 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                         if ev.shift_key() {
                             // Shift+ドラッグ: 回転ではなく注視点(中心点)を平行移動する
                             // (「原点は変えないでね」との要望通り、OriginStateには触れない)。
-                            let canvas_h =
-                                s.renderer.as_ref().map(|r| r.canvas_height_px()).unwrap_or(1).max(1);
+                            let canvas_h = s
+                                .renderer
+                                .as_ref()
+                                .map(|r| r.canvas_height_px())
+                                .unwrap_or(1)
+                                .max(1);
                             s.camera.pan_orbit_target(dx, dy, canvas_h as f32);
                             // 移動先の実際の地表(ENU上座標)へtarget.zを更新する(古い高さの
                             // ままだと、原点変更時と同様にズームインした際カメラが地面に
@@ -591,13 +618,19 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                                 s.camera.target.z = up;
                             }
                         } else {
-                            s.camera.orbit(dx * ORBIT_SENSITIVITY, dy * ORBIT_SENSITIVITY);
+                            s.camera
+                                .orbit(dx * ORBIT_SENSITIVITY, dy * ORBIT_SENSITIVITY);
                         }
                     }
                     ViewMode::TwoD => {
                         // 正射影の画面縦幅(distance)と実際のcanvas高さ(ピクセル)の比から、
                         // 画面上のドラッグ量をワールド座標(メートル)の移動量へ変換する。
-                        let canvas_h = s.renderer.as_ref().map(|r| r.canvas_height_px()).unwrap_or(1).max(1);
+                        let canvas_h = s
+                            .renderer
+                            .as_ref()
+                            .map(|r| r.canvas_height_px())
+                            .unwrap_or(1)
+                            .max(1);
                         let world_per_px = s.camera.distance / canvas_h as f32;
                         // 画面上は北=上(up=Vec3::Y)なので、上方向のドラッグ(dy<0)は北への移動。
                         s.camera.pan(dx * world_per_px, -dy * world_per_px);
@@ -643,9 +676,12 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         };
         if let Some(pick_state) = origin_pick.filter(|p| p.active.get_untracked()) {
             // 地形データ範囲外(海の外側など)をクリックした場合は、モードを維持して指定し直せるようにする。
-            if let Some((lat, lon)) =
-                pick_at_client(&state_pu, &canvas, ev.client_x() as f64, ev.client_y() as f64)
-            {
+            if let Some((lat, lon)) = pick_at_client(
+                &state_pu,
+                &canvas,
+                ev.client_x() as f64,
+                ev.client_y() as f64,
+            ) {
                 pick_state.active.set(false);
                 pick_state.on_pick.run((lat, lon));
             }
@@ -653,14 +689,22 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         }
         if let Some(tool) = draw_tool.filter(|t| t.tool.get_untracked().is_some()) {
             // 図形の作成中。地形データ範囲外のクリックは無視する(点を置き直せる)。
-            if let Some((lat, lon)) =
-                pick_at_client(&state_pu, &canvas, ev.client_x() as f64, ev.client_y() as f64)
-            {
+            if let Some((lat, lon)) = pick_at_client(
+                &state_pu,
+                &canvas,
+                ev.client_x() as f64,
+                ev.client_y() as f64,
+            ) {
                 tool.click(lat, lon);
             }
             return;
         }
-        let picked = pick_track_at_client(&state_pu, &canvas, ev.client_x() as f64, ev.client_y() as f64);
+        let picked = pick_track_at_client(
+            &state_pu,
+            &canvas,
+            ev.client_x() as f64,
+            ev.client_y() as f64,
+        );
         tracks.select(picked);
     };
 
@@ -702,9 +746,12 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             }
             return;
         }
-        if let Some((lat, lon)) =
-            pick_at_client(&state_ctx, &canvas, ev.client_x() as f64, ev.client_y() as f64)
-        {
+        if let Some((lat, lon)) = pick_at_client(
+            &state_ctx,
+            &canvas,
+            ev.client_x() as f64,
+            ev.client_y() as f64,
+        ) {
             radar_markers.add(lat, lon);
         }
     };
@@ -736,27 +783,30 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
 
     // 図形の作成中のキー操作(Esc=終了、Enter=確定、Backspace=1つ戻す)。入力欄への入力は邪魔しない。
     if let Some(tool) = draw_tool {
-        let keydown_handle = window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
-            if tool.tool.get_untracked().is_none() {
-                return;
-            }
-            let in_form = ev
-                .target()
-                .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                .is_some_and(|el| matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT"));
-            if in_form {
-                return;
-            }
-            match ev.key().as_str() {
-                "Escape" => tool.cancel(),
-                "Enter" => tool.finish(),
-                "Backspace" => {
-                    ev.prevent_default();
-                    tool.undo();
+        let keydown_handle =
+            window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
+                if tool.tool.get_untracked().is_none() {
+                    return;
                 }
-                _ => {}
-            }
-        });
+                let in_form = ev
+                    .target()
+                    .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+                    .is_some_and(|el| {
+                        matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT")
+                    });
+                if in_form {
+                    return;
+                }
+                match ev.key().as_str() {
+                    "Escape" => tool.cancel(),
+                    "Enter" => tool.finish(),
+                    "Backspace" => {
+                        ev.prevent_default();
+                        tool.undo();
+                    }
+                    _ => {}
+                }
+            });
         // このコンポーネントが破棄されたらリスナーを外す(外さないとwindowに残り続ける)。
         on_cleanup(move || keydown_handle.remove());
     }

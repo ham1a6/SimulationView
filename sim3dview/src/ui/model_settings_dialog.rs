@@ -11,8 +11,11 @@ use crate::terrain::models::{ModelDisplayMode, ModelsState};
 #[derive(Clone, Copy)]
 pub struct ModelSettingsDialogState(pub RwSignal<bool>);
 
-const MODES: [ModelDisplayMode; 3] =
-    [ModelDisplayMode::SwitchToSymbol, ModelDisplayMode::MinScreenSize, ModelDisplayMode::Off];
+const MODES: [ModelDisplayMode; 3] = [
+    ModelDisplayMode::SwitchToSymbol,
+    ModelDisplayMode::MinScreenSize,
+    ModelDisplayMode::Off,
+];
 
 fn mode_value(mode: ModelDisplayMode) -> &'static str {
     match mode {
@@ -24,7 +27,8 @@ fn mode_value(mode: ModelDisplayMode) -> &'static str {
 
 #[component]
 pub fn ModelSettingsDialog() -> impl IntoView {
-    let dialog = use_context::<ModelSettingsDialogState>().expect("ModelSettingsDialogState context not found");
+    let dialog = use_context::<ModelSettingsDialogState>()
+        .expect("ModelSettingsDialogState context not found");
     let models = use_context::<ModelsState>().expect("ModelsState context not found");
 
     let on_mode = move |ev| {

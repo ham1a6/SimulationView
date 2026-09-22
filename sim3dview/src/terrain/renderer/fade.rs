@@ -37,7 +37,10 @@ pub(super) struct Fades<T> {
 
 impl<T> Fades<T> {
     pub(super) fn new() -> Self {
-        Self { incoming: HashMap::new(), outgoing: Vec::new() }
+        Self {
+            incoming: HashMap::new(),
+            outgoing: Vec::new(),
+        }
     }
 
     /// 進行中のクロスフェードがあるか(あれば、時間が進むので描き直し続ける必要がある)。
@@ -57,7 +60,11 @@ impl<T> Fades<T> {
         self.outgoing.retain(|o| o.key != key);
         self.incoming.insert(key, now_ms);
         if let Some(mesh) = old {
-            self.outgoing.push(Outgoing { key, mesh, start_ms: now_ms });
+            self.outgoing.push(Outgoing {
+                key,
+                mesh,
+                start_ms: now_ms,
+            });
         }
     }
 
@@ -65,7 +72,11 @@ impl<T> Fades<T> {
     pub(super) fn remove(&mut self, key: MeshKey, old: T, now_ms: f64) {
         self.outgoing.retain(|o| o.key != key);
         self.incoming.remove(&key);
-        self.outgoing.push(Outgoing { key, mesh: old, start_ms: now_ms });
+        self.outgoing.push(Outgoing {
+            key,
+            mesh: old,
+            start_ms: now_ms,
+        });
     }
 
     /// `key`のクロスフェードを、すぐに終わらせる(そのメッシュがすぐに置き換わる・頂点を書き換えるとき)。
@@ -82,13 +93,17 @@ impl<T> Fades<T> {
 
     /// 終わったクロスフェードを片付ける(古いメッシュはここで解放される)。
     pub(super) fn finish(&mut self, now_ms: f64) {
-        self.outgoing.retain(|o| now_ms - o.start_ms < FADE_DURATION_MS);
-        self.incoming.retain(|_, &mut start| now_ms - start < FADE_DURATION_MS);
+        self.outgoing
+            .retain(|o| now_ms - o.start_ms < FADE_DURATION_MS);
+        self.incoming
+            .retain(|_, &mut start| now_ms - start < FADE_DURATION_MS);
     }
 
     /// 出てくる途中のメッシュなら、その割合(0〜1)。そうでなければ`None`(=普通に描く)。
     pub(super) fn incoming_progress(&self, key: &MeshKey, now_ms: f64) -> Option<f32> {
-        self.incoming.get(key).map(|&start| fade_progress(start, now_ms))
+        self.incoming
+            .get(key)
+            .map(|&start| fade_progress(start, now_ms))
     }
 
     /// 出てくる途中のメッシュがあるか(無ければ、描くときにメッシュごとの照会を省ける)。

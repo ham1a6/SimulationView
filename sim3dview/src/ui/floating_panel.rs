@@ -35,9 +35,16 @@ struct Drag {
 }
 
 pub(crate) fn viewport_size() -> (f64, f64) {
-    let Some(window) = web_sys::window() else { return (1024.0, 768.0) };
-    let px = |v: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>, fallback: f64| v.ok().and_then(|v| v.as_f64()).unwrap_or(fallback);
-    (px(window.inner_width(), 1024.0), px(window.inner_height(), 768.0))
+    let Some(window) = web_sys::window() else {
+        return (1024.0, 768.0);
+    };
+    let px = |v: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>, fallback: f64| {
+        v.ok().and_then(|v| v.as_f64()).unwrap_or(fallback)
+    };
+    (
+        px(window.inner_width(), 1024.0),
+        px(window.inner_height(), 768.0),
+    )
 }
 
 #[component]
@@ -61,7 +68,11 @@ pub fn FloatingPanel(
     // ドラッグで動かした量(モーダルなら中央、ウインドウなら初期位置からの相対、px)。
     let offset = RwSignal::new((0.0_f64, 0.0_f64));
     let drag = RwSignal::new(None::<Drag>);
-    let (left, top) = if modal { (0.0, 0.0) } else { initial_position.unwrap_or(DEFAULT_WINDOW_POSITION) };
+    let (left, top) = if modal {
+        (0.0, 0.0)
+    } else {
+        initial_position.unwrap_or(DEFAULT_WINDOW_POSITION)
+    };
 
     let on_pointer_down = move |ev: leptos::ev::PointerEvent| {
         // ✕ボタン等の操作はドラッグにしない。
@@ -72,24 +83,36 @@ pub fn FloatingPanel(
         if !draggable || ev.button() != 0 || on_button {
             return;
         }
-        let Some(panel) = panel_ref.get_untracked() else { return };
+        let Some(panel) = panel_ref.get_untracked() else {
+            return;
+        };
         let rect = panel.get_bounding_client_rect();
         let (vw, vh) = viewport_size();
         drag.set(Some(Drag {
             start_x: f64::from(ev.client_x()),
             start_y: f64::from(ev.client_y()),
             base: offset.get_untracked(),
-            dx_range: (KEEP_VISIBLE_X_PX - rect.right(), vw - KEEP_VISIBLE_X_PX - rect.left()),
+            dx_range: (
+                KEEP_VISIBLE_X_PX - rect.right(),
+                vw - KEEP_VISIBLE_X_PX - rect.left(),
+            ),
             dy_range: (-rect.top(), vh - KEEP_VISIBLE_Y_PX - rect.top()),
         }));
-        if let Some(header) = ev.current_target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()) {
+        if let Some(header) = ev
+            .current_target()
+            .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
+        {
             let _ = header.set_pointer_capture(ev.pointer_id());
         }
     };
     let on_pointer_move = move |ev: leptos::ev::PointerEvent| {
-        let Some(d) = drag.get_untracked() else { return };
-        let dx = (f64::from(ev.client_x()) - d.start_x).clamp(d.dx_range.0, d.dx_range.1.max(d.dx_range.0));
-        let dy = (f64::from(ev.client_y()) - d.start_y).clamp(d.dy_range.0, d.dy_range.1.max(d.dy_range.0));
+        let Some(d) = drag.get_untracked() else {
+            return;
+        };
+        let dx = (f64::from(ev.client_x()) - d.start_x)
+            .clamp(d.dx_range.0, d.dx_range.1.max(d.dx_range.0));
+        let dy = (f64::from(ev.client_y()) - d.start_y)
+            .clamp(d.dy_range.0, d.dy_range.1.max(d.dy_range.0));
         offset.set((d.base.0 + dx, d.base.1 + dy));
     };
     let on_pointer_end = move |_ev: leptos::ev::PointerEvent| drag.set(None);

@@ -5,17 +5,17 @@ use std::rc::Rc;
 
 use leptos::prelude::*;
 
+use super::coverage::CoverageState;
+use super::models::ModelsView;
 use crate::terrain::camera::OrbitCamera;
 use crate::terrain::drawing::DrawingState;
+use crate::terrain::hillshade::HillshadeState;
 use crate::terrain::loader::{TerrainData, TileKey};
 use crate::terrain::lod::TileLayout;
 use crate::terrain::markers::RadarMarkersState;
 use crate::terrain::origin::Origin;
-use crate::terrain::hillshade::HillshadeState;
 use crate::terrain::renderer::TerrainRenderer;
 use crate::terrain::tracks::{TrackId, TrackLabel, TracksState};
-use super::coverage::CoverageState;
-use super::models::ModelsView;
 
 pub(super) struct ViewState {
     pub(super) renderer: Option<TerrainRenderer>,

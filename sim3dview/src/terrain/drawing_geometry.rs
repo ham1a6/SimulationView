@@ -97,15 +97,43 @@ fn build_one(ctx: &BuildContext, shape: &Shape, style: &Style, sink: &mut Sink) 
     match shape {
         Shape::Circle { center, radius } => {
             let (frame, steps) = Frame2d::at(ctx, center);
-            emit_geom2d(sink, ctx, &frame, &sector_geom(*radius, 0.0, 360.0, steps), style);
+            emit_geom2d(
+                sink,
+                ctx,
+                &frame,
+                &sector_geom(*radius, 0.0, 360.0, steps),
+                style,
+            );
         }
-        Shape::Sector { center, radius, start_deg, end_deg } => {
+        Shape::Sector {
+            center,
+            radius,
+            start_deg,
+            end_deg,
+        } => {
             let (frame, steps) = Frame2d::at(ctx, center);
-            emit_geom2d(sink, ctx, &frame, &sector_geom(*radius, *start_deg, *end_deg, steps), style);
+            emit_geom2d(
+                sink,
+                ctx,
+                &frame,
+                &sector_geom(*radius, *start_deg, *end_deg, steps),
+                style,
+            );
         }
-        Shape::Rect { center, width, height, rotation_deg } => {
+        Shape::Rect {
+            center,
+            width,
+            height,
+            rotation_deg,
+        } => {
             let (frame, steps) = Frame2d::at(ctx, center);
-            emit_geom2d(sink, ctx, &frame, &rect_geom(*width, *height, *rotation_deg, steps), style);
+            emit_geom2d(
+                sink,
+                ctx,
+                &frame,
+                &rect_geom(*width, *height, *rotation_deg, steps),
+                style,
+            );
         }
         Shape::Polygon { points } => {
             let (frame, steps) = Frame2d::at(ctx, &points[0]);
@@ -115,13 +143,37 @@ fn build_one(ctx: &BuildContext, shape: &Shape, style: &Style, sink: &mut Sink) 
         Shape::Sphere { center, radius } => {
             emit_solid(sink, ctx, center, sphere_solid(*radius), style);
         }
-        Shape::Cuboid { base_center, size_m, heading_deg } => {
-            emit_solid(sink, ctx, base_center, cuboid_solid(*size_m, *heading_deg), style);
+        Shape::Cuboid {
+            base_center,
+            size_m,
+            heading_deg,
+        } => {
+            emit_solid(
+                sink,
+                ctx,
+                base_center,
+                cuboid_solid(*size_m, *heading_deg),
+                style,
+            );
         }
-        Shape::Cylinder { base_center, radius, height } => {
-            emit_solid(sink, ctx, base_center, cylinder_solid(*radius, *height), style);
+        Shape::Cylinder {
+            base_center,
+            radius,
+            height,
+        } => {
+            emit_solid(
+                sink,
+                ctx,
+                base_center,
+                cylinder_solid(*radius, *height),
+                style,
+            );
         }
-        Shape::Cone { base_center, radius, height } => {
+        Shape::Cone {
+            base_center,
+            radius,
+            height,
+        } => {
             emit_solid(sink, ctx, base_center, cone_solid(*radius, *height), style);
         }
         Shape::Polyline { points } => emit_polyline(sink, ctx, points, style),
@@ -140,7 +192,11 @@ fn push_triangle(
 ) {
     let list = sink.list(color[3]);
     for i in 0..3 {
-        list.push(DrawVertex::surface(positions[i], color, normals.map(|n| n[i])));
+        list.push(DrawVertex::surface(
+            positions[i],
+            color,
+            normals.map(|n| n[i]),
+        ));
     }
 }
 
@@ -148,7 +204,13 @@ fn push_triangle(
 /// 帯の幅への展開は頂点シェーダーが行う。各線分の頂点は「この端点」と「反対側の端点」を持ち、
 /// 端点側の頂点は`side`の符号で左右に振り分ける(端の頂点で符号が逆になるのは、線の向きを
 /// 「反対側→この端点」で取るため。物理的に同じ側に揃う)。
-fn push_line_strip(sink: &mut Sink, points: &[[f32; 3]], closed: bool, color: [f32; 4], width_px: f32) {
+fn push_line_strip(
+    sink: &mut Sink,
+    points: &[[f32; 3]],
+    closed: bool,
+    color: [f32; 4],
+    width_px: f32,
+) {
     append_line_strip(sink.list(color[3]), points, closed, color, width_px);
 }
 
@@ -191,23 +253,38 @@ pub(crate) fn mean_radius(ellipsoid: &Ellipsoid, lat_deg: f64) -> f64 {
 }
 
 /// 基準点から方位`bearing_rad`(北から時計回り)へ距離`dist_m`進んだ点の(緯度, 経度)(度)。
-pub(crate) fn destination(lat_deg: f64, lon_deg: f64, bearing_rad: f64, dist_m: f64, radius_m: f64) -> (f64, f64) {
+pub(crate) fn destination(
+    lat_deg: f64,
+    lon_deg: f64,
+    bearing_rad: f64,
+    dist_m: f64,
+    radius_m: f64,
+) -> (f64, f64) {
     let (lat1, lon1) = (lat_deg.to_radians(), lon_deg.to_radians());
     let delta = dist_m / radius_m;
     let lat2 = (lat1.sin() * delta.cos() + lat1.cos() * delta.sin() * bearing_rad.cos()).asin();
     let lon2 = lon1
-        + (bearing_rad.sin() * delta.sin() * lat1.cos()).atan2(delta.cos() - lat1.sin() * lat2.sin());
+        + (bearing_rad.sin() * delta.sin() * lat1.cos())
+            .atan2(delta.cos() - lat1.sin() * lat2.sin());
     (lat2.to_degrees(), lon2.to_degrees())
 }
 
 /// `destination`の逆: 基準点から見た(緯度, 経度)の位置を、ローカル座標[東, 北](メートル)で返す。
-pub(crate) fn to_local(ref_lat_deg: f64, ref_lon_deg: f64, lat_deg: f64, lon_deg: f64, radius_m: f64) -> [f64; 2] {
+pub(crate) fn to_local(
+    ref_lat_deg: f64,
+    ref_lon_deg: f64,
+    lat_deg: f64,
+    lon_deg: f64,
+    radius_m: f64,
+) -> [f64; 2] {
     let (lat1, lat2) = (ref_lat_deg.to_radians(), lat_deg.to_radians());
     let mut dlon = (lon_deg - ref_lon_deg).to_radians();
     dlon = (dlon + PI).rem_euclid(TAU) - PI;
-    let a = ((lat2 - lat1) * 0.5).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon * 0.5).sin().powi(2);
+    let a =
+        ((lat2 - lat1) * 0.5).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon * 0.5).sin().powi(2);
     let dist = 2.0 * radius_m * a.sqrt().min(1.0).asin();
-    let bearing = (dlon.sin() * lat2.cos()).atan2(lat1.cos() * lat2.sin() - lat1.sin() * lat2.cos() * dlon.cos());
+    let bearing = (dlon.sin() * lat2.cos())
+        .atan2(lat1.cos() * lat2.sin() - lat1.sin() * lat2.cos() * dlon.cos());
     [dist * bearing.sin(), dist * bearing.cos()]
 }
 
@@ -266,10 +343,19 @@ struct Steps {
 }
 
 /// 海抜の水平な面: 地球の丸みで面が地表の弦になる誤差(20kmで約8m)に収まる粗さで十分。
-const STEPS_FLAT: Steps = Steps { fill: 20_000.0, arc: 2_000.0 };
+const STEPS_FLAT: Steps = Steps {
+    fill: 20_000.0,
+    arc: 2_000.0,
+};
 /// 地表に貼り付ける面・線: 地形の起伏に沿うよう細かく分割する。
-const STEPS_GROUND: Steps = Steps { fill: 500.0, arc: 250.0 };
-const STEPS_NONE: Steps = Steps { fill: f64::INFINITY, arc: f64::INFINITY };
+const STEPS_GROUND: Steps = Steps {
+    fill: 500.0,
+    arc: 250.0,
+};
+const STEPS_NONE: Steps = Steps {
+    fill: f64::INFINITY,
+    arc: f64::INFINITY,
+};
 
 /// 1つの図形の塗りの三角形数の目安の上限。大きな地表貼り付け図形で頂点数が増え過ぎないよう、
 /// 面積から分割の細かさの下限を決める。
@@ -322,7 +408,7 @@ fn densify(points: &[[f64; 2]], closed: bool, max_len: f64) -> Vec<[f64; 2]> {
 /// 方位は時計回り(0度=上)。扇形の輪郭は中心→弧→中心。
 fn sector_geom(radius: f64, start_deg: f64, end_deg: f64, steps: Steps) -> Geom2d {
     let mut geom = Geom2d::default();
-    if !(radius > 0.0) {
+    if radius.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return geom;
     }
     let raw = end_deg - start_deg;
@@ -332,22 +418,34 @@ fn sector_geom(radius: f64, start_deg: f64, end_deg: f64, steps: Steps) -> Geom2
         return geom;
     }
     let arc = steps.arc.min(radius * 0.09);
-    let full_segments = ((TAU * radius / arc).ceil() as usize).clamp(MIN_CIRCLE_SEGMENTS, MAX_CIRCLE_SEGMENTS);
+    let full_segments =
+        ((TAU * radius / arc).ceil() as usize).clamp(MIN_CIRCLE_SEGMENTS, MAX_CIRCLE_SEGMENTS);
     let n = ((full_segments as f64 * sweep / 360.0).ceil() as usize).max(1);
     let area = 0.5 * radius * radius * sweep.to_radians();
-    let rings = ((radius / effective_fill_step(area, steps.fill)).ceil() as usize).clamp(1, MAX_GRID_CELLS);
+    let rings =
+        ((radius / effective_fill_step(area, steps.fill)).ceil() as usize).clamp(1, MAX_GRID_CELLS);
 
     let at = |r: f64, i: usize| {
         let theta = (start_deg + sweep * i as f64 / n as f64).to_radians();
         [r * theta.sin(), r * theta.cos()]
     };
     for k in 1..=rings {
-        let (r0, r1) = (radius * (k - 1) as f64 / rings as f64, radius * k as f64 / rings as f64);
+        let (r0, r1) = (
+            radius * (k - 1) as f64 / rings as f64,
+            radius * k as f64 / rings as f64,
+        );
         for i in 0..n {
             if k == 1 {
                 geom.fill.extend([[0.0, 0.0], at(r1, i), at(r1, i + 1)]);
             } else {
-                geom.fill.extend([at(r0, i), at(r1, i), at(r1, i + 1), at(r0, i), at(r1, i + 1), at(r0, i + 1)]);
+                geom.fill.extend([
+                    at(r0, i),
+                    at(r1, i),
+                    at(r1, i + 1),
+                    at(r0, i),
+                    at(r1, i + 1),
+                    at(r0, i + 1),
+                ]);
             }
         }
     }
@@ -358,7 +456,10 @@ fn sector_geom(radius: f64, start_deg: f64, end_deg: f64, steps: Steps) -> Geom2
         outline.push([0.0, 0.0]);
         outline.extend((0..=n).map(|i| at(radius, i)));
     }
-    geom.outlines.push(Outline { points: outline, closed: true });
+    geom.outlines.push(Outline {
+        points: outline,
+        closed: true,
+    });
     geom
 }
 
@@ -372,7 +473,10 @@ fn rect_geom(width: f64, height: f64, rotation_deg: f64, steps: Steps) -> Geom2d
     let ny = ((height / s).ceil() as usize).clamp(1, MAX_GRID_CELLS);
     let p = |ix: usize, iy: usize| {
         rotate_cw(
-            [-width * 0.5 + width * ix as f64 / nx as f64, -height * 0.5 + height * iy as f64 / ny as f64],
+            [
+                -width * 0.5 + width * ix as f64 / nx as f64,
+                -height * 0.5 + height * iy as f64 / ny as f64,
+            ],
             rotation_deg,
         )
     };
@@ -383,7 +487,10 @@ fn rect_geom(width: f64, height: f64, rotation_deg: f64, steps: Steps) -> Geom2d
         }
     }
     let corners = [p(0, 0), p(nx, 0), p(nx, ny), p(0, ny)];
-    geom.outlines.push(Outline { points: densify(&corners, true, steps.arc), closed: true });
+    geom.outlines.push(Outline {
+        points: densify(&corners, true, steps.arc),
+        closed: true,
+    });
     geom
 }
 
@@ -406,13 +513,19 @@ fn polygon_geom(points: &[[f64; 2]], steps: Steps) -> Geom2d {
     }
     let step = effective_fill_step(area.abs(), steps.fill);
     geom.fill = refine_triangles(triangulate(&poly), step);
-    geom.outlines.push(Outline { points: densify(&poly, true, steps.arc), closed: true });
+    geom.outlines.push(Outline {
+        points: densify(&poly, true, steps.arc),
+        closed: true,
+    });
     geom
 }
 
 pub(crate) fn signed_area(poly: &[[f64; 2]]) -> f64 {
     let n = poly.len();
-    (0..n).map(|i| cross2(poly[i], poly[(i + 1) % n])).sum::<f64>() * 0.5
+    (0..n)
+        .map(|i| cross2(poly[i], poly[(i + 1) % n]))
+        .sum::<f64>()
+        * 0.5
 }
 
 fn cross2(a: [f64; 2], b: [f64; 2]) -> f64 {
@@ -436,11 +549,17 @@ pub(crate) fn triangulate(poly: &[[f64; 2]]) -> Vec<[f64; 2]> {
         return Vec::new();
     };
     indices
-        .chunks_exact(3)
+        .as_chunks::<3>()
+        .0
+        .iter()
         .flat_map(|t| {
             let (a, b, c) = (poly[t[0]], poly[t[1]], poly[t[2]]);
             // earcutの出力の向きは入力に依らないので、反時計回りにそろえる。
-            if orient(a, b, c) < 0.0 { [a, c, b] } else { [a, b, c] }
+            if orient(a, b, c) < 0.0 {
+                [a, c, b]
+            } else {
+                [a, b, c]
+            }
         })
         .collect()
 }
@@ -450,7 +569,7 @@ fn refine_triangles(tris: Vec<[f64; 2]>, max_edge: f64) -> Vec<[f64; 2]> {
     if !max_edge.is_finite() {
         return tris;
     }
-    let mut stack: Vec<[[f64; 2]; 3]> = tris.chunks_exact(3).map(|t| [t[0], t[1], t[2]]).collect();
+    let mut stack: Vec<[[f64; 2]; 3]> = tris.as_chunks::<3>().0.to_vec();
     let mut out: Vec<[f64; 2]> = Vec::new();
     let mid = |a: [f64; 2], b: [f64; 2]| [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
     while let Some([a, b, c]) = stack.pop() {
@@ -467,16 +586,32 @@ fn refine_triangles(tris: Vec<[f64; 2]>, max_edge: f64) -> Vec<[f64; 2]> {
 
 /// 2D図形の置き場所(基準点)と、ローカル座標→出力座標の変換。
 enum Frame2d {
-    World { lat_deg: f64, lon_deg: f64, radius_m: f64, altitude: Altitude },
-    View { right: f64, up: f64, forward: f64 },
-    Screen { x: f64, y: f64 },
+    World {
+        lat_deg: f64,
+        lon_deg: f64,
+        radius_m: f64,
+        altitude: Altitude,
+    },
+    View {
+        right: f64,
+        up: f64,
+        forward: f64,
+    },
+    Screen {
+        x: f64,
+        y: f64,
+    },
 }
 
 impl Frame2d {
     /// 基準点`pos`の変換と、その種類に合った分割の細かさ。
     fn at(ctx: &BuildContext, pos: &Position) -> (Self, Steps) {
         match *pos {
-            Position::World { lat_deg, lon_deg, altitude } => {
+            Position::World {
+                lat_deg,
+                lon_deg,
+                altitude,
+            } => {
                 let frame = Self::World {
                     lat_deg,
                     lon_deg,
@@ -489,9 +624,18 @@ impl Frame2d {
                 };
                 (frame, steps)
             }
-            Position::View { right_m, up_m, forward_m } => {
-                (Self::View { right: right_m, up: up_m, forward: forward_m }, STEPS_NONE)
-            }
+            Position::View {
+                right_m,
+                up_m,
+                forward_m,
+            } => (
+                Self::View {
+                    right: right_m,
+                    up: up_m,
+                    forward: forward_m,
+                },
+                STEPS_NONE,
+            ),
             Position::Screen { corner, x_px, y_px } => {
                 let [x, y] = resolve_screen(ctx, corner, x_px, y_px);
                 (Self::Screen { x, y }, STEPS_NONE)
@@ -502,9 +646,19 @@ impl Frame2d {
     /// 位置`pos`(この基準点と同じ種類)の、基準点から見たローカル座標。
     fn local_of(&self, ctx: &BuildContext, pos: &Position) -> [f64; 2] {
         match (self, *pos) {
-            (Self::World { lat_deg, lon_deg, radius_m, .. }, Position::World { lat_deg: lat, lon_deg: lon, .. }) => {
-                to_local(*lat_deg, *lon_deg, lat, lon, *radius_m)
-            }
+            (
+                Self::World {
+                    lat_deg,
+                    lon_deg,
+                    radius_m,
+                    ..
+                },
+                Position::World {
+                    lat_deg: lat,
+                    lon_deg: lon,
+                    ..
+                },
+            ) => to_local(*lat_deg, *lon_deg, lat, lon, *radius_m),
             (Self::View { right, up, .. }, Position::View { right_m, up_m, .. }) => {
                 [right_m - right, up_m - up]
             }
@@ -518,11 +672,28 @@ impl Frame2d {
 
     fn map(&self, ctx: &BuildContext, p: [f64; 2]) -> [f32; 3] {
         match self {
-            Self::World { lat_deg, lon_deg, radius_m, altitude } => {
-                let (lat, lon) = destination(*lat_deg, *lon_deg, p[0].atan2(p[1]), p[0].hypot(p[1]), *radius_m);
-                ctx.mesh_transform.transform(lat, lon, height_of(ctx, lat, lon, *altitude, DRAWING_M))
+            Self::World {
+                lat_deg,
+                lon_deg,
+                radius_m,
+                altitude,
+            } => {
+                let (lat, lon) = destination(
+                    *lat_deg,
+                    *lon_deg,
+                    p[0].atan2(p[1]),
+                    p[0].hypot(p[1]),
+                    *radius_m,
+                );
+                ctx.mesh_transform.transform(
+                    lat,
+                    lon,
+                    height_of(ctx, lat, lon, *altitude, DRAWING_M),
+                )
             }
-            Self::View { right, up, forward } => [(right + p[0]) as f32, (up + p[1]) as f32, -*forward as f32],
+            Self::View { right, up, forward } => {
+                [(right + p[0]) as f32, (up + p[1]) as f32, -*forward as f32]
+            }
             Self::Screen { x, y } => [(x + p[0]) as f32, (y - p[1]) as f32, 0.0],
         }
     }
@@ -531,15 +702,25 @@ impl Frame2d {
 fn emit_geom2d(sink: &mut Sink, ctx: &BuildContext, frame: &Frame2d, geom: &Geom2d, style: &Style) {
     if let Some(fill) = style.fill {
         let color = fill.to_array();
-        for tri in geom.fill.chunks_exact(3) {
-            let positions = [frame.map(ctx, tri[0]), frame.map(ctx, tri[1]), frame.map(ctx, tri[2])];
+        for tri in geom.fill.as_chunks::<3>().0 {
+            let positions = [
+                frame.map(ctx, tri[0]),
+                frame.map(ctx, tri[1]),
+                frame.map(ctx, tri[2]),
+            ];
             push_triangle(sink, color, positions, None);
         }
     }
     if let Some(stroke) = style.stroke.filter(|_| style.stroke_width_px > 0.0) {
         for outline in &geom.outlines {
             let points: Vec<[f32; 3]> = outline.points.iter().map(|&p| frame.map(ctx, p)).collect();
-            push_line_strip(sink, &points, outline.closed, stroke.to_array(), style.stroke_width_px);
+            push_line_strip(
+                sink,
+                &points,
+                outline.closed,
+                stroke.to_array(),
+                style.stroke_width_px,
+            );
         }
     }
 }
@@ -561,9 +742,11 @@ fn emit_polyline(sink: &mut Sink, ctx: &BuildContext, points: &[Position], style
         Position::View { .. } => points
             .iter()
             .filter_map(|p| match *p {
-                Position::View { right_m, up_m, forward_m } => {
-                    Some([right_m as f32, up_m as f32, -forward_m as f32])
-                }
+                Position::View {
+                    right_m,
+                    up_m,
+                    forward_m,
+                } => Some([right_m as f32, up_m as f32, -forward_m as f32]),
                 _ => None,
             })
             .collect(),
@@ -578,7 +761,13 @@ fn emit_polyline(sink: &mut Sink, ctx: &BuildContext, points: &[Position], style
             })
             .collect(),
     };
-    push_line_strip(sink, &mapped, false, stroke.to_array(), style.stroke_width_px);
+    push_line_strip(
+        sink,
+        &mapped,
+        false,
+        stroke.to_array(),
+        style.stroke_width_px,
+    );
 }
 
 /// `World`の折れ線: 点の間を大円(球面)に沿って分割し、各点をENUへ変換する。高度は点の間で補間する
@@ -587,7 +776,11 @@ fn world_polyline(ctx: &BuildContext, points: &[Position]) -> Vec<[f32; 3]> {
     let geodetic: Vec<(f64, f64, Altitude)> = points
         .iter()
         .filter_map(|p| match *p {
-            Position::World { lat_deg, lon_deg, altitude } => Some((lat_deg, lon_deg, altitude)),
+            Position::World {
+                lat_deg,
+                lon_deg,
+                altitude,
+            } => Some((lat_deg, lon_deg, altitude)),
             _ => None,
         })
         .collect();
@@ -597,8 +790,13 @@ fn world_polyline(ctx: &BuildContext, points: &[Position]) -> Vec<[f32; 3]> {
         let radius = mean_radius(ctx.ellipsoid, lat0);
         let [east, north] = to_local(lat0, lon0, lat1, lon1, radius);
         let (length, bearing) = (east.hypot(north), east.atan2(north));
-        let grounded = matches!(alt0, Altitude::AboveGround(_)) || matches!(alt1, Altitude::AboveGround(_));
-        let step = if grounded { POLYLINE_STEP_GROUND_M } else { POLYLINE_STEP_FLAT_M };
+        let grounded =
+            matches!(alt0, Altitude::AboveGround(_)) || matches!(alt1, Altitude::AboveGround(_));
+        let step = if grounded {
+            POLYLINE_STEP_GROUND_M
+        } else {
+            POLYLINE_STEP_FLAT_M
+        };
         let parts = ((length / step).ceil() as usize).clamp(1, MAX_EDGE_PARTS * 2);
         // 地表基準で補間するときの、両端の「地表からの高さ」(海抜の端点は、その地点の地表との差)。
         let offset = |lat: f64, lon: f64, alt: Altitude| match alt {
@@ -606,7 +804,10 @@ fn world_polyline(ctx: &BuildContext, points: &[Position]) -> Vec<[f32; 3]> {
             Altitude::AboveGround(o) => o,
         };
         let (off0, off1) = (offset(lat0, lon0, alt0), offset(lat1, lon1, alt1));
-        let (h0, h1) = (height_of(ctx, lat0, lon0, alt0, DRAWING_M), height_of(ctx, lat1, lon1, alt1, DRAWING_M));
+        let (h0, h1) = (
+            height_of(ctx, lat0, lon0, alt0, DRAWING_M),
+            height_of(ctx, lat1, lon1, alt1, DRAWING_M),
+        );
         for k in 0..parts {
             let t = k as f64 / parts as f64;
             let (lat, lon) = destination(lat0, lon0, bearing, length * t, radius);
@@ -619,7 +820,10 @@ fn world_polyline(ctx: &BuildContext, points: &[Position]) -> Vec<[f32; 3]> {
         }
     }
     if let Some(&(lat, lon, alt)) = geodetic.last() {
-        out.push(ctx.mesh_transform.transform(lat, lon, height_of(ctx, lat, lon, alt, DRAWING_M)));
+        out.push(
+            ctx.mesh_transform
+                .transform(lat, lon, height_of(ctx, lat, lon, alt, DRAWING_M)),
+        );
     }
     out
 }
@@ -645,7 +849,8 @@ impl Solid {
     fn push_quad(&mut self, corners: [[f64; 3]; 4], normal: [f64; 3]) {
         let base = self.verts.len() as u32;
         self.verts.extend(corners.map(|c| (c, normal)));
-        self.indices.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        self.indices
+            .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
     }
 
     /// 水平面(z一定)上の円周(閉じた点列)。
@@ -678,7 +883,7 @@ impl Solid {
 
 fn sphere_solid(radius: f64) -> Solid {
     let mut solid = Solid::default();
-    if !(radius > 0.0) {
+    if radius.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return solid;
     }
     for i in 0..=SPHERE_RINGS {
@@ -686,7 +891,9 @@ fn sphere_solid(radius: f64) -> Solid {
         for j in 0..=SPHERE_SEGMENTS {
             let theta = TAU * j as f64 / SPHERE_SEGMENTS as f64;
             let n = [phi.sin() * theta.cos(), phi.sin() * theta.sin(), phi.cos()];
-            solid.verts.push(([radius * n[0], radius * n[1], radius * n[2]], n));
+            solid
+                .verts
+                .push(([radius * n[0], radius * n[1], radius * n[2]], n));
         }
     }
     for i in 0..SPHERE_RINGS {
@@ -698,8 +905,12 @@ fn sphere_solid(radius: f64) -> Solid {
     }
     // 稜線の代わりに、互いに直交する3つの大円(赤道と2つの子午線)。
     let equator = Solid::ring(radius, 0.0);
-    solid.lines.push((equator.iter().map(|p| [p[0], p[2], p[1]]).collect(), true));
-    solid.lines.push((equator.iter().map(|p| [p[2], p[0], p[1]]).collect(), true));
+    solid
+        .lines
+        .push((equator.iter().map(|p| [p[0], p[2], p[1]]).collect(), true));
+    solid
+        .lines
+        .push((equator.iter().map(|p| [p[2], p[0], p[1]]).collect(), true));
     solid.lines.push((equator, true));
     solid
 }
@@ -711,13 +922,41 @@ fn cuboid_solid(size: [f64; 3], heading_deg: f64) -> Solid {
         return solid;
     }
     let (hx, hy, h) = (size[0] * 0.5, size[1] * 0.5, size[2]);
-    solid.push_quad([[hx, -hy, 0.0], [hx, hy, 0.0], [hx, hy, h], [hx, -hy, h]], [1.0, 0.0, 0.0]);
-    solid.push_quad([[-hx, hy, 0.0], [-hx, -hy, 0.0], [-hx, -hy, h], [-hx, hy, h]], [-1.0, 0.0, 0.0]);
-    solid.push_quad([[hx, hy, 0.0], [-hx, hy, 0.0], [-hx, hy, h], [hx, hy, h]], [0.0, 1.0, 0.0]);
-    solid.push_quad([[-hx, -hy, 0.0], [hx, -hy, 0.0], [hx, -hy, h], [-hx, -hy, h]], [0.0, -1.0, 0.0]);
-    solid.push_quad([[-hx, -hy, h], [hx, -hy, h], [hx, hy, h], [-hx, hy, h]], [0.0, 0.0, 1.0]);
-    solid.push_quad([[-hx, hy, 0.0], [hx, hy, 0.0], [hx, -hy, 0.0], [-hx, -hy, 0.0]], [0.0, 0.0, -1.0]);
-    let bottom = vec![[-hx, -hy, 0.0], [hx, -hy, 0.0], [hx, hy, 0.0], [-hx, hy, 0.0]];
+    solid.push_quad(
+        [[hx, -hy, 0.0], [hx, hy, 0.0], [hx, hy, h], [hx, -hy, h]],
+        [1.0, 0.0, 0.0],
+    );
+    solid.push_quad(
+        [[-hx, hy, 0.0], [-hx, -hy, 0.0], [-hx, -hy, h], [-hx, hy, h]],
+        [-1.0, 0.0, 0.0],
+    );
+    solid.push_quad(
+        [[hx, hy, 0.0], [-hx, hy, 0.0], [-hx, hy, h], [hx, hy, h]],
+        [0.0, 1.0, 0.0],
+    );
+    solid.push_quad(
+        [[-hx, -hy, 0.0], [hx, -hy, 0.0], [hx, -hy, h], [-hx, -hy, h]],
+        [0.0, -1.0, 0.0],
+    );
+    solid.push_quad(
+        [[-hx, -hy, h], [hx, -hy, h], [hx, hy, h], [-hx, hy, h]],
+        [0.0, 0.0, 1.0],
+    );
+    solid.push_quad(
+        [
+            [-hx, hy, 0.0],
+            [hx, hy, 0.0],
+            [hx, -hy, 0.0],
+            [-hx, -hy, 0.0],
+        ],
+        [0.0, 0.0, -1.0],
+    );
+    let bottom = vec![
+        [-hx, -hy, 0.0],
+        [hx, -hy, 0.0],
+        [hx, hy, 0.0],
+        [-hx, hy, 0.0],
+    ];
     let top: Vec<[f64; 3]> = bottom.iter().map(|p| [p[0], p[1], h]).collect();
     for (b, t) in bottom.iter().zip(&top) {
         solid.lines.push((vec![*b, *t], false));
@@ -737,12 +976,18 @@ fn cylinder_solid(radius: f64, height: f64) -> Solid {
     for j in 0..=SOLID_SEGMENTS {
         let t = TAU * j as f64 / SOLID_SEGMENTS as f64;
         let (c, s) = (t.cos(), t.sin());
-        solid.verts.push(([radius * c, radius * s, 0.0], [c, s, 0.0]));
-        solid.verts.push(([radius * c, radius * s, height], [c, s, 0.0]));
+        solid
+            .verts
+            .push(([radius * c, radius * s, 0.0], [c, s, 0.0]));
+        solid
+            .verts
+            .push(([radius * c, radius * s, height], [c, s, 0.0]));
     }
     for j in 0..SOLID_SEGMENTS as u32 {
         let (bottom, top, next_bottom, next_top) = (2 * j, 2 * j + 1, 2 * j + 2, 2 * j + 3);
-        solid.indices.extend([bottom, next_bottom, top, top, next_bottom, next_top]);
+        solid
+            .indices
+            .extend([bottom, next_bottom, top, top, next_bottom, next_top]);
     }
     for (z, normal) in [(height, [0.0, 0.0, 1.0]), (0.0, [0.0, 0.0, -1.0])] {
         let center = solid.verts.len() as u32;
@@ -751,12 +996,22 @@ fn cylinder_solid(radius: f64, height: f64) -> Solid {
             solid.verts.push((p, normal));
         }
         for j in 0..SOLID_SEGMENTS as u32 {
-            solid.indices.extend([center, center + 1 + j, center + 1 + (j + 1) % SOLID_SEGMENTS as u32]);
+            solid.indices.extend([
+                center,
+                center + 1 + j,
+                center + 1 + (j + 1) % SOLID_SEGMENTS as u32,
+            ]);
         }
     }
     for k in 0..4 {
         let t = TAU * k as f64 / 4.0;
-        solid.lines.push((vec![[radius * t.cos(), radius * t.sin(), 0.0], [radius * t.cos(), radius * t.sin(), height]], false));
+        solid.lines.push((
+            vec![
+                [radius * t.cos(), radius * t.sin(), 0.0],
+                [radius * t.cos(), radius * t.sin(), height],
+            ],
+            false,
+        ));
     }
     solid.lines.push((Solid::ring(radius, 0.0), true));
     solid.lines.push((Solid::ring(radius, height), true));
@@ -771,11 +1026,19 @@ fn cone_solid(radius: f64, height: f64) -> Solid {
     }
     let slant = radius.hypot(height);
     // 側面の法線(外向き): 底面の円の接線方向に垂直で、斜面に沿った向き。
-    let side_normal = |t: f64| [height * t.cos() / slant, height * t.sin() / slant, radius / slant];
+    let side_normal = |t: f64| {
+        [
+            height * t.cos() / slant,
+            height * t.sin() / slant,
+            radius / slant,
+        ]
+    };
     let segments = SOLID_SEGMENTS as u32;
     for j in 0..=segments {
         let t = TAU * j as f64 / SOLID_SEGMENTS as f64;
-        solid.verts.push(([radius * t.cos(), radius * t.sin(), 0.0], side_normal(t)));
+        solid
+            .verts
+            .push(([radius * t.cos(), radius * t.sin(), 0.0], side_normal(t)));
     }
     for j in 0..segments {
         let mid = TAU * (j as f64 + 0.5) / SOLID_SEGMENTS as f64;
@@ -789,11 +1052,19 @@ fn cone_solid(radius: f64, height: f64) -> Solid {
         solid.verts.push((p, [0.0, 0.0, -1.0]));
     }
     for j in 0..segments {
-        solid.indices.extend([center, center + 1 + j, center + 1 + (j + 1) % segments]);
+        solid
+            .indices
+            .extend([center, center + 1 + j, center + 1 + (j + 1) % segments]);
     }
     for k in 0..4 {
         let t = TAU * k as f64 / 4.0;
-        solid.lines.push((vec![[radius * t.cos(), radius * t.sin(), 0.0], [0.0, 0.0, height]], false));
+        solid.lines.push((
+            vec![
+                [radius * t.cos(), radius * t.sin(), 0.0],
+                [0.0, 0.0, height],
+            ],
+            false,
+        ));
     }
     solid.lines.push((Solid::ring(radius, 0.0), true));
     solid
@@ -803,14 +1074,25 @@ fn cone_solid(radius: f64, height: f64) -> Solid {
 enum Frame3d {
     /// 位置における局所ENU(この位置を通る鉛直線が+z)から測地座標を経てメッシュ原点のENUへ。
     /// 地球の丸みで遠方ほど局所の上向きが傾くのを、厳密に扱う。
-    World { local: EnuTransform, base_height: f64 },
-    View { right: f64, up: f64, forward: f64 },
+    World {
+        local: EnuTransform,
+        base_height: f64,
+    },
+    View {
+        right: f64,
+        up: f64,
+        forward: f64,
+    },
 }
 
 impl Frame3d {
     fn at(ctx: &BuildContext, pos: &Position) -> Option<Self> {
         match *pos {
-            Position::World { lat_deg, lon_deg, altitude } => {
+            Position::World {
+                lat_deg,
+                lon_deg,
+                altitude,
+            } => {
                 // 3D図形は位置の真下の地表に置く(図形自体は変形しない)ので、`height_of`のような
                 // 地表からの持ち上げ(`render_bias`)は付けない。
                 let base_height = match altitude {
@@ -818,11 +1100,20 @@ impl Frame3d {
                     Altitude::AboveGround(offset) => (ctx.ground)(lat_deg, lon_deg) + offset,
                 };
                 let origin = Origin { lat_deg, lon_deg };
-                Some(Self::World { local: EnuTransform::new(&origin, ctx.ellipsoid), base_height })
+                Some(Self::World {
+                    local: EnuTransform::new(&origin, ctx.ellipsoid),
+                    base_height,
+                })
             }
-            Position::View { right_m, up_m, forward_m } => {
-                Some(Self::View { right: right_m, up: up_m, forward: forward_m })
-            }
+            Position::View {
+                right_m,
+                up_m,
+                forward_m,
+            } => Some(Self::View {
+                right: right_m,
+                up: up_m,
+                forward: forward_m,
+            }),
             Position::Screen { .. } => None,
         }
     }
@@ -834,9 +1125,11 @@ impl Frame3d {
                 ctx.mesh_transform.transform(lat, lon, h)
             }
             // カメラの前方(+y)は視点空間では-z。
-            Self::View { right, up, forward } => {
-                [(right + p[0]) as f32, (up + p[2]) as f32, -(forward + p[1]) as f32]
-            }
+            Self::View { right, up, forward } => [
+                (right + p[0]) as f32,
+                (up + p[2]) as f32,
+                -(forward + p[1]) as f32,
+            ],
         }
     }
 
@@ -859,15 +1152,30 @@ fn emit_solid(sink: &mut Sink, ctx: &BuildContext, pos: &Position, solid: Solid,
             .iter()
             .map(|&(p, n)| (frame.map_position(ctx, p), frame.map_normal(n)))
             .collect();
-        for tri in solid.indices.chunks_exact(3) {
-            let v = [mapped[tri[0] as usize], mapped[tri[1] as usize], mapped[tri[2] as usize]];
-            push_triangle(sink, color, [v[0].0, v[1].0, v[2].0], Some([v[0].1, v[1].1, v[2].1]));
+        for tri in solid.indices.as_chunks::<3>().0 {
+            let v = [
+                mapped[tri[0] as usize],
+                mapped[tri[1] as usize],
+                mapped[tri[2] as usize],
+            ];
+            push_triangle(
+                sink,
+                color,
+                [v[0].0, v[1].0, v[2].0],
+                Some([v[0].1, v[1].1, v[2].1]),
+            );
         }
     }
     if let Some(stroke) = style.stroke.filter(|_| style.stroke_width_px > 0.0) {
         for (line, closed) in &solid.lines {
             let points: Vec<[f32; 3]> = line.iter().map(|&p| frame.map_position(ctx, p)).collect();
-            push_line_strip(sink, &points, *closed, stroke.to_array(), style.stroke_width_px);
+            push_line_strip(
+                sink,
+                &points,
+                *closed,
+                stroke.to_array(),
+                style.stroke_width_px,
+            );
         }
     }
 }
@@ -877,17 +1185,30 @@ mod tests {
     use super::*;
     use crate::terrain::drawing::Color;
 
-    const ORIGIN: Origin = Origin { lat_deg: 35.355556, lon_deg: 138.859722 };
+    const ORIGIN: Origin = Origin {
+        lat_deg: 35.355556,
+        lon_deg: 138.859722,
+    };
 
     fn with_ctx<R>(viewport: (f32, f32), f: impl FnOnce(&BuildContext) -> R) -> R {
         let transform = EnuTransform::new(&ORIGIN, &Ellipsoid::WGS84);
         // 地表は標高100mの平地とみなす。
         let ground = |_: f64, _: f64| 100.0;
-        f(&BuildContext { mesh_transform: &transform, ellipsoid: &Ellipsoid::WGS84, ground: &ground, viewport_px: viewport })
+        f(&BuildContext {
+            mesh_transform: &transform,
+            ellipsoid: &Ellipsoid::WGS84,
+            ground: &ground,
+            viewport_px: viewport,
+        })
     }
 
     fn drawing(id: u64, shape: Shape, style: Style) -> Drawing {
-        Drawing { id, shape, style, visible: true }
+        Drawing {
+            id,
+            shape,
+            style,
+            visible: true,
+        }
     }
 
     fn triangle_area(t: &[[f64; 2]]) -> f64 {
@@ -895,16 +1216,34 @@ mod tests {
     }
 
     fn total_area(tris: &[[f64; 2]]) -> f64 {
-        tris.chunks_exact(3).map(triangle_area).sum()
+        tris.as_chunks::<3>()
+            .0
+            .iter()
+            .map(|t| triangle_area(t))
+            .sum()
     }
 
     #[test]
     fn local_coordinates_round_trip() {
         let r = mean_radius(&Ellipsoid::WGS84, ORIGIN.lat_deg);
-        for &(dx, dy) in &[(1000.0, 0.0), (-25_000.0, 40_000.0), (0.0, -120_000.0), (300_000.0, 200_000.0)] {
-            let (lat, lon) = destination(ORIGIN.lat_deg, ORIGIN.lon_deg, f64::atan2(dx, dy), f64::hypot(dx, dy), r);
+        for &(dx, dy) in &[
+            (1000.0, 0.0),
+            (-25_000.0, 40_000.0),
+            (0.0, -120_000.0),
+            (300_000.0, 200_000.0),
+        ] {
+            let (lat, lon) = destination(
+                ORIGIN.lat_deg,
+                ORIGIN.lon_deg,
+                f64::atan2(dx, dy),
+                f64::hypot(dx, dy),
+                r,
+            );
             let [x, y] = to_local(ORIGIN.lat_deg, ORIGIN.lon_deg, lat, lon, r);
-            assert!((x - dx).abs() < 1e-3 && (y - dy).abs() < 1e-3, "({dx},{dy}) -> ({x},{y})");
+            assert!(
+                (x - dx).abs() < 1e-3 && (y - dy).abs() < 1e-3,
+                "({dx},{dy}) -> ({x},{y})"
+            );
         }
     }
 
@@ -927,10 +1266,21 @@ mod tests {
         let expected = PI * 1000.0 * 1000.0;
         assert!((total_area(&circle.fill) - expected).abs() / expected < 0.01);
         let ground = sector_geom(1000.0, 0.0, 360.0, STEPS_GROUND);
-        assert!(ground.fill.len() > circle.fill.len(), "地表貼り付けは細かく分割される");
+        assert!(
+            ground.fill.len() > circle.fill.len(),
+            "地表貼り付けは細かく分割される"
+        );
         assert!((total_area(&ground.fill) - expected).abs() / expected < 0.01);
 
-        let rect = rect_geom(300.0, 200.0, 30.0, Steps { fill: 50.0, arc: 50.0 });
+        let rect = rect_geom(
+            300.0,
+            200.0,
+            30.0,
+            Steps {
+                fill: 50.0,
+                arc: 50.0,
+            },
+        );
         assert_eq!(rect.fill.len(), 6 * 4 * 6);
         assert!((total_area(&rect.fill) - 60_000.0).abs() < 1.0);
     }
@@ -944,14 +1294,23 @@ mod tests {
         assert!(sector.fill.iter().all(|p| p[0] > -1e-6 && p[1] > -1e-6));
         // 終端が始端より小さければ、360度をまたいで時計回りに進む(270度→90度=180度分)。
         let wrap = sector_geom(1000.0, 270.0, 90.0, STEPS_NONE);
-        assert!((total_area(&wrap.fill) - PI * 1000.0 * 1000.0 / 2.0).abs() / (PI * 1e6 / 2.0) < 0.01);
+        assert!(
+            (total_area(&wrap.fill) - PI * 1000.0 * 1000.0 / 2.0).abs() / (PI * 1e6 / 2.0) < 0.01
+        );
     }
 
     #[test]
     fn polygon_triangulation_keeps_concave_area() {
         // L字(凹多角形)。面積は 300*100 + 100*200。時計回りで与えても同じ。
-        let l: Vec<[f64; 2]> =
-            [[0.0, 0.0], [300.0, 0.0], [300.0, 100.0], [100.0, 100.0], [100.0, 300.0], [0.0, 300.0]].to_vec();
+        let l: Vec<[f64; 2]> = [
+            [0.0, 0.0],
+            [300.0, 0.0],
+            [300.0, 100.0],
+            [100.0, 100.0],
+            [100.0, 300.0],
+            [0.0, 300.0],
+        ]
+        .to_vec();
         let expected = 50_000.0;
         let fill = polygon_geom(&l, STEPS_NONE).fill;
         assert_eq!(fill.len(), 4 * 3);
@@ -959,10 +1318,19 @@ mod tests {
         let cw: Vec<[f64; 2]> = l.iter().rev().copied().collect();
         assert!((total_area(&polygon_geom(&cw, STEPS_NONE).fill) - expected).abs() < 1e-6);
         // 細分化しても面積は変わらず、最長辺が上限以下になる。
-        let fine = polygon_geom(&l, Steps { fill: 60.0, arc: 60.0 }).fill;
+        let fine = polygon_geom(
+            &l,
+            Steps {
+                fill: 60.0,
+                arc: 60.0,
+            },
+        )
+        .fill;
         assert!((total_area(&fine) - expected).abs() < 1e-6);
         let longest = fine
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .flat_map(|t| [dist(t[0], t[1]), dist(t[1], t[2]), dist(t[2], t[0])])
             .fold(0.0, f64::max);
         assert!(longest <= 60.0 + 1e-9, "longest={longest}");
@@ -972,10 +1340,27 @@ mod tests {
     fn opaque_and_translucent_go_to_separate_lists() {
         with_ctx((800.0, 600.0), |ctx| {
             let center = Position::world(ORIGIN.lat_deg, ORIGIN.lon_deg, Altitude::Msl(500.0));
-            let translucent = drawing(1, Shape::Circle { center, radius: 2000.0 }, Style::filled(Color::rgba(1.0, 0.0, 0.0, 0.4)));
-            let opaque = drawing(2, Shape::Circle { center, radius: 2000.0 }, Style::filled(Color::rgb(0.0, 1.0, 0.0)));
-            let only_translucent = build(ctx, &[translucent.clone()]);
-            assert!(only_translucent.world.opaque.is_empty() && !only_translucent.world.blend.is_empty());
+            let translucent = drawing(
+                1,
+                Shape::Circle {
+                    center,
+                    radius: 2000.0,
+                },
+                Style::filled(Color::rgba(1.0, 0.0, 0.0, 0.4)),
+            );
+            let opaque = drawing(
+                2,
+                Shape::Circle {
+                    center,
+                    radius: 2000.0,
+                },
+                Style::filled(Color::rgb(0.0, 1.0, 0.0)),
+            );
+            let only_translucent = build(ctx, std::slice::from_ref(&translucent));
+            assert!(
+                only_translucent.world.opaque.is_empty()
+                    && !only_translucent.world.blend.is_empty()
+            );
             let only_opaque = build(ctx, &[opaque]);
             assert!(!only_opaque.world.opaque.is_empty() && only_opaque.world.blend.is_empty());
             assert!(only_opaque.view.opaque.is_empty() && only_opaque.screen.is_empty());
@@ -987,9 +1372,29 @@ mod tests {
         with_ctx((800.0, 600.0), |ctx| {
             let world = Position::world(ORIGIN.lat_deg, ORIGIN.lon_deg, Altitude::Msl(0.0));
             let screen = Position::screen(Corner::TopLeft, 10.0, 10.0);
-            let mixed = drawing(1, Shape::Polygon { points: vec![world, screen, world] }, Style::default());
-            let solid_on_screen = drawing(2, Shape::Sphere { center: screen, radius: 10.0 }, Style::default());
-            let mut hidden = drawing(3, Shape::Circle { center: world, radius: 100.0 }, Style::default());
+            let mixed = drawing(
+                1,
+                Shape::Polygon {
+                    points: vec![world, screen, world],
+                },
+                Style::default(),
+            );
+            let solid_on_screen = drawing(
+                2,
+                Shape::Sphere {
+                    center: screen,
+                    radius: 10.0,
+                },
+                Style::default(),
+            );
+            let mut hidden = drawing(
+                3,
+                Shape::Circle {
+                    center: world,
+                    radius: 100.0,
+                },
+                Style::default(),
+            );
             hidden.visible = false;
             let batches = build(ctx, &[mixed, solid_on_screen, hidden]);
             assert!(batches.world.opaque.is_empty() && batches.world.blend.is_empty());
@@ -1008,7 +1413,10 @@ mod tests {
             ];
             let batches = build(ctx, &[drawing(1, Shape::Polyline { points }, stroke)]);
             assert_eq!(batches.screen.len(), 2 * 6);
-            assert!(batches.screen.iter().all(|v| v.params[0] == 3.0 && v.params[1].abs() == 1.0));
+            assert!(batches
+                .screen
+                .iter()
+                .all(|v| v.params[0] == 3.0 && v.params[1].abs() == 1.0));
             // 端点は「この端点」と「反対側」で対になっている(片側の頂点の反対側は、もう片側の位置)。
             let a = &batches.screen[0];
             assert_eq!(a.position, [0.0, 0.0, 0.0]);
@@ -1021,10 +1429,23 @@ mod tests {
         with_ctx((800.0, 600.0), |ctx| {
             // 右下の角から(-100,-50)内側へ寄せた位置に置いた、幅40・高さ20の矩形。
             let center = Position::screen(Corner::BottomRight, -100.0, -50.0);
-            let rect = drawing(1, Shape::Rect { center, width: 40.0, height: 20.0, rotation_deg: 0.0 }, Style::filled(Color::rgb(1.0, 1.0, 1.0)));
+            let rect = drawing(
+                1,
+                Shape::Rect {
+                    center,
+                    width: 40.0,
+                    height: 20.0,
+                    rotation_deg: 0.0,
+                },
+                Style::filled(Color::rgb(1.0, 1.0, 1.0)),
+            );
             let screen = build(ctx, &[rect]).screen;
-            let (min_x, max_x) = screen.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v.position[0]), hi.max(v.position[0])));
-            let (min_y, max_y) = screen.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v.position[1]), hi.max(v.position[1])));
+            let (min_x, max_x) = screen.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| {
+                (lo.min(v.position[0]), hi.max(v.position[0]))
+            });
+            let (min_y, max_y) = screen.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| {
+                (lo.min(v.position[1]), hi.max(v.position[1]))
+            });
             assert_eq!((min_x, max_x, min_y, max_y), (680.0, 720.0, 540.0, 560.0));
         });
     }
@@ -1034,7 +1455,14 @@ mod tests {
         with_ctx((800.0, 600.0), |ctx| {
             // カメラの右に2m・上に1m・前方10mの球。視点空間では前方は-z。
             let center = Position::view(2.0, 1.0, 10.0);
-            let sphere = drawing(1, Shape::Sphere { center, radius: 0.5 }, Style::filled(Color::rgb(1.0, 0.0, 0.0)));
+            let sphere = drawing(
+                1,
+                Shape::Sphere {
+                    center,
+                    radius: 0.5,
+                },
+                Style::filled(Color::rgb(1.0, 0.0, 0.0)),
+            );
             let view = build(ctx, &[sphere]).view.opaque;
             assert!(!view.is_empty());
             for v in &view {
@@ -1058,7 +1486,10 @@ mod tests {
         ];
         for solid in &solids {
             assert!(!solid.verts.is_empty() && !solid.indices.is_empty());
-            assert!(solid.indices.iter().all(|&i| (i as usize) < solid.verts.len()));
+            assert!(solid
+                .indices
+                .iter()
+                .all(|&i| (i as usize) < solid.verts.len()));
             for (_, n) in &solid.verts {
                 assert!(((n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() - 1.0).abs() < 1e-9);
             }
@@ -1071,11 +1502,24 @@ mod tests {
         with_ctx((800.0, 600.0), |ctx| {
             // 標高100mの地表(ground)に、地表から50mの高さを底面とする高さ200mの円柱。
             let base = Position::world(ORIGIN.lat_deg, ORIGIN.lon_deg, Altitude::AboveGround(50.0));
-            let cylinder = drawing(1, Shape::Cylinder { base_center: base, radius: 100.0, height: 200.0 }, Style::filled(Color::rgb(0.5, 0.5, 0.5)));
+            let cylinder = drawing(
+                1,
+                Shape::Cylinder {
+                    base_center: base,
+                    radius: 100.0,
+                    height: 200.0,
+                },
+                Style::filled(Color::rgb(0.5, 0.5, 0.5)),
+            );
             let world = build(ctx, &[cylinder]).world.opaque;
-            let (lo, hi) = world.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| (lo.min(v.position[2]), hi.max(v.position[2])));
+            let (lo, hi) = world.iter().fold((f32::MAX, f32::MIN), |(lo, hi), v| {
+                (lo.min(v.position[2]), hi.max(v.position[2]))
+            });
             // 原点の真上なのでENUの上=楕円体高。底面150m〜上面350m(法線方向の丸みは100mの半径で0.8mほど)。
-            assert!((lo - 150.0).abs() < 2.0 && (hi - 350.0).abs() < 2.0, "lo={lo} hi={hi}");
+            assert!(
+                (lo - 150.0).abs() < 2.0 && (hi - 350.0).abs() < 2.0,
+                "lo={lo} hi={hi}"
+            );
         });
     }
 
@@ -1085,17 +1529,35 @@ mod tests {
             let at = |altitude| Position::world(ORIGIN.lat_deg, ORIGIN.lon_deg, altitude);
             let style = Style::filled(Color::rgb(1.0, 1.0, 1.0));
             let heights = |altitude| {
-                let d = drawing(1, Shape::Circle { center: at(altitude), radius: 1000.0 }, style);
-                let mut z: Vec<f32> = build(ctx, &[d]).world.opaque.iter().map(|v| v.position[2]).collect();
+                let d = drawing(
+                    1,
+                    Shape::Circle {
+                        center: at(altitude),
+                        radius: 1000.0,
+                    },
+                    style,
+                );
+                let mut z: Vec<f32> = build(ctx, &[d])
+                    .world
+                    .opaque
+                    .iter()
+                    .map(|v| v.position[2])
+                    .collect();
                 z.sort_by(f32::total_cmp);
                 (z[0], *z.last().unwrap())
             };
             // 地表(標高100m)+0mの貼り付けは、標高+バイアス(15m)の高さ(1km先で丸みが0.08m下がる)。
             let (lo, hi) = heights(Altitude::AboveGround(0.0));
-            assert!((lo - 115.0).abs() < 0.5 && (hi - 115.0).abs() < 0.5, "lo={lo} hi={hi}");
+            assert!(
+                (lo - 115.0).abs() < 0.5 && (hi - 115.0).abs() < 0.5,
+                "lo={lo} hi={hi}"
+            );
             // 海抜の水平面は、指定した楕円体高そのもの。
             let (lo, hi) = heights(Altitude::Msl(500.0));
-            assert!((lo - 500.0).abs() < 0.5 && (hi - 500.0).abs() < 0.5, "lo={lo} hi={hi}");
+            assert!(
+                (lo - 500.0).abs() < 0.5 && (hi - 500.0).abs() < 0.5,
+                "lo={lo} hi={hi}"
+            );
         });
     }
 
@@ -1117,7 +1579,7 @@ mod tests {
     fn triangle_areas(tris: &[[f64; 2]]) -> (f64, bool) {
         let mut sum = 0.0;
         let mut all_ccw = true;
-        for t in tris.chunks_exact(3) {
+        for t in tris.as_chunks::<3>().0 {
             let a = orient(t[0], t[1], t[2]) * 0.5;
             sum += a;
             all_ccw &= a >= 0.0;
@@ -1128,7 +1590,14 @@ mod tests {
     #[test]
     fn triangulate_handles_both_orientations_and_concave_shapes() {
         // L字(凹)。反時計回りでも時計回りでも、面積の和は多角形の面積(3)に等しく、三角形は反時計回り。
-        let l_shape = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], [0.0, 2.0]];
+        let l_shape = [
+            [0.0, 0.0],
+            [2.0, 0.0],
+            [2.0, 1.0],
+            [1.0, 1.0],
+            [1.0, 2.0],
+            [0.0, 2.0],
+        ];
         let mut reversed = l_shape;
         reversed.reverse();
         for poly in [l_shape, reversed] {

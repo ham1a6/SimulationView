@@ -15,10 +15,14 @@ use glam::{Mat4, Vec3};
 /// (`ViewMode`参照)。
 #[derive(Debug, Clone, Copy)]
 pub enum Projection {
-    Perspective { fov_y_radians: f32 },
+    Perspective {
+        fov_y_radians: f32,
+    },
     /// `view_height_m`: 画面の縦幅が表すワールド空間上の高さ(メートル)。
     /// ズームレベルに相当する(2Dモードでは`OrbitCamera::distance`をそのまま使う)。
-    Orthographic { view_height_m: f32 },
+    Orthographic {
+        view_height_m: f32,
+    },
 }
 
 /// レンダラーに渡す、計算済みのカメラ(視点位置・注視点・レンズ設定)。
@@ -129,12 +133,18 @@ impl Camera {
             Projection::Perspective { fov_y_radians } => {
                 let half_h = (fov_y_radians * 0.5).tan();
                 let half_w = half_h * self.aspect;
-                (self.eye, forward + right * (ndc_x * half_w) + up * (ndc_y * half_h))
+                (
+                    self.eye,
+                    forward + right * (ndc_x * half_w) + up * (ndc_y * half_h),
+                )
             }
             Projection::Orthographic { view_height_m } => {
                 let half_h = view_height_m * 0.5;
                 let half_w = half_h * self.aspect;
-                (self.eye + right * (ndc_x * half_w) + up * (ndc_y * half_h), forward)
+                (
+                    self.eye + right * (ndc_x * half_w) + up * (ndc_y * half_h),
+                    forward,
+                )
             }
         }
     }
@@ -306,7 +316,11 @@ impl OrbitCamera {
         let eye = self.eye();
         let min_z = ground_up(eye.x, eye.y) + MIN_EYE_CLEARANCE_M;
         if eye.z < min_z {
-            let offset = Vec3::new(eye.x - self.target.x, eye.y - self.target.y, min_z - self.target.z);
+            let offset = Vec3::new(
+                eye.x - self.target.x,
+                eye.y - self.target.y,
+                min_z - self.target.z,
+            );
             let distance = offset.length();
             self.pitch = (offset.z / distance).asin().clamp(MIN_PITCH, MAX_PITCH);
             self.distance = distance.clamp(MIN_DISTANCE, MAX_DISTANCE);
@@ -330,7 +344,9 @@ impl OrbitCamera {
                 eye: self.eye(),
                 target: self.target,
                 up: Vec3::Z,
-                projection: Projection::Perspective { fov_y_radians: self.fov_y_radians },
+                projection: Projection::Perspective {
+                    fov_y_radians: self.fov_y_radians,
+                },
                 aspect,
                 z_near: self.z_near,
                 z_far: self.z_far,
@@ -340,7 +356,9 @@ impl OrbitCamera {
                 eye: self.target + Vec3::new(0.0, 0.0, ORTHO_EYE_HEIGHT_M),
                 target: self.target,
                 up: Vec3::Y,
-                projection: Projection::Orthographic { view_height_m: self.distance },
+                projection: Projection::Orthographic {
+                    view_height_m: self.distance,
+                },
                 aspect,
                 z_near: 1.0,
                 z_far: ORTHO_EYE_HEIGHT_M + ORTHO_DEPTH_RANGE_M,
@@ -374,7 +392,10 @@ mod tests {
         assert!((depth_at(&c, c.z_near) - 1.0).abs() < 1e-3);
         assert!(depth_at(&c, c.z_far).abs() < 1e-3);
         // 遠いほど小さく、遠方でも(f32の)値が潰れず単調に減る。
-        let depths: Vec<f32> = [10.0, 100.0, 1e4, 1e5, 1e6, 4e6].iter().map(|&d| depth_at(&c, d)).collect();
+        let depths: Vec<f32> = [10.0, 100.0, 1e4, 1e5, 1e6, 4e6]
+            .iter()
+            .map(|&d| depth_at(&c, d))
+            .collect();
         assert!(depths.windows(2).all(|w| w[0] > w[1]), "{depths:?}");
     }
 
@@ -392,7 +413,13 @@ mod tests {
     // ピッキング(`pick.rs`)と描画の座標系がずれていないことの確認。
     #[test]
     fn screen_to_ray_is_consistent_with_the_projection() {
-        let pixels = [(0.0, 0.0), (350.0, 350.0), (700.0, 700.0), (123.0, 456.0), (600.0, 50.0)];
+        let pixels = [
+            (0.0, 0.0),
+            (350.0, 350.0),
+            (700.0, 700.0),
+            (123.0, 456.0),
+            (600.0, 50.0),
+        ];
         for c in [
             cam(ViewMode::ThreeD, 30_000.0),
             cam(ViewMode::ThreeD, 400_000.0),
@@ -405,8 +432,14 @@ mod tests {
                 let clip = vp * (origin + dir * 1000.0).extend(1.0);
                 let (ndc_x, ndc_y) = (clip.x / clip.w, clip.y / clip.w);
                 let (want_x, want_y) = (x / 700.0 * 2.0 - 1.0, 1.0 - y / 700.0 * 2.0);
-                assert!((ndc_x - want_x).abs() < 2e-3, "({x},{y}): {ndc_x} vs {want_x}");
-                assert!((ndc_y - want_y).abs() < 2e-3, "({x},{y}): {ndc_y} vs {want_y}");
+                assert!(
+                    (ndc_x - want_x).abs() < 2e-3,
+                    "({x},{y}): {ndc_x} vs {want_x}"
+                );
+                assert!(
+                    (ndc_y - want_y).abs() < 2e-3,
+                    "({x},{y}): {ndc_y} vs {want_y}"
+                );
             }
             // 画面中央のレイは視線方向(正射影なら視点が中心から動かない)。
             let (origin, dir) = c.screen_to_ray(350.0, 350.0, 700.0, 700.0);
@@ -418,7 +451,10 @@ mod tests {
 
     #[test]
     fn water_ray_basis_matches_screen_to_ray() {
-        for c in [cam(ViewMode::ThreeD, 400_000.0), cam(ViewMode::TwoD, 100_000.0)] {
+        for c in [
+            cam(ViewMode::ThreeD, 400_000.0),
+            cam(ViewMode::TwoD, 100_000.0),
+        ] {
             let [eye, forward, right, up] = c.water_ray_basis();
             let (eye, forward, right, up) = (
                 Vec3::from_slice(&eye[..3]),
@@ -439,7 +475,10 @@ mod tests {
             } else {
                 (eye + right * ndc_x + up * ndc_y, forward)
             };
-            assert!((dir - rebuilt_dir).length() < 1e-4 * dir.length().max(1.0), "{dir} vs {rebuilt_dir}");
+            assert!(
+                (dir - rebuilt_dir).length() < 1e-4 * dir.length().max(1.0),
+                "{dir} vs {rebuilt_dir}"
+            );
             assert!((origin - rebuilt_origin).length() < 1e-3 * origin.length().max(1.0));
         }
     }
@@ -494,7 +533,11 @@ mod tests {
         o.distance = 300.0;
         o.pitch = 0.5;
         o.keep_above_ground(|_, _| 500.0);
-        assert!(o.eye().z >= 500.0 + MIN_EYE_CLEARANCE_M - 1e-1, "{}", o.eye().z);
+        assert!(
+            o.eye().z >= 500.0 + MIN_EYE_CLEARANCE_M - 1e-1,
+            "{}",
+            o.eye().z
+        );
         assert!(o.pitch <= MAX_PITCH);
 
         // すでに十分上にあれば何も変えない。2Dモードは視点の高さが無関係なので何もしない。
@@ -502,7 +545,11 @@ mod tests {
         let mut o = before;
         o.keep_above_ground(|_, _| 0.0);
         assert_eq!((o.pitch, o.distance), (before.pitch, before.distance));
-        let mut o2d = OrbitCamera { mode: ViewMode::TwoD, pitch: -1.0, ..before };
+        let mut o2d = OrbitCamera {
+            mode: ViewMode::TwoD,
+            pitch: -1.0,
+            ..before
+        };
         o2d.keep_above_ground(|_, _| 1e9);
         assert_eq!(o2d.pitch, -1.0);
     }
@@ -511,7 +558,9 @@ mod tests {
     fn two_d_camera_looks_straight_down_with_north_up() {
         let c = cam(ViewMode::TwoD, 50_000.0);
         assert_eq!(c.up, Vec3::Y);
-        assert!(matches!(c.projection, Projection::Orthographic { view_height_m } if view_height_m == 50_000.0));
+        assert!(
+            matches!(c.projection, Projection::Orthographic { view_height_m } if view_height_m == 50_000.0)
+        );
         assert!((c.target - c.eye).normalize().dot(-Vec3::Z) > 0.9999);
         assert_eq!(c.z_far, ORTHO_EYE_HEIGHT_M + ORTHO_DEPTH_RANGE_M);
     }

@@ -17,6 +17,9 @@ pub struct OriginPickState {
 
 impl OriginPickState {
     pub fn new(on_pick: UnsyncCallback<(f64, f64)>) -> Self {
-        Self { active: RwSignal::new(false), on_pick }
+        Self {
+            active: RwSignal::new(false),
+            on_pick,
+        }
     }
 }

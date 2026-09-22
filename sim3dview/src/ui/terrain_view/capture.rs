@@ -19,11 +19,18 @@ use wasm_bindgen::{JsCast, JsValue};
 /// 現在のcanvasの内容をPNGとしてダウンロードする("sim3dview_20260922_153012.png")。
 pub(super) fn save_screenshot(canvas: &web_sys::HtmlCanvasElement) {
     let filename = format!("sim3dview_{}.png", timestamp());
-    let callback = Closure::once(move |blob: JsValue| match blob.dyn_into::<web_sys::Blob>() {
-        Ok(blob) => trigger_download(&blob, &filename),
-        Err(_) => log::warn!("[capture] スクリーンショットの生成に失敗しました(toBlobがBlobを返しませんでした)"),
-    });
-    if canvas.to_blob_with_type(callback.as_ref().unchecked_ref(), "image/png").is_err() {
+    let callback = Closure::once(
+        move |blob: JsValue| match blob.dyn_into::<web_sys::Blob>() {
+            Ok(blob) => trigger_download(&blob, &filename),
+            Err(_) => log::warn!(
+                "[capture] スクリーンショットの生成に失敗しました(toBlobがBlobを返しませんでした)"
+            ),
+        },
+    );
+    if canvas
+        .to_blob_with_type(callback.as_ref().unchecked_ref(), "image/png")
+        .is_err()
+    {
         log::warn!("[capture] HTMLCanvasElement.toBlob の呼び出しに失敗しました");
     }
     callback.forget();
@@ -48,14 +55,22 @@ pub(super) fn start_recording(canvas: &web_sys::HtmlCanvasElement) -> Result<Rec
 
     // コーデックの対応状況はブラウザにより異なるため、対応しているものを順に試す
     // (どれも非対応ならオプション省略=ブラウザ既定のコーデックに任せる)。
-    const MIME_CANDIDATES: [&str; 3] = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
-    let mime_type = MIME_CANDIDATES.into_iter().find(|mime| web_sys::MediaRecorder::is_type_supported(mime));
+    const MIME_CANDIDATES: [&str; 3] = [
+        "video/webm;codecs=vp9",
+        "video/webm;codecs=vp8",
+        "video/webm",
+    ];
+    let mime_type = MIME_CANDIDATES
+        .into_iter()
+        .find(|mime| web_sys::MediaRecorder::is_type_supported(mime));
 
     let recorder = match mime_type {
         Some(mime) => {
             let opts = web_sys::MediaRecorderOptions::new();
             opts.set_mime_type(mime);
-            web_sys::MediaRecorder::new_with_media_stream_and_media_recorder_options(&stream, &opts)?
+            web_sys::MediaRecorder::new_with_media_stream_and_media_recorder_options(
+                &stream, &opts,
+            )?
         }
         None => web_sys::MediaRecorder::new_with_media_stream(&stream)?,
     };
@@ -84,7 +99,8 @@ fn trigger_download(blob: &web_sys::Blob, filename: &str) {
     (|| -> Option<()> {
         let document = web_sys::window()?.document()?;
         let body = document.body()?;
-        let anchor: web_sys::HtmlAnchorElement = document.create_element("a").ok()?.dyn_into().ok()?;
+        let anchor: web_sys::HtmlAnchorElement =
+            document.create_element("a").ok()?.dyn_into().ok()?;
         anchor.set_href(&url);
         anchor.set_download(filename);
         body.append_child(&anchor).ok()?;

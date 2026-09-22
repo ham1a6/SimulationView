@@ -10,7 +10,9 @@ use leptos::prelude::*;
 
 use super::{frame::render_frame, overlay::rebuild_tracks, state::*};
 use crate::terrain::fetch::fetch_binary;
-use crate::terrain::models::placement::{plan_models, DisplaySettings, ModelPlacement, ViewMetrics};
+use crate::terrain::models::placement::{
+    plan_models, DisplaySettings, ModelPlacement, ViewMetrics,
+};
 use crate::terrain::models::{import_glb, ModelDisplayMode, ModelsState};
 use crate::terrain::tracks::TrackId;
 
@@ -18,7 +20,9 @@ use crate::terrain::tracks::TrackId;
 enum ModelLoad {
     Loading,
     /// 読み込んでGPUへ登録済み。`radius_m`はモデルの実寸の半径(`source.scale`を掛ける前)。
-    Ready { radius_m: f32 },
+    Ready {
+        radius_m: f32,
+    },
     /// 取得・解析に失敗した(同じ取得を繰り返さないよう覚えておく。そのモデルのトラックはシンボルで描く)。
     Failed,
 }
@@ -36,7 +40,12 @@ pub(super) struct ModelsView {
 
 impl ModelsView {
     pub(super) fn new(state: ModelsState) -> Self {
-        Self { state, loads: HashMap::new(), placements: Vec::new(), shown: HashSet::new() }
+        Self {
+            state,
+            loads: HashMap::new(),
+            placements: Vec::new(),
+            shown: HashSet::new(),
+        }
     }
 }
 
@@ -59,7 +68,13 @@ pub(super) fn update_models(state: &Rc<RefCell<ViewState>>) {
 
         // 登録から外れた(URLが変わった・種別の登録が消えた)モデルは、GPUから外す。
         let wanted: HashSet<&str> = sources.values().map(|source| source.url.as_str()).collect();
-        let stale: Vec<String> = s.models.loads.keys().filter(|url| !wanted.contains(url.as_str())).cloned().collect();
+        let stale: Vec<String> = s
+            .models
+            .loads
+            .keys()
+            .filter(|url| !wanted.contains(url.as_str()))
+            .cloned()
+            .collect();
         for url in stale {
             s.models.loads.remove(&url);
             renderer.remove_model(&url);
@@ -69,9 +84,13 @@ pub(super) fn update_models(state: &Rc<RefCell<ViewState>>) {
         let mut to_load: Vec<String> = Vec::new();
         if settings.mode != ModelDisplayMode::Off {
             for placement in &s.models.placements {
-                let Some(source) = sources.get(&placement.kind) else { continue };
+                let Some(source) = sources.get(&placement.kind) else {
+                    continue;
+                };
                 if !s.models.loads.contains_key(&source.url) {
-                    s.models.loads.insert(source.url.clone(), ModelLoad::Loading);
+                    s.models
+                        .loads
+                        .insert(source.url.clone(), ModelLoad::Loading);
                     to_load.push(source.url.clone());
                 }
             }
@@ -84,7 +103,14 @@ pub(super) fn update_models(state: &Rc<RefCell<ViewState>>) {
             Some(ModelLoad::Ready { radius_m }) => Some(*radius_m),
             _ => None,
         };
-        let plan = plan_models(&s.models.placements, &sources, &radius_of, settings, &metrics, &s.models.shown);
+        let plan = plan_models(
+            &s.models.placements,
+            &sources,
+            &radius_of,
+            settings,
+            &metrics,
+            &s.models.shown,
+        );
         renderer.update_model_instances(&plan.instances);
         let changed = plan.shown != s.models.shown;
         s.models.shown = plan.shown;
@@ -116,7 +142,9 @@ async fn load_model(state: Rc<RefCell<ViewState>>, url: String) {
         let load = match (result, s.renderer.as_mut()) {
             (Ok(mesh), Some(renderer)) => {
                 renderer.set_model(&url, &mesh);
-                ModelLoad::Ready { radius_m: mesh.radius_m }
+                ModelLoad::Ready {
+                    radius_m: mesh.radius_m,
+                }
             }
             (Err(e), _) => {
                 log::warn!("[models] {url}を読み込めません(シンボルで描きます): {e}");

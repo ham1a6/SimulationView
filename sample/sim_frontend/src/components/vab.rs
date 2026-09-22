@@ -55,12 +55,18 @@ const BOTTOM_COLS: usize = 4;
 
 /// 選択中カテゴリの中段ボタン1個ぶんのダミーラベル・id。
 fn mid_button(category_label: &str, index: usize) -> (String, String) {
-    (format!("{category_label}-{}", index + 1), format!("vab_dummy_mid_{index}"))
+    (
+        format!("{category_label}-{}", index + 1),
+        format!("vab_dummy_mid_{index}"),
+    )
 }
 
 /// 選択中カテゴリの下段ボタン1個ぶんのダミーラベル・id。
 fn bottom_button(category_label: &str, index: usize) -> (String, String) {
-    (format!("{category_label}A{}", index + 1), format!("vab_dummy_bottom_{index}"))
+    (
+        format!("{category_label}A{}", index + 1),
+        format!("vab_dummy_bottom_{index}"),
+    )
 }
 
 #[component]

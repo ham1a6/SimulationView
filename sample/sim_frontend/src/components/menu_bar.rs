@@ -45,8 +45,7 @@ pub fn MenuBar() -> impl IntoView {
     let open_menu = RwSignal::new(None::<MenuId>);
     let origin_dialog =
         use_context::<OriginDialogState>().expect("OriginDialogState context not found");
-    let origin_pick =
-        use_context::<OriginPickState>().expect("OriginPickState context not found");
+    let origin_pick = use_context::<OriginPickState>().expect("OriginPickState context not found");
     let coverage_altitude_dialog = use_context::<CoverageAltitudeDialogState>()
         .expect("CoverageAltitudeDialogState context not found");
     let recenter_request =
@@ -57,8 +56,8 @@ pub fn MenuBar() -> impl IntoView {
         use_context::<DrawingWindowState>().expect("DrawingWindowState context not found");
     let origin = use_context::<OriginState>().expect("OriginState context not found");
     let tracks = use_context::<TracksState>().expect("TracksState context not found");
-    let model_settings =
-        use_context::<ModelSettingsDialogState>().expect("ModelSettingsDialogState context not found");
+    let model_settings = use_context::<ModelSettingsDialogState>()
+        .expect("ModelSettingsDialogState context not found");
     // 「作図デモ」で追加した図形のID(表示中なら空でない。ライブラリの作図一覧を出し入れするだけで、
     // ライブラリ側にこの状態はない。消すときはこのIDだけを消し、ユーザーが作った図形は残す)。
     let drawing_demo_ids = RwSignal::new(Vec::<DrawingId>::new());

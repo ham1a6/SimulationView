@@ -15,8 +15,7 @@ use crate::terrain::models::types::{ModelInstance, ModelMesh, ModelVertex};
 pub(super) const MODEL_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
     wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x4];
 /// インスタンス(`ModelInstance`)のシェーダー入力(location 3〜7。行列の4列と色)。
-pub(super) const MODEL_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] =
-    wgpu::vertex_attr_array![3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
+pub(super) const MODEL_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 5] = wgpu::vertex_attr_array![3 => Float32x4, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4];
 
 /// インスタンスバッファの最小の容量(個)。
 const MIN_INSTANCE_CAPACITY: usize = 16;
@@ -85,7 +84,10 @@ impl ModelBatch {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             // 裏面カリングは使わない(両面のモデルがある。パイプライン共通の設定と同じ)。
-            primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
+            primitive: wgpu::PrimitiveState {
+                cull_mode: None,
+                ..Default::default()
+            },
             // 不透明なので深度を書く。反転Zなので「より近ければ描く」はGreater。
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
@@ -94,11 +96,17 @@ impl ModelBatch {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState { count: SAMPLE_COUNT, ..Default::default() },
+            multisample: wgpu::MultisampleState {
+                count: SAMPLE_COUNT,
+                ..Default::default()
+            },
             multiview_mask: None,
             cache: None,
         });
-        Self { pipeline, models: HashMap::new() }
+        Self {
+            pipeline,
+            models: HashMap::new(),
+        }
     }
 
     /// モデルを登録する(同じキーがあれば置き換える。インスタンスは空になる)。
@@ -151,7 +159,8 @@ impl ModelBatch {
                 model.capacity = list.len().next_power_of_two().max(MIN_INSTANCE_CAPACITY);
                 model.instance_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
                     label: Some("model_instance_buffer"),
-                    size: (model.capacity * std::mem::size_of::<ModelInstance>()) as wgpu::BufferAddress,
+                    size: (model.capacity * std::mem::size_of::<ModelInstance>())
+                        as wgpu::BufferAddress,
                     usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
                     mapped_at_creation: false,
                 }));
@@ -174,7 +183,9 @@ impl ModelBatch {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, space.bind_group(), &[]);
         for model in self.models.values().filter(|m| m.count > 0) {
-            let Some(instances) = model.instance_buffer.as_ref() else { continue };
+            let Some(instances) = model.instance_buffer.as_ref() else {
+                continue;
+            };
             pass.set_vertex_buffer(0, model.vertex_buffer.slice(..));
             pass.set_vertex_buffer(1, instances.slice(..));
             pass.set_index_buffer(model.index_buffer.slice(..), wgpu::IndexFormat::Uint32);

@@ -6,15 +6,15 @@ use std::rc::Rc;
 
 use leptos::prelude::*;
 
+use super::{labels::*, lod_driver::*, models::update_models, overlay::*, state::*};
+use crate::terrain::geodesy::EnuTransform;
+use crate::terrain::heightmap;
 use crate::terrain::loader::{TerrainData, WHOLE_TILE};
 use crate::terrain::lod::TileLayout;
 use crate::terrain::markers::RadarMarkersState;
-use crate::terrain::geodesy::EnuTransform;
-use crate::terrain::heightmap;
 use crate::terrain::mesh;
 use crate::terrain::origin::{Origin, OriginState};
 use crate::terrain::renderer::TerrainRenderer;
-use super::{labels::*, lod_driver::*, models::update_models, overlay::*, state::*};
 
 /// 現在の状態でレンダラーを構築できるなら構築する。
 /// canvasのサイズ確定(ResizeObserver)と地形データ取得(TerrainStore)は非同期かつ独立して
@@ -49,7 +49,8 @@ pub(super) fn try_init(
     });
     // 注視点は原点の実際の地表標高に置く(Vec3::ZEROのままだと、原点が高山の
     // 斜面にある場合にズームインした際カメラが地面に埋まって真っ黒になる)。
-    let target_up = heightmap::sample_heightmap(&data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0);
+    let target_up =
+        heightmap::sample_heightmap(&data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0);
 
     wasm_bindgen_futures::spawn_local(async move {
         match TerrainRenderer::new(canvas).await {

@@ -15,7 +15,7 @@ pub(super) struct DrawUniform {
 }
 
 /// 絶対座標の作図の光源。地形の陰影(`terrain.wgsl`の`LIGHT_DIR`)と同じ、北西・仰角45度(ENU座標)。
-pub(super) const WORLD_DRAW_LIGHT: [f32; 4] = [-0.5, 0.5, 0.707_106_8, 0.0];
+pub(super) const WORLD_DRAW_LIGHT: [f32; 4] = [-0.5, 0.5, std::f32::consts::FRAC_1_SQRT_2, 0.0];
 /// カメラ固定(視点空間)の作図の光源。カメラから見て左上手前から当てる(x右・y上・z手前)。
 pub(super) const VIEW_DRAW_LIGHT: [f32; 4] = [-0.348, 0.497, 0.795, 0.0];
 
@@ -103,6 +103,9 @@ pub(super) fn uniform_bind_group(
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some(label),
         layout,
-        entries: &[wgpu::BindGroupEntry { binding: 0, resource: buffer.as_entire_binding() }],
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
     })
 }

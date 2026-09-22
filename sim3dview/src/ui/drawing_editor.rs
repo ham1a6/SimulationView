@@ -61,7 +61,11 @@ fn hex_rgb(s: &str) -> Option<(f32, f32, f32)> {
     if s.len() != 6 || !s.is_ascii() {
         return None;
     }
-    let channel = |i: usize| u8::from_str_radix(&s[i..i + 2], 16).ok().map(|v| f32::from(v) / 255.0);
+    let channel = |i: usize| {
+        u8::from_str_radix(&s[i..i + 2], 16)
+            .ok()
+            .map(|v| f32::from(v) / 255.0)
+    };
     Some((channel(0)?, channel(2)?, channel(4)?))
 }
 
@@ -232,19 +236,25 @@ enum Param {
 fn params(shape: &Shape) -> &'static [(Param, &'static str, &'static str)] {
     match shape {
         Shape::Circle { .. } | Shape::Sphere { .. } => &[(Param::Radius, "半径", "m")],
-        Shape::Rect { .. } => {
-            &[(Param::Width, "幅(東西)", "m"), (Param::Height, "高さ(南北)", "m"), (Param::Rotation, "回転", "°")]
-        }
-        Shape::Sector { .. } => {
-            &[(Param::Radius, "半径", "m"), (Param::StartDeg, "開始方位", "°"), (Param::EndDeg, "終了方位", "°")]
-        }
+        Shape::Rect { .. } => &[
+            (Param::Width, "幅(東西)", "m"),
+            (Param::Height, "高さ(南北)", "m"),
+            (Param::Rotation, "回転", "°"),
+        ],
+        Shape::Sector { .. } => &[
+            (Param::Radius, "半径", "m"),
+            (Param::StartDeg, "開始方位", "°"),
+            (Param::EndDeg, "終了方位", "°"),
+        ],
         Shape::Cuboid { .. } => &[
             (Param::SizeEw, "幅(東西)", "m"),
             (Param::SizeNs, "奥行(南北)", "m"),
             (Param::SizeUp, "高さ", "m"),
             (Param::Heading, "方位", "°"),
         ],
-        Shape::Cylinder { .. } | Shape::Cone { .. } => &[(Param::Radius, "半径", "m"), (Param::Height, "高さ", "m")],
+        Shape::Cylinder { .. } | Shape::Cone { .. } => {
+            &[(Param::Radius, "半径", "m"), (Param::Height, "高さ", "m")]
+        }
         Shape::Polygon { .. } | Shape::Polyline { .. } => &[],
     }
 }
@@ -260,9 +270,12 @@ fn param_get(shape: &Shape, param: Param) -> f64 {
             Param::Radius,
         ) => *radius,
         (Shape::Rect { width, .. }, Param::Width) => *width,
-        (Shape::Rect { height, .. } | Shape::Cylinder { height, .. } | Shape::Cone { height, .. }, Param::Height) => {
-            *height
-        }
+        (
+            Shape::Rect { height, .. }
+            | Shape::Cylinder { height, .. }
+            | Shape::Cone { height, .. },
+            Param::Height,
+        ) => *height,
         (Shape::Rect { rotation_deg, .. }, Param::Rotation) => *rotation_deg,
         (Shape::Sector { start_deg, .. }, Param::StartDeg) => *start_deg,
         (Shape::Sector { end_deg, .. }, Param::EndDeg) => *end_deg,
@@ -287,9 +300,12 @@ fn param_set(shape: &mut Shape, param: Param, v: f64) {
             Param::Radius,
         ) => *radius = size,
         (Shape::Rect { width, .. }, Param::Width) => *width = size,
-        (Shape::Rect { height, .. } | Shape::Cylinder { height, .. } | Shape::Cone { height, .. }, Param::Height) => {
-            *height = size
-        }
+        (
+            Shape::Rect { height, .. }
+            | Shape::Cylinder { height, .. }
+            | Shape::Cone { height, .. },
+            Param::Height,
+        ) => *height = size,
         (Shape::Rect { rotation_deg, .. }, Param::Rotation) => *rotation_deg = v,
         (Shape::Sector { start_deg, .. }, Param::StartDeg) => *start_deg = v,
         (Shape::Sector { end_deg, .. }, Param::EndDeg) => *end_deg = v,
@@ -304,14 +320,19 @@ fn param_set(shape: &mut Shape, param: Param, v: f64) {
 /// 位置`index`の(緯度, 経度)。
 fn position_get(shape: &Shape, index: usize) -> (f64, f64) {
     match shape.positions().get(index) {
-        Some(Position::World { lat_deg, lon_deg, .. }) => (*lat_deg, *lon_deg),
+        Some(Position::World {
+            lat_deg, lon_deg, ..
+        }) => (*lat_deg, *lon_deg),
         _ => (0.0, 0.0),
     }
 }
 
 /// 位置`index`の緯度・経度を書き換える(`None`の側は変えない)。
 fn position_set(shape: &mut Shape, index: usize, lat: Option<f64>, lon: Option<f64>) {
-    if let Some(Position::World { lat_deg, lon_deg, .. }) = shape.positions_mut().get_mut(index) {
+    if let Some(Position::World {
+        lat_deg, lon_deg, ..
+    }) = shape.positions_mut().get_mut(index)
+    {
         if let Some(lat) = lat {
             *lat_deg = lat.clamp(-90.0, 90.0);
         }
@@ -337,7 +358,9 @@ fn kind_tag(shape: &Shape) -> u8 {
 }
 
 fn with_shape<R>(tool: DrawToolState, id: DrawingId, f: impl FnOnce(&Shape) -> R) -> Option<R> {
-    tool.drawings.items.with(|items| items.iter().find(|d| d.id == id).map(|d| f(&d.shape)))
+    tool.drawings
+        .items
+        .with(|items| items.iter().find(|d| d.id == id).map(|d| f(&d.shape)))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -387,7 +410,14 @@ fn shape_form(tool: DrawToolState, id: DrawingId) -> AnyView {
         })
         .collect_view();
 
-    let name = move || tool.shapes.with(|list| list.iter().find(|u| u.id == id).map(|u| u.name.clone()).unwrap_or_default());
+    let name = move || {
+        tool.shapes.with(|list| {
+            list.iter()
+                .find(|u| u.id == id)
+                .map(|u| u.name.clone())
+                .unwrap_or_default()
+        })
+    };
     let altitude_get = move || {
         with_shape(tool, id, |s| match s.positions().first() {
             Some(Position::World { altitude, .. }) => *altitude,
@@ -405,7 +435,13 @@ fn shape_form(tool: DrawToolState, id: DrawingId) -> AnyView {
         });
     };
     let style_get = move || {
-        tool.drawings.items.with(|items| items.iter().find(|d| d.id == id).map(|d| d.style).unwrap_or_default())
+        tool.drawings.items.with(|items| {
+            items
+                .iter()
+                .find(|d| d.id == id)
+                .map(|d| d.style)
+                .unwrap_or_default()
+        })
     };
     let style_set = move |style: Style| tool.update_shape(id, |d| d.style = style);
 
@@ -454,7 +490,9 @@ pub fn DrawingEditor() -> impl IntoView {
     // 一覧の行は「作った図形の一覧(追加・削除・改名)」でだけ作り直す。図形の中身の変化(編集や、作成中の
     // 仮の図形の更新)では作り直さない(入力中のフォーカスが外れるため)。表示/非表示は行の中で読む。
     let visible_of = move |id: DrawingId| {
-        tool.drawings.items.with(|items| items.iter().find(|d| d.id == id).is_none_or(|d| d.visible))
+        tool.drawings
+            .items
+            .with(|items| items.iter().find(|d| d.id == id).is_none_or(|d| d.visible))
     };
     // 一覧の行の右クリックメニュー(`ContextMenuState`が提供されていれば)。
     let context_menu = use_context::<ContextMenuState>();
@@ -475,17 +513,30 @@ pub fn DrawingEditor() -> impl IntoView {
                         request_animation_frame(|| {
                             let input = web_sys::window()
                                 .and_then(|w| w.document())
-                                .and_then(|d| d.query_selector(".drawing-form .drawing-name input").ok().flatten())
-                                .and_then(|el| wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlElement>(el).ok());
+                                .and_then(|d| {
+                                    d.query_selector(".drawing-form .drawing-name input")
+                                        .ok()
+                                        .flatten()
+                                })
+                                .and_then(|el| {
+                                    wasm_bindgen::JsCast::dyn_into::<web_sys::HtmlElement>(el).ok()
+                                });
                             if let Some(input) = input {
                                 let _ = input.focus();
                             }
                         });
                     }),
                     MenuItem::action("複製", move || tool.duplicate(id)),
-                    MenuItem::action(if visible { "非表示にする" } else { "表示する" }, move || {
-                        tool.update_shape(id, |d| d.visible = !visible);
-                    }),
+                    MenuItem::action(
+                        if visible {
+                            "非表示にする"
+                        } else {
+                            "表示する"
+                        },
+                        move || {
+                            tool.update_shape(id, |d| d.visible = !visible);
+                        },
+                    ),
                     MenuItem::separator(),
                     MenuItem::action("削除", move || tool.remove(id)),
                 ],
@@ -524,14 +575,20 @@ pub fn DrawingEditor() -> impl IntoView {
     let form_key = Memo::new(move |_| {
         tool.selected.get().and_then(|id| {
             tool.drawings.items.with(|items| {
-                items.iter().find(|d| d.id == id).map(|d| (id, kind_tag(&d.shape), d.shape.positions().len()))
+                items
+                    .iter()
+                    .find(|d| d.id == id)
+                    .map(|d| (id, kind_tag(&d.shape), d.shape.positions().len()))
             })
         })
     });
 
     let on_remove_all = move |_| {
         let confirmed = web_sys::window()
-            .and_then(|w| w.confirm_with_message("作った図形をすべて削除しますか?").ok())
+            .and_then(|w| {
+                w.confirm_with_message("作った図形をすべて削除しますか?")
+                    .ok()
+            })
             // 確認ダイアログを出せない環境では、確認なしに全削除しない。
             .unwrap_or(false);
         if confirmed {

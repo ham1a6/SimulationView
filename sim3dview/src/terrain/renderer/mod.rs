@@ -162,7 +162,12 @@ impl TerrainRenderer {
 
         let shader = terrain_shader(&device);
         let targets = RenderTargets::new(&device, config.format, width, height);
-        let downsample = Downsample::new(&device, &shader, config.format, &targets.supersample_color_view);
+        let downsample = Downsample::new(
+            &device,
+            &shader,
+            config.format,
+            &targets.supersample_color_view,
+        );
 
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("camera_buffer"),
@@ -175,8 +180,12 @@ impl TerrainRenderer {
             "camera_bind_group_layout",
             wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
         );
-        let camera_bind_group =
-            uniform_bind_group(&device, "camera_bind_group", &camera_bind_group_layout, &camera_buffer);
+        let camera_bind_group = uniform_bind_group(
+            &device,
+            "camera_bind_group",
+            &camera_bind_group_layout,
+            &camera_buffer,
+        );
 
         let pipelines = Pipelines::new(&device, config.format, &shader, &camera_bind_group_layout);
         let fade_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -185,11 +194,27 @@ impl TerrainRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let fade_bind_group =
-            uniform_bind_group(&device, "fade_bind_group", &pipelines.fade_bind_group_layout, &fade_buffer);
-        let draw_world = DrawSpace::new(&device, &pipelines.draw_bind_group_layout, "draw_world_uniform");
-        let draw_view = DrawSpace::new(&device, &pipelines.draw_bind_group_layout, "draw_view_uniform");
-        let draw_screen = DrawSpace::new(&device, &pipelines.draw_bind_group_layout, "draw_screen_uniform");
+        let fade_bind_group = uniform_bind_group(
+            &device,
+            "fade_bind_group",
+            &pipelines.fade_bind_group_layout,
+            &fade_buffer,
+        );
+        let draw_world = DrawSpace::new(
+            &device,
+            &pipelines.draw_bind_group_layout,
+            "draw_world_uniform",
+        );
+        let draw_view = DrawSpace::new(
+            &device,
+            &pipelines.draw_bind_group_layout,
+            "draw_view_uniform",
+        );
+        let draw_screen = DrawSpace::new(
+            &device,
+            &pipelines.draw_bind_group_layout,
+            "draw_screen_uniform",
+        );
         let models = ModelBatch::new(&device, config.format, &pipelines.draw_bind_group_layout);
 
         Ok(Self {
@@ -228,11 +253,16 @@ impl TerrainRenderer {
     /// 作図(`terrain::drawing`)の頂点列を更新する。作図の一覧・原点・地形のLOD・canvasの大きさが
     /// 変わるたびに`drawing_geometry::build`で作り直して呼ぶ。
     pub fn update_drawings(&mut self, batches: &DrawingBatches) {
-        self.world_opaque.set(&self.device, "draw_world_opaque", &batches.world.opaque);
-        self.world_blend.set(&self.device, "draw_world_blend", &batches.world.blend);
-        self.view_opaque.set(&self.device, "draw_view_opaque", &batches.view.opaque);
-        self.view_blend.set(&self.device, "draw_view_blend", &batches.view.blend);
-        self.screen_batch.set(&self.device, "draw_screen", &batches.screen);
+        self.world_opaque
+            .set(&self.device, "draw_world_opaque", &batches.world.opaque);
+        self.world_blend
+            .set(&self.device, "draw_world_blend", &batches.world.blend);
+        self.view_opaque
+            .set(&self.device, "draw_view_opaque", &batches.view.opaque);
+        self.view_blend
+            .set(&self.device, "draw_view_blend", &batches.view.blend);
+        self.screen_batch
+            .set(&self.device, "draw_screen", &batches.screen);
     }
 
     /// canvasの内部解像度(ピクセル)。作図の画面座標(`Position::Screen`)の角の位置を決めるのに使う。
@@ -243,18 +273,21 @@ impl TerrainRenderer {
     /// レーダー観測点のマーカー(画面サイズ固定のピン)の頂点データを更新する。原点変更・マーカー追加/
     /// 削除/選択変更のたびに呼び直す想定(`terrain/markers.rs`が頂点データを作る)。
     pub fn update_markers(&mut self, vertices: &[DrawVertex]) {
-        self.markers.set(&self.device, "marker_vertex_buffer", vertices);
+        self.markers
+            .set(&self.device, "marker_vertex_buffer", vertices);
     }
 
     /// 2D地図モードの覆域(塗り+輪郭線)の頂点データを更新する。深度テストなしで描く(`terrain/markers.rs`)。
     pub fn update_coverage_2d(&mut self, vertices: &[DrawVertex]) {
-        self.coverage_2d.set(&self.device, "coverage_2d_vertex_buffer", vertices);
+        self.coverage_2d
+            .set(&self.device, "coverage_2d_vertex_buffer", vertices);
     }
 
     /// 航跡(トラック)の頂点データ(シンボル・航跡・高度線)を更新する。トラックの受信・原点変更・地形のLOD切り替え・
     /// 2D/3D切り替えのたびに`terrain::tracks::build_track_geometry`で作り直して呼ぶ。
     pub fn update_tracks(&mut self, vertices: &[DrawVertex]) {
-        self.tracks.set(&self.device, "tracks_vertex_buffer", vertices);
+        self.tracks
+            .set(&self.device, "tracks_vertex_buffer", vertices);
     }
 
     /// 3Dモデル(`terrain::models`)を1つ登録する(`key`はモデルの識別子。アプリが登録したURL)。同じキーがあれば置き換える。
@@ -270,7 +303,8 @@ impl TerrainRenderer {
     /// このフレームに描く3Dモデルのインスタンス(キーごとの、1機ごとの変換行列と色)を差し替える。
     /// `instances`に無いモデルは何も描かない。カメラ・トラックが変わるたびに呼ぶ(毎フレームでよい)。
     pub fn update_model_instances(&mut self, instances: &HashMap<String, Vec<ModelInstance>>) {
-        self.models.set_instances(&self.device, &self.queue, instances);
+        self.models
+            .set_instances(&self.device, &self.queue, instances);
     }
 
     /// 選択中マーカーの覆域ドーム(半球状の面、TriangleList)の頂点データを更新する。
@@ -281,11 +315,13 @@ impl TerrainRenderer {
             self.num_dome_vertices = 0;
             return;
         }
-        self.dome_vertex_buffer = Some(self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("dome_vertex_buffer"),
-            contents: bytemuck::cast_slice(vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        }));
+        self.dome_vertex_buffer = Some(self.device.create_buffer_init(
+            &wgpu::util::BufferInitDescriptor {
+                label: Some("dome_vertex_buffer"),
+                contents: bytemuck::cast_slice(vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            },
+        ));
         self.num_dome_vertices = vertices.len() as u32;
     }
 
@@ -294,17 +330,21 @@ impl TerrainRenderer {
         if mesh.indices.is_empty() {
             return None;
         }
-        let vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("terrain_mesh_vertex_buffer"),
-            contents: bytemuck::cast_slice(&mesh.vertices),
-            // COPY_DST: 原点変更時にupdate_mesh_vertices()で頂点データを書き換えられるようにする。
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        });
-        let index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("terrain_mesh_index_buffer"),
-            contents: bytemuck::cast_slice(&mesh.indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let vertex_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("terrain_mesh_vertex_buffer"),
+                contents: bytemuck::cast_slice(&mesh.vertices),
+                // COPY_DST: 原点変更時にupdate_mesh_vertices()で頂点データを書き換えられるようにする。
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            });
+        let index_buffer = self
+            .device
+            .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("terrain_mesh_index_buffer"),
+                contents: bytemuck::cast_slice(&mesh.indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
         Some(MeshGpu {
             vertex_buffer,
             index_buffer,
@@ -383,7 +423,8 @@ impl TerrainRenderer {
         // 頂点位置が変わるので、クロスフェード中の古い側(古い原点のまま)は続けずに終わらせる。
         self.fades.cancel(key);
         if let Some(mesh) = self.meshes.get_mut(&key) {
-            self.queue.write_buffer(&mesh.vertex_buffer, 0, bytemuck::cast_slice(vertices));
+            self.queue
+                .write_buffer(&mesh.vertex_buffer, 0, bytemuck::cast_slice(vertices));
             mesh.bounds = position_bounds(vertices);
         }
     }
@@ -391,7 +432,8 @@ impl TerrainRenderer {
     pub fn resize(&mut self, width: u32, height: u32) {
         // 大きさが変わっていなければ何もしない(ResizeObserverやタブの再表示で同じ大きさが何度も
         // 通知されるが、そのたびにsurfaceの再設定と大きなテクスチャ3枚の作り直しをするのは無駄)。
-        if width == 0 || height == 0 || (width == self.config.width && height == self.config.height) {
+        if width == 0 || height == 0 || (width == self.config.width && height == self.config.height)
+        {
             return;
         }
         self.config.width = width;
@@ -399,7 +441,8 @@ impl TerrainRenderer {
         self.surface.configure(&self.device, &self.config);
         self.targets = RenderTargets::new(&self.device, self.config.format, width, height);
         // supersample_color_viewを作り直したので、それを参照しているbind groupも作り直す。
-        self.downsample.rebind(&self.device, &self.targets.supersample_color_view);
+        self.downsample
+            .rebind(&self.device, &self.targets.supersample_color_view);
     }
 
     pub fn aspect_ratio(&self) -> f32 {
@@ -449,16 +492,27 @@ impl TerrainRenderer {
         let (width, height) = (self.config.width as f32, self.config.height as f32);
         let viewport = [width, height, 0.0, 0.0];
         for (space, view_proj, light) in [
-            (&self.draw_world, camera.view_proj_matrix(), WORLD_DRAW_LIGHT),
+            (
+                &self.draw_world,
+                camera.view_proj_matrix(),
+                WORLD_DRAW_LIGHT,
+            ),
             (&self.draw_view, camera.projection_matrix(), VIEW_DRAW_LIGHT),
             (&self.draw_screen, screen_matrix(width, height), [0.0; 4]),
         ] {
-            let uniform = DrawUniform { view_proj: view_proj.to_cols_array_2d(), viewport, light };
-            self.queue.write_buffer(&space.buffer, 0, bytemuck::bytes_of(&uniform));
+            let uniform = DrawUniform {
+                view_proj: view_proj.to_cols_array_2d(),
+                viewport,
+                light,
+            };
+            self.queue
+                .write_buffer(&space.buffer, 0, bytemuck::bytes_of(&uniform));
         }
         // カメラ固定の作図(視点空間・画面)は、地形の奥行きとは別に、地形の手前へ重ねて描く。
         // 深度バッファを作り直す必要があるので、地形のパスとは別のパスにする。
-        let has_overlay = !(self.view_opaque.is_empty() && self.view_blend.is_empty() && self.screen_batch.is_empty());
+        let has_overlay = !(self.view_opaque.is_empty()
+            && self.view_blend.is_empty()
+            && self.screen_batch.is_empty());
 
         let (frame, suboptimal) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t) => (t, false),
@@ -466,7 +520,9 @@ impl TerrainRenderer {
             wgpu::CurrentSurfaceTexture::Suboptimal(t) => (t, true),
             // 一時的に表示できない状態(タブやウインドウが隠れている等)。このフレームは描かず、
             // 次のフレームでやり直す(エラーではない)。
-            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => return Ok(()),
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                return Ok(())
+            }
             // 設定が古くなった。設定し直して、次のフレームで復帰する。
             wgpu::CurrentSurfaceTexture::Outdated => {
                 self.surface.configure(&self.device, &self.config);
@@ -487,7 +543,8 @@ impl TerrainRenderer {
         let fade_draws = self.fade_draws(camera, now);
         let entries: Vec<[f32; 4]> = fade_draws.iter().map(|d| d.entry).collect();
         if !entries.is_empty() {
-            self.queue.write_buffer(&self.fade_buffer, 0, bytemuck::cast_slice(&entries));
+            self.queue
+                .write_buffer(&self.fade_buffer, 0, bytemuck::cast_slice(&entries));
         }
         self.encode_main_pass(&mut encoder, camera, has_overlay, &fade_draws);
         if has_overlay {
@@ -512,10 +569,15 @@ impl TerrainRenderer {
         let view_proj = camera.view_proj_matrix();
         if self.fades.has_incoming() {
             for (key, mesh) in &self.meshes {
-                let Some(progress) = self.fades.incoming_progress(key, now_ms) else { continue };
+                let Some(progress) = self.fades.incoming_progress(key, now_ms) else {
+                    continue;
+                };
                 if !is_outside_frustum(&view_proj, mesh.bounds) {
                     // x=新しい側が出る割合、y=0(反転なし)。
-                    draws.push(FadeDraw { mesh, entry: [progress, 0.0, 0.0, 0.0] });
+                    draws.push(FadeDraw {
+                        mesh,
+                        entry: [progress, 0.0, 0.0, 0.0],
+                    });
                 }
             }
         }
@@ -523,7 +585,10 @@ impl TerrainRenderer {
             if !is_outside_frustum(&view_proj, outgoing.mesh.bounds) {
                 // 古い側は、新しい側が出ない残りの画素(y=1で反転)。
                 let progress = fade_progress(outgoing.start_ms, now_ms);
-                draws.push(FadeDraw { mesh: &outgoing.mesh, entry: [progress, 1.0, 0.0, 0.0] });
+                draws.push(FadeDraw {
+                    mesh: &outgoing.mesh,
+                    entry: [progress, 1.0, 0.0, 0.0],
+                });
             }
         }
         // 割合の表に収まる分だけ(`MAX_FADE_ENTRIES`。超える分は`has_room`で始めさせないが、念のため)。
@@ -547,14 +612,27 @@ impl TerrainRenderer {
                 // スワップチェーンへ直接ではなく、スーパーサンプリングの内部解像度テクスチャへ
                 // 解決する(この後のdownsampleパスで実際のcanvas解像度へ縮小する)。
                 // カメラ固定の作図があるときは、続くオーバーレイのパスが解決する。
-                resolve_target: if has_overlay { None } else { Some(&self.targets.supersample_color_view) },
+                resolve_target: if has_overlay {
+                    None
+                } else {
+                    Some(&self.targets.supersample_color_view)
+                },
                 depth_slice: None,
                 ops: wgpu::Operations {
                     // 地形が描かれない領域(空・海・データ範囲の外側)は黒。
-                    load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    }),
                     // resolve_targetへ解決した後はこのMSAAテクスチャ自体は不要なので
                     // 保存しない(Discard)。オーバーレイのパスへ引き継ぐときだけ保存する。
-                    store: if has_overlay { wgpu::StoreOp::Store } else { wgpu::StoreOp::Discard },
+                    store: if has_overlay {
+                        wgpu::StoreOp::Store
+                    } else {
+                        wgpu::StoreOp::Discard
+                    },
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -602,13 +680,18 @@ impl TerrainRenderer {
             for (index, draw) in fade_draws.iter().enumerate() {
                 let mesh = draw.mesh;
                 render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass
+                    .set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
                 render_pass.draw_indexed(0..mesh.num_indices, 0, index as u32..index as u32 + 1);
             }
         }
 
         // 絶対座標の作図。不透明なものは覆域ドームより先に(深度を書く)、半透明なものはドームの後に描く。
-        self.world_opaque.draw(&mut render_pass, &self.pipelines.draw_opaque, &self.draw_world);
+        self.world_opaque.draw(
+            &mut render_pass,
+            &self.pipelines.draw_opaque,
+            &self.draw_world,
+        );
         // 3Dモデル(不透明。深度を書く)。
         self.models.draw(&mut render_pass, &self.draw_world);
 
@@ -622,12 +705,28 @@ impl TerrainRenderer {
             }
         }
 
-        self.world_blend.draw(&mut render_pass, &self.pipelines.draw_blend, &self.draw_world);
+        self.world_blend.draw(
+            &mut render_pass,
+            &self.pipelines.draw_blend,
+            &self.draw_world,
+        );
 
         // 2Dの覆域(塗り+輪郭線)は深度テストなしで、地形の上に重ねる。続いて観測点のマーカー(ピン)。
-        self.coverage_2d.draw(&mut render_pass, &self.pipelines.draw_screen, &self.draw_world);
-        self.markers.draw(&mut render_pass, &self.pipelines.draw_blend, &self.draw_world);
-        self.tracks.draw(&mut render_pass, &self.pipelines.draw_blend, &self.draw_world);
+        self.coverage_2d.draw(
+            &mut render_pass,
+            &self.pipelines.draw_screen,
+            &self.draw_world,
+        );
+        self.markers.draw(
+            &mut render_pass,
+            &self.pipelines.draw_blend,
+            &self.draw_world,
+        );
+        self.tracks.draw(
+            &mut render_pass,
+            &self.pipelines.draw_blend,
+            &self.draw_world,
+        );
     }
 
     /// カメラ固定の作図のパス: 地形を描いた色をそのまま(Load)引き継ぎ、深度だけ作り直して(地形とは
@@ -639,20 +738,38 @@ impl TerrainRenderer {
                 view: &self.targets.msaa_view,
                 resolve_target: Some(&self.targets.supersample_color_view),
                 depth_slice: None,
-                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Discard },
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Discard,
+                },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &self.targets.depth_view,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Discard }),
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
                 stencil_ops: None,
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        self.view_opaque.draw(&mut overlay_pass, &self.pipelines.draw_opaque, &self.draw_view);
-        self.view_blend.draw(&mut overlay_pass, &self.pipelines.draw_blend, &self.draw_view);
-        self.screen_batch.draw(&mut overlay_pass, &self.pipelines.draw_screen, &self.draw_screen);
+        self.view_opaque.draw(
+            &mut overlay_pass,
+            &self.pipelines.draw_opaque,
+            &self.draw_view,
+        );
+        self.view_blend.draw(
+            &mut overlay_pass,
+            &self.pipelines.draw_blend,
+            &self.draw_view,
+        );
+        self.screen_batch.draw(
+            &mut overlay_pass,
+            &self.pipelines.draw_screen,
+            &self.draw_screen,
+        );
     }
 
     /// スーパーサンプリングのダウンサンプルパス: 内部解像度で描いたsupersample_color_viewを、実際の
@@ -665,7 +782,12 @@ impl TerrainRenderer {
                 resolve_target: None,
                 depth_slice: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 1.0,
+                    }),
                     store: wgpu::StoreOp::Store,
                 },
             })],
@@ -698,14 +820,18 @@ mod tests {
     fn supersample_size_doubles_and_clamps_each_side() {
         assert_eq!(supersample_size(700, 500), (1400, 1000));
         assert_eq!(supersample_size(0, 0), (2, 2)); // 0は1として扱う
-        // 幅と高さを独立に上限(4096)へ丸める。
-        assert_eq!(supersample_size(3000, 100), (SUPERSAMPLE_MAX_DIMENSION, 200));
+                                                    // 幅と高さを独立に上限(4096)へ丸める。
+        assert_eq!(
+            supersample_size(3000, 100),
+            (SUPERSAMPLE_MAX_DIMENSION, 200)
+        );
     }
 
     #[test]
     fn position_bounds_encloses_all_vertices() {
         let v = |p: [f32; 3]| TerrainVertex::unlit(p, [0.0; 3]);
-        let (min, max) = position_bounds(&[v([1.0, -2.0, 3.0]), v([-4.0, 5.0, 0.5]), v([0.0, 0.0, 9.0])]);
+        let (min, max) =
+            position_bounds(&[v([1.0, -2.0, 3.0]), v([-4.0, 5.0, 0.5]), v([0.0, 0.0, 9.0])]);
         assert_eq!(min, [-4.0, -2.0, 0.5]);
         assert_eq!(max, [1.0, 5.0, 9.0]);
         // 頂点が無ければ空の直方体(どの点も含まない)。
@@ -717,7 +843,9 @@ mod tests {
     fn screen_matrix_maps_pixels_to_clip_space_with_y_down() {
         let m = screen_matrix(800.0, 600.0);
         let map = |x: f32, y: f32| m * Vec4::new(x, y, 0.0, 1.0);
-        let close = |a: Vec4, b: [f32; 3]| (a.x - b[0]).abs() < 1e-6 && (a.y - b[1]).abs() < 1e-6 && a.w == 1.0;
+        let close = |a: Vec4, b: [f32; 3]| {
+            (a.x - b[0]).abs() < 1e-6 && (a.y - b[1]).abs() < 1e-6 && a.w == 1.0
+        };
         assert!(close(map(0.0, 0.0), [-1.0, 1.0, 0.5])); // 左上
         assert!(close(map(800.0, 600.0), [1.0, -1.0, 0.5])); // 右下
         assert!(close(map(400.0, 300.0), [0.0, 0.0, 0.5])); // 中心
@@ -732,7 +860,10 @@ mod tests {
     }
 
     fn cube(center: Vec3, half: f32) -> ([f32; 3], [f32; 3]) {
-        ((center - Vec3::splat(half)).to_array(), (center + Vec3::splat(half)).to_array())
+        (
+            (center - Vec3::splat(half)).to_array(),
+            (center + Vec3::splat(half)).to_array(),
+        )
     }
 
     #[test]
@@ -741,10 +872,22 @@ mod tests {
         // 注視点まわりの直方体は見える。
         assert!(!is_outside_frustum(&vp, cube(Vec3::ZERO, 100.0)));
         // 視野の左右・下・カメラの後ろ・far面の外は見えない。
-        assert!(is_outside_frustum(&vp, cube(Vec3::new(500_000.0, 0.0, 0.0), 100.0)));
-        assert!(is_outside_frustum(&vp, cube(Vec3::new(0.0, 500_000.0, 0.0), 100.0)));
-        assert!(is_outside_frustum(&vp, cube(Vec3::new(-8_000.0, -8_000.0, 6_000.0), 10.0))); // 視点の後ろ
-        assert!(is_outside_frustum(&vp, cube(Vec3::new(-20_000_000.0, -20_000_000.0, 0.0), 100.0)));
+        assert!(is_outside_frustum(
+            &vp,
+            cube(Vec3::new(500_000.0, 0.0, 0.0), 100.0)
+        ));
+        assert!(is_outside_frustum(
+            &vp,
+            cube(Vec3::new(0.0, 500_000.0, 0.0), 100.0)
+        ));
+        assert!(is_outside_frustum(
+            &vp,
+            cube(Vec3::new(-8_000.0, -8_000.0, 6_000.0), 10.0)
+        )); // 視点の後ろ
+        assert!(is_outside_frustum(
+            &vp,
+            cube(Vec3::new(-20_000_000.0, -20_000_000.0, 0.0), 100.0)
+        ));
         // 視錐台をまたぐ大きな直方体は外ではない。
         assert!(!is_outside_frustum(&vp, cube(Vec3::ZERO, 5_000_000.0)));
     }
@@ -767,19 +910,26 @@ mod tests {
                             && clip.z <= clip.w;
                         if inside {
                             checked += 1;
-                            assert!(!is_outside_frustum(&vp, cube(center, 50.0)), "{mode:?} {center}");
+                            assert!(
+                                !is_outside_frustum(&vp, cube(center, 50.0)),
+                                "{mode:?} {center}"
+                            );
                         }
                     }
                 }
             }
-            assert!(checked > 20, "{mode:?}: only {checked} visible sample points");
+            assert!(
+                checked > 20,
+                "{mode:?}: only {checked} visible sample points"
+            );
         }
     }
 
     // ---- WGSLの検証と、Rust側とのレイアウトの一致 ----
 
     fn parse(src: &str) -> naga::Module {
-        naga::front::wgsl::parse_str(src).unwrap_or_else(|e| panic!("WGSL parse error: {}", e.emit_to_string(src)))
+        naga::front::wgsl::parse_str(src)
+            .unwrap_or_else(|e| panic!("WGSL parse error: {}", e.emit_to_string(src)))
     }
 
     fn struct_of<'m>(module: &'m naga::Module, name: &str) -> (u32, &'m [naga::StructMember]) {
@@ -787,23 +937,35 @@ mod tests {
             .types
             .iter()
             .find_map(|(_, ty)| match (&ty.name, &ty.inner) {
-                (Some(n), naga::TypeInner::Struct { members, span }) if n == name => Some((*span, members.as_slice())),
+                (Some(n), naga::TypeInner::Struct { members, span }) if n == name => {
+                    Some((*span, members.as_slice()))
+                }
                 _ => None,
             })
             .unwrap_or_else(|| panic!("struct {name} not found in WGSL"))
     }
 
     fn offsets(members: &[naga::StructMember]) -> Vec<(String, u32)> {
-        members.iter().map(|m| (m.name.clone().unwrap_or_default(), m.offset)).collect()
+        members
+            .iter()
+            .map(|m| (m.name.clone().unwrap_or_default(), m.offset))
+            .collect()
     }
 
     #[test]
     fn wgsl_modules_parse_and_validate() {
-        for (name, src) in [("terrain.wgsl", TERRAIN_WGSL), ("draw.wgsl", DRAW_WGSL), ("model.wgsl", MODEL_WGSL)] {
+        for (name, src) in [
+            ("terrain.wgsl", TERRAIN_WGSL),
+            ("draw.wgsl", DRAW_WGSL),
+            ("model.wgsl", MODEL_WGSL),
+        ] {
             let module = parse(src);
-            naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
-                .validate(&module)
-                .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(src)));
+            naga::valid::Validator::new(
+                naga::valid::ValidationFlags::all(),
+                naga::valid::Capabilities::empty(),
+            )
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{name}: {}", e.emit_to_string(src)));
         }
     }
 
@@ -822,7 +984,10 @@ mod tests {
             ("ellipsoid_m", offset_of!(CameraUniform, ellipsoid_m)),
             ("ellipsoid_g", offset_of!(CameraUniform, ellipsoid_g)),
         ];
-        let want: Vec<(String, u32)> = expected.iter().map(|(n, o)| (n.to_string(), *o as u32)).collect();
+        let want: Vec<(String, u32)> = expected
+            .iter()
+            .map(|(n, o)| (n.to_string(), *o as u32))
+            .collect();
         assert_eq!(offsets(members), want);
     }
 
@@ -859,23 +1024,42 @@ mod tests {
             ]
         );
         let last = MODEL_VERTEX_ATTRIBUTES.last().unwrap();
-        assert_eq!(last.offset + last.format.size(), size_of::<ModelVertex>() as u64);
-        let instance_offsets: Vec<u64> = MODEL_INSTANCE_ATTRIBUTES.iter().map(|a| a.offset).collect();
-        assert_eq!(instance_offsets, [0, 16, 32, 48, offset_of!(ModelInstance, tint) as u64]);
+        assert_eq!(
+            last.offset + last.format.size(),
+            size_of::<ModelVertex>() as u64
+        );
+        let instance_offsets: Vec<u64> =
+            MODEL_INSTANCE_ATTRIBUTES.iter().map(|a| a.offset).collect();
+        assert_eq!(
+            instance_offsets,
+            [0, 16, 32, 48, offset_of!(ModelInstance, tint) as u64]
+        );
         let last = MODEL_INSTANCE_ATTRIBUTES.last().unwrap();
-        assert_eq!(last.offset + last.format.size(), size_of::<ModelInstance>() as u64);
+        assert_eq!(
+            last.offset + last.format.size(),
+            size_of::<ModelInstance>() as u64
+        );
         // シェーダーの入力(location 0〜7)と、2本のバッファの属性が対応する。
-        let all: Vec<wgpu::VertexAttribute> =
-            MODEL_VERTEX_ATTRIBUTES.iter().chain(MODEL_INSTANCE_ATTRIBUTES.iter()).copied().collect();
+        let all: Vec<wgpu::VertexAttribute> = MODEL_VERTEX_ATTRIBUTES
+            .iter()
+            .chain(MODEL_INSTANCE_ATTRIBUTES.iter())
+            .copied()
+            .collect();
         check_vertex_inputs(MODEL_WGSL, &all);
     }
 
     /// `vs_main`の頂点入力(location・型)を、Rust側の頂点属性と突き合わせる。
     fn check_vertex_inputs(src: &str, attributes: &[wgpu::VertexAttribute]) {
         let module = parse(src);
-        let entry = module.entry_points.iter().find(|e| e.name == "vs_main").expect("vs_main");
+        let entry = module
+            .entry_points
+            .iter()
+            .find(|e| e.name == "vs_main")
+            .expect("vs_main");
         let input = module.types[entry.function.arguments[0].ty].clone();
-        let naga::TypeInner::Struct { members, .. } = input.inner else { panic!("vs_main takes a struct") };
+        let naga::TypeInner::Struct { members, .. } = input.inner else {
+            panic!("vs_main takes a struct")
+        };
 
         assert_eq!(members.len(), attributes.len());
         for member in &members {
@@ -888,7 +1072,9 @@ mod tests {
                 .unwrap_or_else(|| panic!("no vertex attribute for @location({location})"));
             // 浮動小数のベクトルとして読む形式(Float32xN・Snorm16x2)と、WGSLのvecN<f32>が同じ次元。
             let components = match attribute.format {
-                wgpu::VertexFormat::Float32x2 | wgpu::VertexFormat::Snorm16x2 => naga::VectorSize::Bi,
+                wgpu::VertexFormat::Float32x2 | wgpu::VertexFormat::Snorm16x2 => {
+                    naga::VectorSize::Bi
+                }
                 wgpu::VertexFormat::Float32x3 => naga::VectorSize::Tri,
                 wgpu::VertexFormat::Float32x4 => naga::VectorSize::Quad,
                 other => panic!("unexpected vertex format {other:?}"),
@@ -896,7 +1082,11 @@ mod tests {
             match &module.types[member.ty].inner {
                 naga::TypeInner::Vector { size, scalar } => {
                     assert_eq!(*size, components, "@location({location})");
-                    assert_eq!(scalar.kind, naga::ScalarKind::Float, "@location({location})");
+                    assert_eq!(
+                        scalar.kind,
+                        naga::ScalarKind::Float,
+                        "@location({location})"
+                    );
                 }
                 other => panic!("@location({location}) is {other:?}"),
             }
@@ -915,7 +1105,10 @@ mod tests {
             ]
         );
         let last = TERRAIN_VERTEX_ATTRIBUTES.last().unwrap();
-        assert_eq!(last.offset + last.format.size(), size_of::<TerrainVertex>() as u64);
+        assert_eq!(
+            last.offset + last.format.size(),
+            size_of::<TerrainVertex>() as u64
+        );
         check_vertex_inputs(TERRAIN_WGSL, &TERRAIN_VERTEX_ATTRIBUTES);
     }
 
@@ -932,7 +1125,10 @@ mod tests {
             ]
         );
         let last = DRAW_VERTEX_ATTRIBUTES.last().unwrap();
-        assert_eq!(last.offset + last.format.size(), size_of::<DrawVertex>() as u64);
+        assert_eq!(
+            last.offset + last.format.size(),
+            size_of::<DrawVertex>() as u64
+        );
         check_vertex_inputs(DRAW_WGSL, &DRAW_VERTEX_ATTRIBUTES);
     }
 }

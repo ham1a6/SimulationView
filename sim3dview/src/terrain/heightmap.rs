@@ -72,7 +72,13 @@ mod tests {
     use crate::terrain::origin::Origin;
 
     fn transform_at(lat: f64, lon: f64) -> EnuTransform {
-        EnuTransform::new(&Origin { lat_deg: lat, lon_deg: lon }, &Ellipsoid::WGS84)
+        EnuTransform::new(
+            &Origin {
+                lat_deg: lat,
+                lon_deg: lon,
+            },
+            &Ellipsoid::WGS84,
+        )
     }
 
     /// 東へ1度で600m上がる斜面(ノード間隔1/6度で整数になる)。タイル(30,120)用。
@@ -99,10 +105,16 @@ mod tests {
             let d2 = east * east + north * north;
             let drop = d2 / (2.0 * 6_378_137.0);
             // 楕円体の曲率半径は場所で1%ほど違うので、球の概算とは数%以内で一致すればよい。
-            assert!((up as f64 + drop).abs() < 0.03 * drop, "east={east} north={north} up={up} drop={drop}");
+            assert!(
+                (up as f64 + drop).abs() < 0.03 * drop,
+                "east={east} north={north} up={up} drop={drop}"
+            );
             // 返した緯度経度の地表(標高0m)を変換し直すと、同じENU位置に戻る。
             let [e2, n2, u2] = t.transform_f64(lat, lon, 0.0);
-            assert!((e2 - east).abs() < 1.0 && (n2 - north).abs() < 1.0, "{e2},{n2}");
+            assert!(
+                (e2 - east).abs() < 1.0 && (n2 - north).abs() < 1.0,
+                "{e2},{n2}"
+            );
             assert!((u2 - up as f64).abs() < 1.0, "{u2} vs {up}");
         }
     }
@@ -128,7 +140,10 @@ mod tests {
             let (east, north, _) = ground_at_geodetic(&data, &t, lat, lon);
             let (lat2, lon2, _) = ground_at_enu(&data, &t, east as f64, north as f64);
             // f32のENU座標(数百km)の丸めは0.1m程度なので、緯度経度は1e-5度(約1m)以内で戻る。
-            assert!((lat2 - lat).abs() < 1e-5 && (lon2 - lon).abs() < 1e-5, "{origin:?}: {lat2},{lon2}");
+            assert!(
+                (lat2 - lat).abs() < 1e-5 && (lon2 - lon).abs() < 1e-5,
+                "{origin:?}: {lat2},{lon2}"
+            );
             assert!((sample_heightmap(&data, lat2, lon2).unwrap() - expected).abs() < 0.05);
         }
     }

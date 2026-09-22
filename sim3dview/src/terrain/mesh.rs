@@ -24,7 +24,11 @@ impl TerrainVertex {
 
     /// 陰影を付けない頂点(マーカー・覆域ドームなど、色をそのまま出したいもの)。
     pub fn unlit(position: [f32; 3], color: [f32; 3]) -> Self {
-        Self { position, color, normal_xy: Self::UNLIT_NORMAL }
+        Self {
+            position,
+            color,
+            normal_xy: Self::UNLIT_NORMAL,
+        }
     }
 }
 
@@ -115,7 +119,10 @@ fn node_normals(grid: &[i16], n: usize, positions: &[[f64; 3]]) -> Vec<[i16; 2]>
     let land = |i: usize, j: usize| grid[j * n + i] != NO_DATA;
     // 隣(-1/+1)のうち陸のものを選ぶ。なければ自分自身。
     let neighbor = |k: usize, lo_land: bool, hi_land: bool| -> (usize, usize) {
-        (if lo_land { k - 1 } else { k }, if hi_land { k + 1 } else { k })
+        (
+            if lo_land { k - 1 } else { k },
+            if hi_land { k + 1 } else { k },
+        )
     };
 
     let mut normals = Vec::with_capacity(n * n);
@@ -171,12 +178,18 @@ fn grid_vertices(
     // 行(緯度)ごと: (sinφ, cosφ, 卯酉線曲率半径N)。列(経度)ごと: (sinλ, cosλ)。
     let rows: Vec<(f64, f64, f64)> = (0..n)
         .map(|j| {
-            let (s, c) = (place.lat_start + j as f64 * place.step_deg).to_radians().sin_cos();
+            let (s, c) = (place.lat_start + j as f64 * place.step_deg)
+                .to_radians()
+                .sin_cos();
             (s, c, a / (1.0 - e2 * s * s).sqrt())
         })
         .collect();
     let cols: Vec<(f64, f64)> = (0..n)
-        .map(|i| (place.lon_start + i as f64 * place.step_deg).to_radians().sin_cos())
+        .map(|i| {
+            (place.lon_start + i as f64 * place.step_deg)
+                .to_radians()
+                .sin_cos()
+        })
         .collect();
 
     // ノード(行j, 列i)の、楕円体高hでのENU座標(東, 北, 上)。
@@ -208,7 +221,10 @@ fn grid_vertices(
             };
             let [east, north, up] = enu(j, i, h);
             positions.push([east, north, up]);
-            vertices.push(TerrainVertex::unlit([east as f32, north as f32, up as f32], color));
+            vertices.push(TerrainVertex::unlit(
+                [east as f32, north as f32, up as f32],
+                color,
+            ));
         }
     }
     for (vertex, normal_xy) in vertices.iter_mut().zip(node_normals(grid, n, &positions)) {
@@ -223,7 +239,11 @@ fn grid_vertices(
         for k in 0..n {
             let node = edge_node(edge, k, cells);
             let (j, i) = (node / n, node % n);
-            let h = if grid[node] == NO_DATA { 0.0 } else { grid[node] as f64 };
+            let h = if grid[node] == NO_DATA {
+                0.0
+            } else {
+                grid[node] as f64
+            };
             let bottom = enu(j, i, (h - place.skirt_depth as f64).min(0.0));
             let mut v = vertices[node];
             v.position = [bottom[0] as f32, bottom[1] as f32, bottom[2] as f32];
@@ -262,8 +282,10 @@ fn grid_indices(grid: &[i16], cells: usize) -> Vec<u32> {
         for k in 0..cells {
             let (a, b) = (edge_node(edge, k, cells), edge_node(edge, k + 1, cells));
             if land(a) && land(b) {
-                let (sa, sb) =
-                    ((skirt_base + edge * n + k) as u32, (skirt_base + edge * n + k + 1) as u32);
+                let (sa, sb) = (
+                    (skirt_base + edge * n + k) as u32,
+                    (skirt_base + edge * n + k + 1) as u32,
+                );
                 indices.extend_from_slice(&[a as u32, b as u32, sa, b as u32, sb, sa]);
             }
         }
@@ -285,7 +307,13 @@ pub fn build_whole_tile_vertices(
         step_deg: 1.0 / cells as f64,
         skirt_depth: skirt_depth_m(0),
     };
-    grid_vertices(data.whole_grid(tile), cells, &place, data.metadata.elevation_max, transform)
+    grid_vertices(
+        data.whole_grid(tile),
+        cells,
+        &place,
+        data.metadata.elevation_max,
+        transform,
+    )
 }
 
 /// タイル全体(レベル0)のメッシュ。
@@ -319,7 +347,13 @@ pub fn build_chunk_vertices(
         step_deg,
         skirt_depth: skirt_depth_m(level),
     };
-    Some(grid_vertices(&grid, cells, &place, data.metadata.elevation_max, transform))
+    Some(grid_vertices(
+        &grid,
+        cells,
+        &place,
+        data.metadata.elevation_max,
+        transform,
+    ))
 }
 
 /// チャンク・レベル(1以上)のメッシュ。グリッドが未取得ならNone。
@@ -332,7 +366,10 @@ pub fn build_chunk_mesh(
 ) -> Option<TerrainMesh> {
     let vertices = build_chunk_vertices(data, tile, chunk, level, transform)?;
     let grid = data.chunk_grid(tile, level, chunk)?;
-    Some(TerrainMesh { vertices, indices: grid_indices(&grid, data.chunk_cells(level)) })
+    Some(TerrainMesh {
+        vertices,
+        indices: grid_indices(&grid, data.chunk_cells(level)),
+    })
 }
 
 #[cfg(test)]
@@ -342,7 +379,13 @@ mod tests {
     use crate::terrain::origin::Origin;
 
     fn transform_at(lat: f64, lon: f64) -> EnuTransform {
-        EnuTransform::new(&Origin { lat_deg: lat, lon_deg: lon }, &Ellipsoid::WGS84)
+        EnuTransform::new(
+            &Origin {
+                lat_deg: lat,
+                lon_deg: lon,
+            },
+            &Ellipsoid::WGS84,
+        )
     }
 
     /// 東へ1度で600m上がる斜面(ノード間隔1/6度で整数になる)。タイル(30,120)用。
@@ -383,7 +426,10 @@ mod tests {
         assert_eq!(mesh.vertices.len(), tile_vertex_count(cells));
         // 全部陸: 地表 2*cells^2 三角形 + スカート 4辺*cells*2 三角形。
         assert_eq!(mesh.indices.len(), 3 * (2 * cells * cells + 4 * cells * 2));
-        assert!(mesh.indices.iter().all(|&i| (i as usize) < mesh.vertices.len()));
+        assert!(mesh
+            .indices
+            .iter()
+            .all(|&i| (i as usize) < mesh.vertices.len()));
         // 原点(タイル中央のノード)の頂点は、ENUの原点=(0,0,標高)にある。
         let n = cells + 1;
         let center = mesh.vertices[(cells / 2) * n + cells / 2].position;
@@ -403,12 +449,14 @@ mod tests {
         let all = count(&full);
         // 中央のノードを含む三角形は6枚(内側のノード1個は、周囲の4セル・計6三角形に含まれる)。
         assert_eq!(count(&holed), all - 6);
-        assert!(grid_indices(&holed, cells).iter().all(|&i| i as usize != 2 * n + 2));
+        assert!(grid_indices(&holed, cells)
+            .iter()
+            .all(|&i| i as usize != 2 * n + 2));
 
         // 縁のノードがデータなしなら、その隣り合う2辺のスカートの壁も張らない。
         let mut edge_hole = full.clone();
         edge_hole[2] = NO_DATA; // 南の縁の中央
-        // 地表は節点2を含む3枚(セル1の2枚+セル2の1枚)、スカートは節点2に接する2区間の壁(2枚ずつ)。
+                                // 地表は節点2を含む3枚(セル1の2枚+セル2の1枚)、スカートは節点2に接する2区間の壁(2枚ずつ)。
         assert_eq!(count(&full) - count(&edge_hole), 3 + 2 * 2);
     }
 
@@ -425,7 +473,13 @@ mod tests {
             n,
             &vertices[..n * n]
                 .iter()
-                .map(|v| [v.position[0] as f64, v.position[1] as f64, v.position[2] as f64])
+                .map(|v| {
+                    [
+                        v.position[0] as f64,
+                        v.position[1] as f64,
+                        v.position[2] as f64,
+                    ]
+                })
                 .collect::<Vec<_>>(),
         );
         // 東へ上る斜面の法線は、西を向く(x<0)。南北方向には傾かない(y≈0)。

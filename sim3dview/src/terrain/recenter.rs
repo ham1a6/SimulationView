@@ -17,7 +17,10 @@ pub struct RecenterRequestState {
 
 impl RecenterRequestState {
     pub fn new() -> Self {
-        Self { count: RwSignal::new(0), target: RwSignal::new(None) }
+        Self {
+            count: RwSignal::new(0),
+            target: RwSignal::new(None),
+        }
     }
 
     /// 中心点を原点の位置へ戻す。

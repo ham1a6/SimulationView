@@ -16,7 +16,9 @@ use sim3dview::terrain::recenter::RecenterRequestState;
 use sim3dview::terrain::store::TerrainStore;
 use sim3dview::terrain::tracks::{SymbolKind, TracksState};
 use sim3dview::ui::context_menu::{ContextMenu, ContextMenuState};
-use sim3dview::ui::coverage_altitude_dialog::{CoverageAltitudeDialog, CoverageAltitudeDialogState};
+use sim3dview::ui::coverage_altitude_dialog::{
+    CoverageAltitudeDialog, CoverageAltitudeDialogState,
+};
 use sim3dview::ui::model_settings_dialog::{ModelSettingsDialog, ModelSettingsDialogState};
 use sim3dview::ui::origin_dialog::{OriginDialog, OriginDialogState};
 
@@ -102,9 +104,9 @@ pub fn App() -> impl IntoView {
     // 「設定」→「原点をクリックで指定」で有効になる、地図クリックによる原点指定モード
     // (sim3dviewライブラリの型)。クリックされた緯度経度を、原点設定パネルと同じ
     // ClientCommand::set_originでサーバーへ送る(シミュレーション停止中のみ受理される)。
-    provide_context(OriginPickState::new(UnsyncCallback::new(move |(lat, lon)| {
-        conn.send_command(&ClientCommand::set_origin(lat, lon))
-    })));
+    provide_context(OriginPickState::new(UnsyncCallback::new(
+        move |(lat, lon)| conn.send_command(&ClientCommand::set_origin(lat, lon)),
+    )));
 
     // 右クリックメニュー(sim3dviewライブラリの型)。本体(`<ContextMenu/>`)は下で1つだけ置き、
     // 地図の右クリックの項目(`provide_map_menu`)は、上で提供した各Stateを使うので、それらのあとに提供する。
@@ -115,7 +117,10 @@ pub fn App() -> impl IntoView {
     // (ライブラリが読む値)への橋渡し。
     Effect::new(move |_| {
         if let Some(o) = signals.origin.get() {
-            origin_state.0.set(Some(sim3dview::terrain::origin::Origin { lat_deg: o.lat_deg, lon_deg: o.lon_deg }));
+            origin_state.0.set(Some(sim3dview::terrain::origin::Origin {
+                lat_deg: o.lat_deg,
+                lon_deg: o.lon_deg,
+            }));
         }
     });
 

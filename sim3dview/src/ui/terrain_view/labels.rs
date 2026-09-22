@@ -1,11 +1,10 @@
 //! 航跡のラベル(canvasに重ねるHTML要素)の配置と更新。
 
-
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
-use crate::terrain::tracks::TrackLabel;
 use super::state::*;
+use crate::terrain::tracks::TrackLabel;
 
 /// ラベルを覆う層(`TerrainView`が`canvas`の上に置くHTML要素)。
 pub(super) fn label_layer(s: &ViewState) -> Option<web_sys::HtmlElement> {
@@ -14,7 +13,11 @@ pub(super) fn label_layer(s: &ViewState) -> Option<web_sys::HtmlElement> {
 }
 
 /// 画面に重ねるラベルを`labels`にそろえる。数が同じなら要素を使い回して文字だけ更新し、変わったら作り直す。
-pub(super) fn set_labels(s: &mut ViewState, layer: Option<&web_sys::HtmlElement>, labels: Vec<TrackLabel>) {
+pub(super) fn set_labels(
+    s: &mut ViewState,
+    layer: Option<&web_sys::HtmlElement>,
+    labels: Vec<TrackLabel>,
+) {
     let Some(layer) = layer else {
         return;
     };
@@ -25,14 +28,20 @@ pub(super) fn set_labels(s: &mut ViewState, layer: Option<&web_sys::HtmlElement>
             return;
         };
         let make = |class: &str| -> Option<web_sys::HtmlElement> {
-            let element = document.create_element("div").ok()?.dyn_into::<web_sys::HtmlElement>().ok()?;
+            let element = document
+                .create_element("div")
+                .ok()?
+                .dyn_into::<web_sys::HtmlElement>()
+                .ok()?;
             element.set_class_name(class);
             Some(element)
         };
         for anchor in &labels {
-            let (Some(root), Some(name), Some(detail)) =
-                (make("track-label"), make("track-label-name"), make("track-label-detail"))
-            else {
+            let (Some(root), Some(name), Some(detail)) = (
+                make("track-label"),
+                make("track-label-name"),
+                make("track-label-detail"),
+            ) else {
                 continue;
             };
             let _ = root.append_child(&name);
@@ -61,13 +70,22 @@ pub(super) fn set_labels(s: &mut ViewState, layer: Option<&web_sys::HtmlElement>
             view.detail.set_text_content(Some(&new.detail));
         }
         if view.anchor.selected != new.selected {
-            view.root.set_class_name(if new.selected { "track-label selected" } else { "track-label" });
+            view.root.set_class_name(if new.selected {
+                "track-label selected"
+            } else {
+                "track-label"
+            });
         }
         if view.anchor.color != new.color {
             let [r, g, b] = new.color;
             let _ = view.root.style().set_property(
                 "color",
-                &format!("rgb({},{},{})", (r * 255.0) as u8, (g * 255.0) as u8, (b * 255.0) as u8),
+                &format!(
+                    "rgb({},{},{})",
+                    (r * 255.0) as u8,
+                    (g * 255.0) as u8,
+                    (b * 255.0) as u8
+                ),
             );
         }
         view.anchor = new;
@@ -80,7 +98,10 @@ pub(super) fn update_labels(s: &ViewState) {
     let (Some(renderer), false) = (s.renderer.as_ref(), s.labels.is_empty()) else {
         return;
     };
-    let view_proj = s.camera.to_camera(renderer.aspect_ratio()).view_proj_matrix();
+    let view_proj = s
+        .camera
+        .to_camera(renderer.aspect_ratio())
+        .view_proj_matrix();
     let (width, height) = renderer.canvas_size_px();
     let (width, height) = (width as f32, height as f32);
     for label in &s.labels {

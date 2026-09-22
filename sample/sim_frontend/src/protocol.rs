@@ -42,7 +42,8 @@ impl MsgType {
 #[derive(Debug, Clone, Deserialize)]
 pub struct SimState {
     pub t: f64,
-    #[allow(dead_code)] // v1はまだ実体を描画しないが、msgpackは配列位置エンコードのため保持が必要。
+    #[allow(dead_code)]
+    // v1はまだ実体を描画しないが、msgpackは配列位置エンコードのため保持が必要。
     pub positions: Vec<f32>,
     pub frame_id: u32,
     /// StatusPanelConfig.items と同じ順序・同じ数(v1では数値項目のみ)。
@@ -77,7 +78,8 @@ pub struct OriginState {
 /// 状況パネル項目1個分。DETAILED_DESIGN.md 4.3節・7.5節。
 #[derive(Debug, Clone, Deserialize)]
 pub struct StatusItem {
-    #[allow(dead_code)] // UIはlabel/unitのみ表示に使うが、msgpackは配列位置エンコードのため保持が必要。
+    #[allow(dead_code)]
+    // UIはlabel/unitのみ表示に使うが、msgpackは配列位置エンコードのため保持が必要。
     pub id: String,
     pub label: String,
     /// 単位。なければ空文字列
@@ -175,12 +177,18 @@ impl ClientCommand {
 
     /// シミュレーションを進める(停止中は原点を変更できるが、実行中はできない)。
     pub fn resume() -> Self {
-        Self { type_: "resume".to_string(), ..Default::default() }
+        Self {
+            type_: "resume".to_string(),
+            ..Default::default()
+        }
     }
 
     /// シミュレーションを一時停止する。
     pub fn pause() -> Self {
-        Self { type_: "pause".to_string(), ..Default::default() }
+        Self {
+            type_: "pause".to_string(),
+            ..Default::default()
+        }
     }
 
     pub fn vab_press(button_id: impl Into<String>) -> Self {

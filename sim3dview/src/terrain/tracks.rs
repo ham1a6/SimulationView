@@ -20,8 +20,8 @@ use leptos::prelude::*;
 
 use super::drawing::{Altitude, Color};
 use super::drawing_geometry::{append_line_strip, height_of, triangulate, BuildContext};
-use super::vertex::DrawVertex;
 use super::render_bias::TRACK_M;
+use super::vertex::DrawVertex;
 
 pub type TrackId = u64;
 
@@ -180,13 +180,23 @@ impl TracksState {
     /// リアクティブに読める(詳細パネルなどが、選択の変更・位置の更新に追従する)。
     pub fn selected_track(&self) -> Option<Track> {
         let id = self.selected.get()?;
-        self.entries.with(|entries| entries.iter().find(|e| e.track.id == id).map(|e| e.track.clone()))
+        self.entries.with(|entries| {
+            entries
+                .iter()
+                .find(|e| e.track.id == id)
+                .map(|e| e.track.clone())
+        })
     }
 
     /// `selected_track`と同じだが、**リアクティブに追跡しない**(位置の更新のたびに再計算したくない、重い処理から読む用)。
     pub fn selected_track_untracked(&self) -> Option<Track> {
         let id = self.selected.get_untracked()?;
-        self.entries.with_untracked(|entries| entries.iter().find(|e| e.track.id == id).map(|e| e.track.clone()))
+        self.entries.with_untracked(|entries| {
+            entries
+                .iter()
+                .find(|e| e.track.id == id)
+                .map(|e| e.track.clone())
+        })
     }
 
     /// トラックを選択する(`None`で解除)。
@@ -255,7 +265,13 @@ fn glyph(kind: SymbolKind) -> Vec<Vec<[f64; 2]>> {
     // (中心線上の点(x=0)は折り返さない)。
     fn mirrored(right_half: &[[f64; 2]]) -> Vec<[f64; 2]> {
         let mut points: Vec<[f64; 2]> = right_half.to_vec();
-        points.extend(right_half.iter().rev().filter(|p| p[0] != 0.0).map(|p| [-p[0], p[1]]));
+        points.extend(
+            right_half
+                .iter()
+                .rev()
+                .filter(|p| p[0] != 0.0)
+                .map(|p| [-p[0], p[1]]),
+        );
         points
     }
     fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<[f64; 2]> {
@@ -292,12 +308,20 @@ fn glyph(kind: SymbolKind) -> Vec<Vec<[f64; 2]>> {
                     [0.32 * t.cos(), 0.1 + 0.5 * t.sin()]
                 })
                 .collect();
-            vec![body, rect(-0.06, -1.0, 0.06, -0.3), bar(0.95, 0.06, 45.0), bar(0.95, 0.06, -45.0)]
+            vec![
+                body,
+                rect(-0.06, -1.0, 0.06, -0.3),
+                bar(0.95, 0.06, 45.0),
+                bar(0.95, 0.06, -45.0),
+            ]
         }
         // 船首がとがった船体。
         SymbolKind::Ship => vec![mirrored(&[[0.0, 1.0], [0.42, 0.45], [0.42, -0.85]])],
         // 車体+進行方向の三角。
-        SymbolKind::Vehicle => vec![rect(-0.5, -0.7, 0.5, 0.55), vec![[0.0, 1.0], [-0.32, 0.6], [0.32, 0.6]]],
+        SymbolKind::Vehicle => vec![
+            rect(-0.5, -0.7, 0.5, 0.55),
+            vec![[0.0, 1.0], [-0.32, 0.6], [0.32, 0.6]],
+        ],
         // 細い弾体と尾部の安定翼。
         SymbolKind::Missile => vec![mirrored(&[
             [0.0, 1.0],
@@ -319,7 +343,12 @@ fn push_symbol(
 ) {
     for p in triangles {
         let offset = [p[0] as f32 * scale_px, p[1] as f32 * scale_px];
-        out.push(DrawVertex::oriented_billboard(anchor, offset, heading_rad, color));
+        out.push(DrawVertex::oriented_billboard(
+            anchor,
+            offset,
+            heading_rad,
+            color,
+        ));
     }
 }
 
@@ -356,13 +385,24 @@ pub struct TrackGeometry {
 }
 
 /// 選択の強調の輪(円環)を`out`に追加する(画面サイズ固定のビルボード)。
-fn push_ring(out: &mut Vec<DrawVertex>, anchor: [f32; 3], outer_px: f32, inner_px: f32, color: [f32; 4]) {
+fn push_ring(
+    out: &mut Vec<DrawVertex>,
+    anchor: [f32; 3],
+    outer_px: f32,
+    inner_px: f32,
+    color: [f32; 4],
+) {
     let at = |r: f32, i: usize| {
         let t = std::f32::consts::TAU * i as f32 / SELECT_RING_SEGMENTS as f32;
         [r * t.cos(), r * t.sin()]
     };
     for i in 0..SELECT_RING_SEGMENTS {
-        let (a, b, c, d) = (at(outer_px, i), at(outer_px, i + 1), at(inner_px, i + 1), at(inner_px, i));
+        let (a, b, c, d) = (
+            at(outer_px, i),
+            at(outer_px, i + 1),
+            at(inner_px, i + 1),
+            at(inner_px, i),
+        );
         for p in [a, b, c, a, c, d] {
             out.push(DrawVertex::billboard(anchor, p, color));
         }
@@ -403,7 +443,11 @@ fn label_detail(track: &Track) -> String {
 }
 
 /// トラック一覧から、描画用の頂点とラベルを作る。
-pub fn build_track_geometry(ctx: &BuildContext, entries: &[TrackEntry], options: TrackOptions<'_>) -> TrackGeometry {
+pub fn build_track_geometry(
+    ctx: &BuildContext,
+    entries: &[TrackEntry],
+    options: TrackOptions<'_>,
+) -> TrackGeometry {
     let mut geometry = TrackGeometry::default();
     // 種別ごとの三角形(同じ形を何度も三角形分割しないよう、種別ごとに1回だけ作る)。
     let mut glyphs: HashMap<u8, Vec<[f64; 2]>> = HashMap::new();
@@ -414,7 +458,9 @@ pub fn build_track_geometry(ctx: &BuildContext, entries: &[TrackEntry], options:
         let base = track.affiliation.color();
         let color = base.to_array();
         let height = height_of(ctx, track.lat_deg, track.lon_deg, track.altitude, TRACK_M);
-        let anchor = ctx.mesh_transform.transform(track.lat_deg, track.lon_deg, height);
+        let anchor = ctx
+            .mesh_transform
+            .transform(track.lat_deg, track.lon_deg, height);
 
         // 航跡: 過去の位置→現在位置。
         if options.trails && !entry.trail.is_empty() {
@@ -422,36 +468,79 @@ pub fn build_track_geometry(ctx: &BuildContext, entries: &[TrackEntry], options:
                 .trail
                 .iter()
                 .map(|&(lat, lon, altitude)| {
-                    ctx.mesh_transform.transform(lat, lon, height_of(ctx, lat, lon, altitude, TRACK_M))
+                    ctx.mesh_transform.transform(
+                        lat,
+                        lon,
+                        height_of(ctx, lat, lon, altitude, TRACK_M),
+                    )
                 })
                 .collect();
             points.push(anchor);
-            append_line_strip(out, &points, false, base.with_alpha(LINE_ALPHA).to_array(), TRAIL_WIDTH_PX);
+            append_line_strip(
+                out,
+                &points,
+                false,
+                base.with_alpha(LINE_ALPHA).to_array(),
+                TRAIL_WIDTH_PX,
+            );
         }
 
         // 高度線: 現在位置から真下(地表)へ。
         if options.altitude_lines {
             let ground = (ctx.ground)(track.lat_deg, track.lon_deg);
             if height - ground > ALTITUDE_LINE_MIN_M {
-                let foot = ctx.mesh_transform.transform(track.lat_deg, track.lon_deg, ground + TRACK_M);
-                append_line_strip(out, &[anchor, foot], false, base.with_alpha(LINE_ALPHA).to_array(), ALTITUDE_LINE_WIDTH_PX);
+                let foot =
+                    ctx.mesh_transform
+                        .transform(track.lat_deg, track.lon_deg, ground + TRACK_M);
+                append_line_strip(
+                    out,
+                    &[anchor, foot],
+                    false,
+                    base.with_alpha(LINE_ALPHA).to_array(),
+                    ALTITUDE_LINE_WIDTH_PX,
+                );
             }
         }
 
         // 選択中: シンボルの後ろに強調の輪(縁取り→白)。
         if options.selected == Some(track.id) {
-            push_ring(out, anchor, SELECT_RING_OUTER_PX, SELECT_RING_INNER_PX - 1.0, SYMBOL_OUTLINE_COLOR);
-            push_ring(out, anchor, SELECT_RING_INNER_PX + SELECT_RING_BAND_PX, SELECT_RING_INNER_PX, [1.0, 1.0, 1.0, 1.0]);
+            push_ring(
+                out,
+                anchor,
+                SELECT_RING_OUTER_PX,
+                SELECT_RING_INNER_PX - 1.0,
+                SYMBOL_OUTLINE_COLOR,
+            );
+            push_ring(
+                out,
+                anchor,
+                SELECT_RING_INNER_PX + SELECT_RING_BAND_PX,
+                SELECT_RING_INNER_PX,
+                [1.0, 1.0, 1.0, 1.0],
+            );
         }
 
         // シンボル: 縁取り(暗色、少し大きく)→本体。3Dモデルで描いているトラックは描かない。
-        if !options.symbols_hidden.is_some_and(|hidden| hidden.contains(&track.id)) {
+        if !options
+            .symbols_hidden
+            .is_some_and(|hidden| hidden.contains(&track.id))
+        {
             let triangles = glyphs.entry(track.kind as u8).or_insert_with(|| {
-                glyph(track.kind).iter().flat_map(|polygon| triangulate(polygon)).collect()
+                glyph(track.kind)
+                    .iter()
+                    .flat_map(|polygon| triangulate(polygon))
+                    .collect()
             });
             let heading = track.heading_deg.to_radians() as f32;
             let half = SYMBOL_SIZE_PX * 0.5;
-            push_symbol(out, anchor, heading, triangles, half * SYMBOL_OUTLINE_SCALE, SYMBOL_OUTLINE_COLOR);
+            push_symbol(
+                out,
+                anchor,
+                heading,
+                triangles,
+                half * SYMBOL_OUTLINE_SCALE,
+                SYMBOL_OUTLINE_COLOR,
+            );
             push_symbol(out, anchor, heading, triangles, half, color);
         }
 
@@ -474,7 +563,10 @@ mod tests {
     use crate::terrain::geodesy::Ellipsoid;
     use crate::terrain::geodesy::EnuTransform;
     use crate::terrain::origin::Origin;
-    const ORIGIN: Origin = Origin { lat_deg: 35.355556, lon_deg: 138.859722 };
+    const ORIGIN: Origin = Origin {
+        lat_deg: 35.355556,
+        lon_deg: 138.859722,
+    };
 
     fn track(id: u64, lat: f64, lon: f64, altitude: Altitude) -> Track {
         Track {
@@ -495,7 +587,12 @@ mod tests {
     fn build(entries: &[TrackEntry], options: TrackOptions<'_>) -> TrackGeometry {
         let transform = EnuTransform::new(&ORIGIN, &Ellipsoid::WGS84);
         let ground = |_: f64, _: f64| 100.0;
-        let ctx = BuildContext { mesh_transform: &transform, ellipsoid: &Ellipsoid::WGS84, ground: &ground, viewport_px: (800.0, 600.0) };
+        let ctx = BuildContext {
+            mesh_transform: &transform,
+            ellipsoid: &Ellipsoid::WGS84,
+            ground: &ground,
+            viewport_px: (800.0, 600.0),
+        };
         build_track_geometry(&ctx, entries, options)
     }
 
@@ -514,13 +611,32 @@ mod tests {
             for polygon in &polygons {
                 assert!(polygon.len() >= 3, "{kind:?}");
                 let triangles = triangulate(polygon);
-                assert_eq!(triangles.len(), (polygon.len() - 2) * 3, "{kind:?}: 単純多角形は n-2 個の三角形になる");
+                assert_eq!(
+                    triangles.len(),
+                    (polygon.len() - 2) * 3,
+                    "{kind:?}: 単純多角形は n-2 個の三角形になる"
+                );
                 let area: f64 = triangles
-                    .chunks_exact(3)
-                    .map(|t| ((t[1][0] - t[0][0]) * (t[2][1] - t[0][1]) - (t[1][1] - t[0][1]) * (t[2][0] - t[0][0])).abs() * 0.5)
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .map(|t| {
+                        ((t[1][0] - t[0][0]) * (t[2][1] - t[0][1])
+                            - (t[1][1] - t[0][1]) * (t[2][0] - t[0][0]))
+                            .abs()
+                            * 0.5
+                    })
                     .sum();
-                assert!((area - signed_area(polygon).abs()).abs() < 1e-9, "{kind:?}: 三角形の面積の和が多角形の面積と一致する");
-                assert!(polygon.iter().all(|p| p[0].abs() <= 1.0 && p[1].abs() <= 1.0), "{kind:?}");
+                assert!(
+                    (area - signed_area(polygon).abs()).abs() < 1e-9,
+                    "{kind:?}: 三角形の面積の和が多角形の面積と一致する"
+                );
+                assert!(
+                    polygon
+                        .iter()
+                        .all(|p| p[0].abs() <= 1.0 && p[1].abs() <= 1.0),
+                    "{kind:?}"
+                );
             }
         }
     }
@@ -537,53 +653,117 @@ mod tests {
 
     #[test]
     fn symbol_is_oriented_billboard_with_heading_and_outline() {
-        let entries = [TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail: vec![] }];
-        let geometry = build(&entries, TrackOptions { selected: None, trails: false, altitude_lines: false, symbols_hidden: None });
+        let entries = [TrackEntry {
+            track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)),
+            trail: vec![],
+        }];
+        let geometry = build(
+            &entries,
+            TrackOptions {
+                selected: None,
+                trails: false,
+                altitude_lines: false,
+                symbols_hidden: None,
+            },
+        );
         assert_eq!(geometry.labels.len(), 1);
         let v = &geometry.vertices;
-        assert!(!v.is_empty() && v.len() % 6 == 0, "縁取りと本体で同じ数の三角形");
+        assert!(
+            !v.is_empty() && v.len().is_multiple_of(6),
+            "縁取りと本体で同じ数の三角形"
+        );
         // 前半が縁取り(暗色)、後半が本体(所属の色)。全頂点が同じアンカー・進行方向・向きつきビルボード。
         let (outline, body) = v.split_at(v.len() / 2);
         assert!(outline.iter().all(|x| x.color == SYMBOL_OUTLINE_COLOR));
-        assert!(body.iter().all(|x| x.color == Affiliation::Friendly.color().to_array()));
-        assert!(v.iter().all(|x| x.position == v[0].position && x.params[2] == 2.0));
-        assert!((v[0].params[0] - std::f32::consts::FRAC_PI_2).abs() < 1e-6, "進行方向90度=東");
+        assert!(body
+            .iter()
+            .all(|x| x.color == Affiliation::Friendly.color().to_array()));
+        assert!(v
+            .iter()
+            .all(|x| x.position == v[0].position && x.params[2] == 2.0));
+        assert!(
+            (v[0].params[0] - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
+            "進行方向90度=東"
+        );
         // 縁取りは本体より大きい。
-        let extent = |vs: &[DrawVertex]| vs.iter().map(|x| x.aux[1].abs().max(x.aux[0].abs())).fold(0.0, f32::max);
+        let extent = |vs: &[DrawVertex]| {
+            vs.iter()
+                .map(|x| x.aux[1].abs().max(x.aux[0].abs()))
+                .fold(0.0, f32::max)
+        };
         assert!(extent(outline) > extent(body));
-        assert!((extent(body) - SYMBOL_SIZE_PX * 0.5).abs() < 1e-3, "機首が半分の大きさ");
+        assert!(
+            (extent(body) - SYMBOL_SIZE_PX * 0.5).abs() < 1e-3,
+            "機首が半分の大きさ"
+        );
     }
 
     #[test]
     fn hidden_symbols_are_skipped_but_trails_and_labels_stay() {
         let entries = [
-            TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail: vec![(35.3, 138.8, Altitude::Msl(3000.0))] },
-            TrackEntry { track: track(2, 35.5, 139.0, Altitude::Msl(3000.0)), trail: vec![] },
+            TrackEntry {
+                track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)),
+                trail: vec![(35.3, 138.8, Altitude::Msl(3000.0))],
+            },
+            TrackEntry {
+                track: track(2, 35.5, 139.0, Altitude::Msl(3000.0)),
+                trail: vec![],
+            },
         ];
-        let options = |hidden| TrackOptions { selected: None, trails: true, altitude_lines: false, symbols_hidden: hidden };
+        let options = |hidden| TrackOptions {
+            selected: None,
+            trails: true,
+            altitude_lines: false,
+            symbols_hidden: hidden,
+        };
         let all = build(&entries, options(None));
         let hidden = HashSet::from([1]);
         let some = build(&entries, options(Some(&hidden)));
-        let symbol_vertices = |g: &TrackGeometry| g.vertices.iter().filter(|v| v.params[2] == 2.0).count();
-        assert_eq!(symbol_vertices(&all), 2 * symbol_vertices(&some), "トラック1のシンボル(2つあるうちの1つ)だけが消える");
+        let symbol_vertices =
+            |g: &TrackGeometry| g.vertices.iter().filter(|v| v.params[2] == 2.0).count();
+        assert_eq!(
+            symbol_vertices(&all),
+            2 * symbol_vertices(&some),
+            "トラック1のシンボル(2つあるうちの1つ)だけが消える"
+        );
         assert_eq!(some.labels.len(), 2, "ラベルは残る");
         assert_eq!(
-            all.vertices.iter().filter(|v| v.params[0] == TRAIL_WIDTH_PX).count(),
-            some.vertices.iter().filter(|v| v.params[0] == TRAIL_WIDTH_PX).count(),
+            all.vertices
+                .iter()
+                .filter(|v| v.params[0] == TRAIL_WIDTH_PX)
+                .count(),
+            some.vertices
+                .iter()
+                .filter(|v| v.params[0] == TRAIL_WIDTH_PX)
+                .count(),
             "航跡(軌跡)は残る"
         );
     }
 
     #[test]
     fn altitude_line_only_for_aircraft_high_above_ground() {
-        let high = TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail: vec![] };
-        let low = TrackEntry { track: track(2, 35.4, 138.9, Altitude::AboveGround(0.0)), trail: vec![] };
+        let high = TrackEntry {
+            track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)),
+            trail: vec![],
+        };
+        let low = TrackEntry {
+            track: track(2, 35.4, 138.9, Altitude::AboveGround(0.0)),
+            trail: vec![],
+        };
         let lines = |entry: &TrackEntry, altitude_lines| {
-            build(std::slice::from_ref(entry), TrackOptions { selected: None, trails: false, altitude_lines, symbols_hidden: None })
-                .vertices
-                .iter()
-                .filter(|v| v.params[0] > 0.0 && v.params[2] == 0.0)
-                .count()
+            build(
+                std::slice::from_ref(entry),
+                TrackOptions {
+                    selected: None,
+                    trails: false,
+                    altitude_lines,
+                    symbols_hidden: None,
+                },
+            )
+            .vertices
+            .iter()
+            .filter(|v| v.params[0] > 0.0 && v.params[2] == 0.0)
+            .count()
         };
         assert_eq!(lines(&high, true), 6, "線分1本=三角形2枚");
         assert_eq!(lines(&high, false), 0, "設定でOFF");
@@ -593,18 +773,31 @@ mod tests {
     #[test]
     fn trail_grows_only_when_moved_and_is_capped() {
         // 初回は航跡なし。動かない間は増えない。250m以上動くと、前回の位置が航跡に入る。
-        let a = TrackEntry { track: track(1, 35.0, 139.0, Altitude::Msl(0.0)), trail: vec![] };
+        let a = TrackEntry {
+            track: track(1, 35.0, 139.0, Altitude::Msl(0.0)),
+            trail: vec![],
+        };
         assert!(advance_trail(None).is_empty());
         let trail = advance_trail(Some(a.clone()));
         assert_eq!(trail.len(), 1, "空の航跡には最初の位置が入る");
-        let b = TrackEntry { track: track(1, 35.0001, 139.0, Altitude::Msl(0.0)), trail: trail.clone() };
+        let b = TrackEntry {
+            track: track(1, 35.0001, 139.0, Altitude::Msl(0.0)),
+            trail: trail.clone(),
+        };
         assert_eq!(advance_trail(Some(b)).len(), 1, "11m動いただけでは増えない");
-        let c = TrackEntry { track: track(1, 35.01, 139.0, Altitude::Msl(0.0)), trail };
+        let c = TrackEntry {
+            track: track(1, 35.01, 139.0, Altitude::Msl(0.0)),
+            trail,
+        };
         assert_eq!(advance_trail(Some(c)).len(), 2, "1km動いたら増える");
         // 上限を超えたら古い方から捨てる。
-        let long: Vec<(f64, f64, Altitude)> =
-            (0..TRAIL_MAX_POINTS).map(|i| (10.0 + i as f64 * 0.01, 139.0, Altitude::Msl(0.0))).collect();
-        let d = TrackEntry { track: track(1, 20.0, 139.0, Altitude::Msl(0.0)), trail: long.clone() };
+        let long: Vec<(f64, f64, Altitude)> = (0..TRAIL_MAX_POINTS)
+            .map(|i| (10.0 + i as f64 * 0.01, 139.0, Altitude::Msl(0.0)))
+            .collect();
+        let d = TrackEntry {
+            track: track(1, 20.0, 139.0, Altitude::Msl(0.0)),
+            trail: long.clone(),
+        };
         let capped = advance_trail(Some(d));
         assert_eq!(capped.len(), TRAIL_MAX_POINTS);
         assert_eq!(capped[0], long[1]);
@@ -613,14 +806,34 @@ mod tests {
 
     #[test]
     fn trail_line_connects_past_positions_to_current() {
-        let trail = vec![(35.30, 138.80, Altitude::Msl(3000.0)), (35.35, 138.85, Altitude::Msl(3000.0))];
-        let entry = TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail };
-        let options = TrackOptions { selected: None, trails: true, altitude_lines: false, symbols_hidden: None };
+        let trail = vec![
+            (35.30, 138.80, Altitude::Msl(3000.0)),
+            (35.35, 138.85, Altitude::Msl(3000.0)),
+        ];
+        let entry = TrackEntry {
+            track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)),
+            trail,
+        };
+        let options = TrackOptions {
+            selected: None,
+            trails: true,
+            altitude_lines: false,
+            symbols_hidden: None,
+        };
         let with = build(std::slice::from_ref(&entry), options).vertices;
-        let without = build(&[TrackEntry { trail: vec![], ..entry.clone() }], options).vertices;
+        let without = build(
+            &[TrackEntry {
+                trail: vec![],
+                ..entry.clone()
+            }],
+            options,
+        )
+        .vertices;
         // 航跡の点は3つ(過去2+現在)=線分2本=三角形4枚=12頂点。
         assert_eq!(with.len() - without.len(), 12);
-        assert!(with.iter().any(|v| v.params[0] == TRAIL_WIDTH_PX && (v.color[3] - LINE_ALPHA).abs() < 1e-6));
+        assert!(with
+            .iter()
+            .any(|v| v.params[0] == TRAIL_WIDTH_PX && (v.color[3] - LINE_ALPHA).abs() < 1e-6));
     }
 
     #[test]
@@ -634,23 +847,60 @@ mod tests {
     #[test]
     fn selected_track_gets_a_ring_and_a_highlighted_label() {
         let entries = [
-            TrackEntry { track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)), trail: vec![] },
-            TrackEntry { track: track(2, 35.5, 139.0, Altitude::Msl(3000.0)), trail: vec![] },
+            TrackEntry {
+                track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)),
+                trail: vec![],
+            },
+            TrackEntry {
+                track: track(2, 35.5, 139.0, Altitude::Msl(3000.0)),
+                trail: vec![],
+            },
         ];
-        let none = build(&entries, TrackOptions { selected: None, trails: false, altitude_lines: false, symbols_hidden: None });
-        let one = build(&entries, TrackOptions { selected: Some(2), trails: false, altitude_lines: false, symbols_hidden: None });
+        let none = build(
+            &entries,
+            TrackOptions {
+                selected: None,
+                trails: false,
+                altitude_lines: false,
+                symbols_hidden: None,
+            },
+        );
+        let one = build(
+            &entries,
+            TrackOptions {
+                selected: Some(2),
+                trails: false,
+                altitude_lines: false,
+                symbols_hidden: None,
+            },
+        );
         // 輪は縁取りと白の2本の円環(1本=分割数x三角形2枚x3頂点)。
-        assert_eq!(one.vertices.len() - none.vertices.len(), 2 * SELECT_RING_SEGMENTS * 6);
-        assert_eq!(one.labels.iter().map(|l| (l.id, l.selected)).collect::<Vec<_>>(), [(1, false), (2, true)]);
+        assert_eq!(
+            one.vertices.len() - none.vertices.len(),
+            2 * SELECT_RING_SEGMENTS * 6
+        );
+        assert_eq!(
+            one.labels
+                .iter()
+                .map(|l| (l.id, l.selected))
+                .collect::<Vec<_>>(),
+            [(1, false), (2, true)]
+        );
         // 輪は選択したトラックの位置(アンカー)にあり、白い輪が含まれ、円環が縁取りの中(縁取りの半径以内)に収まる。
         let anchor = one.labels[1].position;
         let ring: Vec<&DrawVertex> = one.vertices.iter().filter(|v| v.params[2] == 1.0).collect();
         assert!(ring.iter().all(|v| v.position == anchor));
         assert!(ring.iter().any(|v| v.color == [1.0, 1.0, 1.0, 1.0]));
-        let max_radius = ring.iter().map(|v| v.aux[0].hypot(v.aux[1])).fold(0.0, f32::max);
-        assert!((max_radius - SELECT_RING_OUTER_PX).abs() < 1e-3, "max_radius={max_radius}");
+        let max_radius = ring
+            .iter()
+            .map(|v| v.aux[0].hypot(v.aux[1]))
+            .fold(0.0, f32::max);
+        assert!(
+            (max_radius - SELECT_RING_OUTER_PX).abs() < 1e-3,
+            "max_radius={max_radius}"
+        );
         // 輪はシンボルより大きい(シンボルの縁取りは半径19.5px)。
-        assert!(SELECT_RING_INNER_PX - 1.0 > SYMBOL_SIZE_PX * 0.5 * SYMBOL_OUTLINE_SCALE);
+        const { assert!(SELECT_RING_INNER_PX - 1.0 > SYMBOL_SIZE_PX * 0.5 * SYMBOL_OUTLINE_SCALE) };
     }
 
     #[test]
@@ -663,14 +913,60 @@ mod tests {
             glam::Vec4::ZERO,
         );
         // 画面(800x600)の中心は(0,0)。x=+0.1(z=-1でw=1) → 画面で右へ40px。
-        let anchors = [(1, [0.0, 0.0, -1.0]), (2, [0.1, 0.0, -1.0]), (3, [0.0, 0.0, 1.0])];
+        let anchors = [
+            (1, [0.0, 0.0, -1.0]),
+            (2, [0.1, 0.0, -1.0]),
+            (3, [0.0, 0.0, 1.0]),
+        ];
         let center = (400.0, 300.0);
-        assert_eq!(pick_track(&anchors, &vp, (800.0, 600.0), center, PICK_RADIUS_PX), Some(1));
-        assert_eq!(pick_track(&anchors, &vp, (800.0, 600.0), (435.0, 300.0), PICK_RADIUS_PX), Some(2), "近い方");
-        assert_eq!(pick_track(&anchors, &vp, (800.0, 600.0), (420.0, 300.0), PICK_RADIUS_PX), Some(1), "20px離れた1と、20px離れた2は、先に見つけた近い方(同距離なら先)");
-        assert_eq!(pick_track(&anchors, &vp, (800.0, 600.0), (600.0, 100.0), PICK_RADIUS_PX), None, "半径の外");
+        assert_eq!(
+            pick_track(&anchors, &vp, (800.0, 600.0), center, PICK_RADIUS_PX),
+            Some(1)
+        );
+        assert_eq!(
+            pick_track(
+                &anchors,
+                &vp,
+                (800.0, 600.0),
+                (435.0, 300.0),
+                PICK_RADIUS_PX
+            ),
+            Some(2),
+            "近い方"
+        );
+        assert_eq!(
+            pick_track(
+                &anchors,
+                &vp,
+                (800.0, 600.0),
+                (420.0, 300.0),
+                PICK_RADIUS_PX
+            ),
+            Some(1),
+            "20px離れた1と、20px離れた2は、先に見つけた近い方(同距離なら先)"
+        );
+        assert_eq!(
+            pick_track(
+                &anchors,
+                &vp,
+                (800.0, 600.0),
+                (600.0, 100.0),
+                PICK_RADIUS_PX
+            ),
+            None,
+            "半径の外"
+        );
         // カメラの後ろのアンカー(3)は、画面上の位置が同じでも選ばれない。
-        assert_eq!(pick_track(&[(3, [0.0, 0.0, 1.0])], &vp, (800.0, 600.0), center, PICK_RADIUS_PX), None);
+        assert_eq!(
+            pick_track(
+                &[(3, [0.0, 0.0, 1.0])],
+                &vp,
+                (800.0, 600.0),
+                center,
+                PICK_RADIUS_PX
+            ),
+            None
+        );
     }
 
     #[test]
@@ -681,14 +977,28 @@ mod tests {
         let owner = leptos::reactive::owner::Owner::new();
         owner.with(|| {
             let state = TracksState::new();
-            state.set(vec![track(1, 35.0, 139.0, Altitude::Msl(0.0)), track(2, 35.1, 139.1, Altitude::Msl(0.0))]);
+            state.set(vec![
+                track(1, 35.0, 139.0, Altitude::Msl(0.0)),
+                track(2, 35.1, 139.1, Altitude::Msl(0.0)),
+            ]);
             state.select(Some(2));
-            assert_eq!(state.selected_track().map(|t| t.label), Some("T2".to_string()));
+            assert_eq!(
+                state.selected_track().map(|t| t.label),
+                Some("T2".to_string())
+            );
             state.set(vec![track(2, 35.2, 139.2, Altitude::Msl(0.0))]);
             assert_eq!(state.selected.get_untracked(), Some(2));
-            assert_eq!(state.selected_track().map(|t| t.lat_deg), Some(35.2), "最新の位置");
+            assert_eq!(
+                state.selected_track().map(|t| t.lat_deg),
+                Some(35.2),
+                "最新の位置"
+            );
             state.set(vec![track(1, 35.0, 139.0, Altitude::Msl(0.0))]);
-            assert_eq!(state.selected.get_untracked(), None, "選択中のトラックが消えたら解除");
+            assert_eq!(
+                state.selected.get_untracked(),
+                None,
+                "選択中のトラックが消えたら解除"
+            );
             state.select(Some(1));
             state.clear();
             assert_eq!(state.selected.get_untracked(), None);

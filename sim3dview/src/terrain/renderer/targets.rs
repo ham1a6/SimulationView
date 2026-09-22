@@ -41,7 +41,11 @@ fn create_target(
 ) -> wgpu::TextureView {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(label),
-        size: wgpu::Extent3d { width: width.max(1), height: height.max(1), depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count,
         dimension: wgpu::TextureDimension::D2,
@@ -65,7 +69,12 @@ pub(super) struct RenderTargets {
 }
 
 impl RenderTargets {
-    pub(super) fn new(device: &wgpu::Device, format: wgpu::TextureFormat, canvas_width: u32, canvas_height: u32) -> Self {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        canvas_width: u32,
+        canvas_height: u32,
+    ) -> Self {
         let size = supersample_size(canvas_width, canvas_height);
         let attachment = wgpu::TextureUsages::RENDER_ATTACHMENT;
         Self {
@@ -77,7 +86,14 @@ impl RenderTargets {
                 SAMPLE_COUNT,
                 attachment,
             ),
-            msaa_view: create_target(device, "terrain_msaa_texture", format, size, SAMPLE_COUNT, attachment),
+            msaa_view: create_target(
+                device,
+                "terrain_msaa_texture",
+                format,
+                size,
+                SAMPLE_COUNT,
+                attachment,
+            ),
             supersample_color_view: create_target(
                 device,
                 "terrain_supersample_color_texture",
@@ -161,13 +177,28 @@ impl Downsample {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        let bind_group = Self::create_bind_group(device, &bind_group_layout, &sampler, supersample_color_view);
-        Self { pipeline, bind_group_layout, sampler, bind_group }
+        let bind_group =
+            Self::create_bind_group(device, &bind_group_layout, &sampler, supersample_color_view);
+        Self {
+            pipeline,
+            bind_group_layout,
+            sampler,
+            bind_group,
+        }
     }
 
     /// 縮小元(`supersample_color_view`)を作り直したときに、それを参照するbind groupも作り直す。
-    pub(super) fn rebind(&mut self, device: &wgpu::Device, supersample_color_view: &wgpu::TextureView) {
-        self.bind_group = Self::create_bind_group(device, &self.bind_group_layout, &self.sampler, supersample_color_view);
+    pub(super) fn rebind(
+        &mut self,
+        device: &wgpu::Device,
+        supersample_color_view: &wgpu::TextureView,
+    ) {
+        self.bind_group = Self::create_bind_group(
+            device,
+            &self.bind_group_layout,
+            &self.sampler,
+            supersample_color_view,
+        );
     }
 
     /// 縮小パスの描画(パスは呼び出し側が開く)。
@@ -191,7 +222,10 @@ impl Downsample {
                     binding: 0,
                     resource: wgpu::BindingResource::TextureView(supersample_color_view),
                 },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
             ],
         })
     }

@@ -22,9 +22,9 @@ use std::collections::HashMap;
 use glam::{Mat4, Vec3};
 
 use super::camera::{Camera, Projection};
+use super::geodesy::EnuTransform;
 use super::loader::{TerrainData, TileEntry, TileKey};
 use super::mesh::tile_vertex_count;
-use super::geodesy::EnuTransform;
 /// チャンクの頂点数の合計の上限(下限=レベル1の分を含む)。全タイルのレベル1は約1520万頂点
 /// (390タイル x 36チャンク x 1チャンク1085頂点)だが、見えていないタイルの下限は見えているタイルの
 /// 後回しなので、視野が狭ければ見えているチャンクを細かくする分が大きく残る。最細(30m)のチャンクは
@@ -82,8 +82,12 @@ impl<'a> ViewInfo<'a> {
     fn new(camera: &'a Camera, transform: &'a EnuTransform, canvas_height_px: f32) -> Self {
         let canvas_h = canvas_height_px.max(1.0);
         let (focus, tan_half, ortho_pixel_m) = match camera.projection {
-            Projection::Perspective { fov_y_radians } => (camera.eye, (fov_y_radians * 0.5).tan(), 0.0),
-            Projection::Orthographic { view_height_m } => (camera.target, 0.0, view_height_m / canvas_h),
+            Projection::Perspective { fov_y_radians } => {
+                (camera.eye, (fov_y_radians * 0.5).tan(), 0.0)
+            }
+            Projection::Orthographic { view_height_m } => {
+                (camera.target, 0.0, view_height_m / canvas_h)
+            }
         };
         let (focus_lat, focus_lon, _) =
             transform.enu_to_geodetic(focus.x as f64, focus.y as f64, focus.z as f64);
@@ -175,7 +179,14 @@ pub fn plan_levels(
     canvas_height_px: f32,
     resident: &HashMap<TileKey, TileLayout>,
 ) -> Vec<(TileKey, TileLayout)> {
-    plan_levels_with_budget(data, transform, camera, canvas_height_px, resident, DETAIL_VERTEX_BUDGET)
+    plan_levels_with_budget(
+        data,
+        transform,
+        camera,
+        canvas_height_px,
+        resident,
+        DETAIL_VERTEX_BUDGET,
+    )
 }
 
 /// `plan_levels`の頂点数の予算を指定できる版(単体テストで予算の配分を確かめるため)。
@@ -190,11 +201,18 @@ fn plan_levels_with_budget(
     budget: usize,
 ) -> Vec<(TileKey, TileLayout)> {
     let view = ViewInfo::new(camera, transform, canvas_height_px);
-    let mut infos: Vec<TileInfo> =
-        data.tiles().iter().map(|tile| evaluate_tile(data, &view, tile, resident)).collect();
+    let mut infos: Vec<TileInfo> = data
+        .tiles()
+        .iter()
+        .map(|tile| evaluate_tile(data, &view, tile, resident))
+        .collect();
 
     // 見えているタイルを近い順に、その後に視野の外のタイルを近い順に並べる。
-    infos.sort_by(|a, b| b.visible.cmp(&a.visible).then(a.distance.total_cmp(&b.distance)));
+    infos.sort_by(|a, b| {
+        b.visible
+            .cmp(&a.visible)
+            .then(a.distance.total_cmp(&b.distance))
+    });
 
     let mut levels = allocate_levels(data, &infos, budget);
     infos
@@ -265,7 +283,11 @@ fn evaluate_tile(
     let tile_ideal = ideal_level(data, view.pixel_m(distance), 1);
     let chunks = if !visible || tile_ideal == 1 {
         (0..chunk_count)
-            .map(|c| ChunkTarget { distance, visible, level: target_level(have(c), 1, visible, max_level) })
+            .map(|c| ChunkTarget {
+                distance,
+                visible,
+                level: target_level(have(c), 1, visible, max_level),
+            })
             .collect()
     } else {
         let step = 1.0 / k as f64;
@@ -283,7 +305,12 @@ fn evaluate_tile(
             })
             .collect()
     };
-    TileInfo { key: tile.key, distance, visible, chunks }
+    TileInfo {
+        key: tile.key,
+        distance,
+        visible,
+        chunks,
+    }
 }
 
 /// 予算の配分。`infos`は優先度の高い順(見えているタイルが先)。戻り値は、下限を確保できたタイルの
@@ -293,7 +320,11 @@ fn evaluate_tile(
 /// 見えていないタイルの下限まで先に確保すると、全タイル分の約1520万頂点が予算の大半を占め、見えている
 /// 遠方のチャンクを細かくする余裕が無くなるため。見えていないタイルは、予算が足りないとき全体表示に戻る
 /// (カメラを向け直すと、下限から順に取り直す)。
-fn allocate_levels(data: &TerrainData, infos: &[TileInfo], budget: usize) -> HashMap<TileKey, Vec<u8>> {
+fn allocate_levels(
+    data: &TerrainData,
+    infos: &[TileInfo],
+    budget: usize,
+) -> HashMap<TileKey, Vec<u8>> {
     let split = infos.partition_point(|info| info.visible);
     let (visible, hidden) = infos.split_at(split);
     let mut remaining = budget;
@@ -343,7 +374,11 @@ fn allocate_group(
             })
         })
         .collect();
-    upgrades.sort_by(|a, b| b.visible.cmp(&a.visible).then(a.distance.total_cmp(&b.distance)));
+    upgrades.sort_by(|a, b| {
+        b.visible
+            .cmp(&a.visible)
+            .then(a.distance.total_cmp(&b.distance))
+    });
     // レベルごとの周回: 1周目で全チャンクをレベル2まで、2周目でレベル3まで、…と上げる。1個ずつ最細まで
     // 上げると、近くの少数の最細チャンク(1個で約36万頂点)が予算を使い切り、遠くのチャンクが
     // 理想のレベルに届かず最低のレベル1のまま残るため。予算が尽きた周回で打ち切る(それより上の
@@ -370,13 +405,24 @@ mod tests {
     /// 実データと同じレベル定義(1度あたり60/180/600/1800/3600セル、6x6チャンク)の3x3タイル
     /// (緯度30〜33度・経度130〜133度)。標高は全部0m。
     fn data() -> TerrainData {
-        TerrainData::synthetic_with_levels(30, 130, 3, 3, vec![60, 180, 600, 1800, 3600], 6, |_, _| 0)
+        TerrainData::synthetic_with_levels(
+            30,
+            130,
+            3,
+            3,
+            vec![60, 180, 600, 1800, 3600],
+            6,
+            |_, _| 0,
+        )
     }
 
     /// 原点は中央のタイル(31,131)の中心。
     fn transform() -> EnuTransform {
         EnuTransform::new(
-            &Origin { lat_deg: 31.5, lon_deg: 131.5 },
+            &Origin {
+                lat_deg: 31.5,
+                lon_deg: 131.5,
+            },
             &Ellipsoid::WGS84,
         )
     }
@@ -394,7 +440,12 @@ mod tests {
     }
 
     fn levels_of(plan: &[(TileKey, TileLayout)], key: TileKey) -> Vec<u8> {
-        match &plan.iter().find(|(k, _)| *k == key).expect("tile in plan").1 {
+        match &plan
+            .iter()
+            .find(|(k, _)| *k == key)
+            .expect("tile in plan")
+            .1
+        {
             TileLayout::Chunks(l) => l.clone(),
             TileLayout::Whole => panic!("{key:?} is planned as Whole"),
         }
@@ -474,7 +525,8 @@ mod tests {
         let d = data();
         let per_tile = d.chunk_count() * chunk_vertex_cost(&d, 1);
         let budget = 9 * per_tile + 1_000_000; // 全タイルの下限+100万頂点だけ上げられる
-        let result = plan_levels_with_budget(&d, &transform(), &cam, 700.0, &HashMap::new(), budget);
+        let result =
+            plan_levels_with_budget(&d, &transform(), &cam, 700.0, &HashMap::new(), budget);
         let used: usize = result
             .iter()
             .map(|(_, p)| match p {
@@ -488,37 +540,68 @@ mod tests {
     }
 
     fn tile_info(key: TileKey, visible: bool, distance: f32, level: usize) -> TileInfo {
-        let chunks = (0..36).map(|_| ChunkTarget { distance, visible, level }).collect();
-        TileInfo { key, distance, visible, chunks }
+        let chunks = (0..36)
+            .map(|_| ChunkTarget {
+                distance,
+                visible,
+                level,
+            })
+            .collect();
+        TileInfo {
+            key,
+            distance,
+            visible,
+            chunks,
+        }
     }
 
     #[test]
     fn scarce_budget_raises_far_chunks_before_refining_near_ones() {
         let d = data();
         let base = 36 * chunk_vertex_cost(&d, 1);
-        let step = |level: usize| 36 * (chunk_vertex_cost(&d, level) - chunk_vertex_cost(&d, level - 1));
+        let step =
+            |level: usize| 36 * (chunk_vertex_cost(&d, level) - chunk_vertex_cost(&d, level - 1));
         // 近いタイルは最細(4)、遠いタイルはレベル2が目標。2つ分の下限+両方のレベル2+近いタイルの
         // レベル3へ約半分、の予算。
-        let infos = [tile_info((31, 131), true, 1_000.0, 4), tile_info((30, 130), true, 200_000.0, 2)];
+        let infos = [
+            tile_info((31, 131), true, 1_000.0, 4),
+            tile_info((30, 130), true, 200_000.0, 2),
+        ];
         let budget = 2 * base + 2 * step(2) + step(3) / 2;
         let levels = allocate_levels(&d, &infos, budget);
-        assert!(levels[&(30, 130)].iter().all(|&l| l == 2), "遠いタイルが先に目標へ届く");
+        assert!(
+            levels[&(30, 130)].iter().all(|&l| l == 2),
+            "遠いタイルが先に目標へ届く"
+        );
         let near = &levels[&(31, 131)];
-        assert!(near.iter().all(|&l| l >= 2) && near.iter().any(|&l| l == 3), "{near:?}");
-        assert!(near.iter().all(|&l| l <= 3), "最細へはまだ上げない: {near:?}");
+        assert!(
+            near.iter().all(|&l| l >= 2) && near.contains(&3),
+            "{near:?}"
+        );
+        assert!(
+            near.iter().all(|&l| l <= 3),
+            "最細へはまだ上げない: {near:?}"
+        );
     }
 
     #[test]
     fn tiles_outside_the_view_get_their_floor_only_after_visible_refinement() {
         let d = data();
         let base = 36 * chunk_vertex_cost(&d, 1);
-        let step = |level: usize| 36 * (chunk_vertex_cost(&d, level) - chunk_vertex_cost(&d, level - 1));
-        let infos = [tile_info((31, 131), true, 1_000.0, 3), tile_info((30, 130), false, 200_000.0, 1)];
+        let step =
+            |level: usize| 36 * (chunk_vertex_cost(&d, level) - chunk_vertex_cost(&d, level - 1));
+        let infos = [
+            tile_info((31, 131), true, 1_000.0, 3),
+            tile_info((30, 130), false, 200_000.0, 1),
+        ];
         // 見えているタイルをレベル3にしたあと、見えていないタイルの下限にはわずかに足りない予算。
         let budget = base + step(2) + step(3) + base - 1;
         let levels = allocate_levels(&d, &infos, budget);
         assert!(levels[&(31, 131)].iter().all(|&l| l == 3));
-        assert!(!levels.contains_key(&(30, 130)), "見えていないタイルは全体表示に戻る");
+        assert!(
+            !levels.contains_key(&(30, 130)),
+            "見えていないタイルは全体表示に戻る"
+        );
         // 余裕があれば、見えていないタイルも下限を確保する。
         let levels = allocate_levels(&d, &infos, budget + 1);
         assert!(levels[&(30, 130)].iter().all(|&l| l == 1));
@@ -534,9 +617,13 @@ mod tests {
             levels_of(&plan(&cam, &resident), key)
         };
         // 理想(1)より1つ細かい(2)だけなら保つ。
-        assert!(with(TileLayout::Chunks(vec![2; 36])).iter().all(|&l| l == 2));
+        assert!(with(TileLayout::Chunks(vec![2; 36]))
+            .iter()
+            .all(|&l| l == 2));
         // それより細かい(4)なら、1つ細かい所(2)まで下げる。
-        assert!(with(TileLayout::Chunks(vec![4; 36])).iter().all(|&l| l == 2));
+        assert!(with(TileLayout::Chunks(vec![4; 36]))
+            .iter()
+            .all(|&l| l == 2));
         // 全体表示からは、まず下限(1)から。
         assert!(with(TileLayout::Whole).iter().all(|&l| l == 1));
     }

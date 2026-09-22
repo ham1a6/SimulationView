@@ -21,7 +21,9 @@ pub fn SimulationStatusPanel() -> impl IntoView {
             ConnectionStatus::Connected => signals.app_status.get(),
             _ => None,
         };
-        app_status.map(|s| s.text).unwrap_or_else(|| "接続中".to_string())
+        app_status
+            .map(|s| s.text)
+            .unwrap_or_else(|| "接続中".to_string())
     };
 
     view! {

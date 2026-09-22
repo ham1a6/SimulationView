@@ -6,13 +6,13 @@ use std::rc::Rc;
 
 use leptos::prelude::*;
 
+use super::{frame::*, overlay::*, state::*};
 use crate::terrain::fetch;
-use crate::terrain::loader::{self, MeshKey, TileKey, WHOLE_TILE};
-use crate::terrain::lod::{self, TileLayout};
 use crate::terrain::geodesy::EnuTransform;
 use crate::terrain::heightmap;
+use crate::terrain::loader::{self, MeshKey, TileKey, WHOLE_TILE};
+use crate::terrain::lod::{self, TileLayout};
 use crate::terrain::mesh;
-use super::{frame::*, overlay::*, state::*};
 
 /// カメラ操作が止まってからLODを更新するまでの待ち時間(ミリ秒)。操作が続く間はメッシュ生成・
 /// 取得を繰り返さないためのデバウンスで、取得の完了やメッシュ反映の続きには使わない
@@ -136,7 +136,9 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
     };
 
     for (key, tile_plan) in plan {
-        let Some(tile) = terrain.tile(key) else { continue };
+        let Some(tile) = terrain.tile(key) else {
+            continue;
+        };
         let whole_key: MeshKey = (key.0, key.1, WHOLE_TILE);
         let current: Option<Vec<u8>> = match state.borrow().resident.get(&key) {
             Some(TileLayout::Chunks(v)) => Some(v.clone()),
@@ -171,26 +173,29 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
                     Some(levels) => levels,
                     None => {
                         // 全体表示からチャンク表示へ切り替えるには、全チャンクのレベル1が要る。
-                        if available.iter().any(|&l| l == 0) {
+                        if available.contains(&0) {
                             if request(state, key, 1, 0) {
                                 deferred = true;
                             }
                             continue;
                         }
-                        let cost: usize =
-                            available.iter().map(|&l| lod::chunk_vertex_cost(&terrain, l)).sum();
+                        let cost: usize = available
+                            .iter()
+                            .map(|&l| lod::chunk_vertex_cost(&terrain, l))
+                            .sum();
                         if over_budget(uploaded_vertices, cost) {
                             deferred_upload = true;
                             continue;
                         }
                         let mut s = state.borrow_mut();
-                        for c in 0..chunk_count {
-                            if let Some(m) = mesh::build_chunk_mesh(&terrain, tile, c, available[c], &transform)
+                        for (c, &level) in available.iter().enumerate().take(chunk_count) {
+                            if let Some(m) =
+                                mesh::build_chunk_mesh(&terrain, tile, c, level, &transform)
                             {
                                 if let Some(renderer) = s.renderer.as_mut() {
                                     renderer.set_mesh_faded((key.0, key.1, c as u8), &m);
                                 }
-                                terrain.set_chunk_level(key, c, available[c]);
+                                terrain.set_chunk_level(key, c, level);
                             }
                         }
                         if let Some(renderer) = s.renderer.as_mut() {
@@ -229,7 +234,9 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
                         deferred_upload = true;
                         continue;
                     }
-                    if let Some(m) = mesh::build_chunk_mesh(&terrain, tile, c, new_level, &transform) {
+                    if let Some(m) =
+                        mesh::build_chunk_mesh(&terrain, tile, c, new_level, &transform)
+                    {
                         let mut s = state.borrow_mut();
                         if let Some(renderer) = s.renderer.as_mut() {
                             renderer.set_mesh_faded((key.0, key.1, c as u8), &m);
@@ -243,7 +250,10 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
                     }
                 }
                 if resident_changed {
-                    state.borrow_mut().resident.insert(key, TileLayout::Chunks(levels));
+                    state
+                        .borrow_mut()
+                        .resident
+                        .insert(key, TileLayout::Chunks(levels));
                 }
             }
         }
@@ -308,22 +318,31 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
                 DETAIL_CACHE_LIMIT_BYTES,
             );
         }
-        let has_markers = !state.borrow().radar_markers.markers.get_untracked().is_empty();
+        let has_markers = !state
+            .borrow()
+            .radar_markers
+            .markers
+            .get_untracked()
+            .is_empty();
         if has_markers {
             let radar_markers = state.borrow().radar_markers;
             rebuild_markers_for_terrain(state, radar_markers);
         }
         // 地表に貼り付けた作図も、地形の高さが変わったので作り直す。
-        let follows_terrain = state
-            .borrow()
-            .drawings
-            .items
-            .with_untracked(|list| list.iter().any(|d| d.visible && d.shape.depends_on_terrain()));
+        let follows_terrain = state.borrow().drawings.items.with_untracked(|list| {
+            list.iter()
+                .any(|d| d.visible && d.shape.depends_on_terrain())
+        });
         if follows_terrain {
             rebuild_drawings(state);
         }
         // 航跡(地表基準のトラック・高度線)も地形の高さが変わったので作り直す。
-        if !state.borrow().tracks.entries.with_untracked(|list| list.is_empty()) {
+        if !state
+            .borrow()
+            .tracks
+            .entries
+            .with_untracked(|list| list.is_empty())
+        {
             rebuild_tracks(state);
         }
         render_frame(state);

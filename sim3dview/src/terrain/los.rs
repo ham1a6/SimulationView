@@ -2,9 +2,9 @@
 //! 地表をサンプリングし、地形による遮蔽と地球曲率(等価地球半径)を考慮した上で、
 //! 各方位角ごとの見通し限界距離を求める。`components/los_view.rs`から使う。
 
-use super::loader::TerrainData;
 use super::geodesy::EnuTransform;
 use super::heightmap::sample_heightmap;
+use super::loader::TerrainData;
 use super::origin::Origin;
 use super::profile::max_valid_distance;
 
@@ -102,7 +102,7 @@ fn curvature_drop_m(distance_m: f64, r_eff_m: f64) -> f64 {
 /// 方位角の刻み(mil)から、出力する方位の数を求める。`NUM_AZIMUTHS`(6400)を割り切る値でなければならない。
 fn azimuth_count(azimuth_step: usize) -> usize {
     assert!(
-        azimuth_step >= 1 && NUM_AZIMUTHS % azimuth_step == 0,
+        azimuth_step >= 1 && NUM_AZIMUTHS.is_multiple_of(azimuth_step),
         "azimuth_stepは{NUM_AZIMUTHS}を割り切る値にすること: {azimuth_step}"
     );
     NUM_AZIMUTHS / azimuth_step
@@ -166,7 +166,11 @@ impl RangeComputation {
 
     /// 1方位(方位角インデックス`az_i`)の距離。
     fn trace(&self, data: &TerrainData, az_i: usize) -> f64 {
-        let RayContext { transform, observer_altitude_msl, r_eff } = &self.ctx;
+        let RayContext {
+            transform,
+            observer_altitude_msl,
+            r_eff,
+        } = &self.ctx;
         let (_, dir_east, dir_north) = azimuth_direction(az_i);
 
         let data_max = max_valid_distance(data, transform, dir_east, dir_north);
@@ -195,7 +199,8 @@ impl RangeComputation {
                         max_angle = angle;
                     }
                     let target_angle =
-                        (target_altitude_m - curvature_drop_m(d, *r_eff) - observer_altitude_msl) / d;
+                        (target_altitude_m - curvature_drop_m(d, *r_eff) - observer_altitude_msl)
+                            / d;
                     if target_angle >= max_angle {
                         visible_range = d;
                     } else {
@@ -213,7 +218,10 @@ impl RangeComputation {
         self.ranges
             .into_iter()
             .enumerate()
-            .map(|(j, range_m)| LosPoint { azimuth_deg: azimuth_deg_of(j * step), range_m })
+            .map(|(j, range_m)| LosPoint {
+                azimuth_deg: azimuth_deg_of(j * step),
+                range_m,
+            })
             .collect()
     }
 
@@ -254,11 +262,18 @@ pub fn is_visible(
     target_lat_deg: f64,
     target_lon_deg: f64,
 ) -> bool {
-    let radar_origin = Origin { lat_deg: radar_lat_deg, lon_deg: radar_lon_deg };
-    let RayContext { transform, observer_altitude_msl, r_eff } =
-        RayContext::new(data, &radar_origin, radar_height_m);
+    let radar_origin = Origin {
+        lat_deg: radar_lat_deg,
+        lon_deg: radar_lon_deg,
+    };
+    let RayContext {
+        transform,
+        observer_altitude_msl,
+        r_eff,
+    } = RayContext::new(data, &radar_origin, radar_height_m);
 
-    let (target_distance, dir_east, dir_north) = transform_to_target(&transform, target_lat_deg, target_lon_deg);
+    let (target_distance, dir_east, dir_north) =
+        transform_to_target(&transform, target_lat_deg, target_lon_deg);
     if target_distance < 1.0 {
         return true;
     }
@@ -266,9 +281,11 @@ pub fn is_visible(
         return false;
     }
 
-    let target_elevation = sample_heightmap(data, target_lat_deg, target_lon_deg).unwrap_or(0.0) as f64;
+    let target_elevation =
+        sample_heightmap(data, target_lat_deg, target_lon_deg).unwrap_or(0.0) as f64;
     let target_angle =
-        (target_elevation - curvature_drop_m(target_distance, r_eff) - observer_altitude_msl) / target_distance;
+        (target_elevation - curvature_drop_m(target_distance, r_eff) - observer_altitude_msl)
+            / target_distance;
 
     let samples = ((target_distance / 500.0).ceil() as usize).clamp(10, MAX_TARGET_SAMPLES);
     for i in 1..samples {
@@ -298,11 +315,18 @@ pub fn min_visible_altitude(
     target_lat_deg: f64,
     target_lon_deg: f64,
 ) -> Option<f64> {
-    let radar_origin = Origin { lat_deg: radar_lat_deg, lon_deg: radar_lon_deg };
-    let RayContext { transform, observer_altitude_msl, r_eff } =
-        RayContext::new(data, &radar_origin, radar_height_m);
+    let radar_origin = Origin {
+        lat_deg: radar_lat_deg,
+        lon_deg: radar_lon_deg,
+    };
+    let RayContext {
+        transform,
+        observer_altitude_msl,
+        r_eff,
+    } = RayContext::new(data, &radar_origin, radar_height_m);
 
-    let (target_distance, dir_east, dir_north) = transform_to_target(&transform, target_lat_deg, target_lon_deg);
+    let (target_distance, dir_east, dir_north) =
+        transform_to_target(&transform, target_lat_deg, target_lon_deg);
     if target_distance > max_range_m {
         return None;
     }
@@ -325,7 +349,11 @@ pub fn min_visible_altitude(
     }
     // angle(h) = (h - curvature_drop(d) - observer_altitude_msl) / d が対象高度hについて線形なので、
     // angle(h) == required_angle となるhを直接解く(それ以上の高度なら見える下限)。
-    Some(required_angle * target_distance + curvature_drop_m(target_distance, r_eff) + observer_altitude_msl)
+    Some(
+        required_angle * target_distance
+            + curvature_drop_m(target_distance, r_eff)
+            + observer_altitude_msl,
+    )
 }
 
 /// 指定した1つの海抜高度(絶対標高、メートル)を飛ぶ対象について、全方位角の
@@ -342,7 +370,14 @@ pub fn compute_coverage_area(
     params: &LosParams,
     target_altitude_m: f64,
 ) -> Vec<LosPoint> {
-    RangeComputation::new(data, origin, params, RangeKind::AtAltitude(target_altitude_m), 1).run(data)
+    RangeComputation::new(
+        data,
+        origin,
+        params,
+        RangeKind::AtAltitude(target_altitude_m),
+        1,
+    )
+    .run(data)
 }
 
 /// 半球状ドーム表示(`terrain::markers`)1リングぶんの、全方位角の
@@ -386,8 +421,14 @@ impl DomeComputation {
             ctx: RayContext::new(data, origin, params.observer_height_m),
             max_range_m: params.max_range_m,
             elevation_degs: elevation_degs.to_vec(),
-            ring_tans: elevation_degs.iter().map(|d| d.to_radians().tan()).collect(),
-            ring_cos: elevation_degs.iter().map(|d| d.to_radians().cos()).collect(),
+            ring_tans: elevation_degs
+                .iter()
+                .map(|d| d.to_radians().tan())
+                .collect(),
+            ring_cos: elevation_degs
+                .iter()
+                .map(|d| d.to_radians().cos())
+                .collect(),
             azimuth_step,
             ring_slant_ranges: vec![vec![0.0; count]; elevation_degs.len()],
             done: 0,
@@ -415,8 +456,20 @@ impl DomeComputation {
 
     /// 1方位(出力の番号`j`)について、全リングのスラントレンジを求めて`ring_slant_ranges`へ書く。
     fn trace(&mut self, data: &TerrainData, j: usize) {
-        let Self { ctx, max_range_m, ring_tans, ring_cos, azimuth_step, ring_slant_ranges, .. } = self;
-        let RayContext { transform, observer_altitude_msl, r_eff } = &*ctx;
+        let Self {
+            ctx,
+            max_range_m,
+            ring_tans,
+            ring_cos,
+            azimuth_step,
+            ring_slant_ranges,
+            ..
+        } = self;
+        let RayContext {
+            transform,
+            observer_altitude_msl,
+            r_eff,
+        } = &*ctx;
         let num_rings = ring_tans.len();
         let (_, dir_east, dir_north) = azimuth_direction(j * *azimuth_step);
         let data_max = max_valid_distance(data, transform, dir_east, dir_north);
@@ -440,9 +493,17 @@ impl DomeComputation {
             // 遮蔽のない方角でも高い仰角のリングほど半径が不揃いになり(cos仰角で割るので数百mの凸凹)、
             // ドームが滑らかな球面にならない。
             let cap_reached = reach >= SAMPLES_PER_RAY || sample_distance(reach + 1) > cap;
-            let d = if cap_reached { cap } else { sample_distance(reach) };
+            let d = if cap_reached {
+                cap
+            } else {
+                sample_distance(reach)
+            };
             if d > 0.0 {
-                ring_slant_ranges[k][j] = if ring_cos[k] > 1e-6 { d / ring_cos[k] } else { d };
+                ring_slant_ranges[k][j] = if ring_cos[k] > 1e-6 {
+                    d / ring_cos[k]
+                } else {
+                    d
+                };
             }
         };
 
@@ -483,9 +544,15 @@ impl DomeComputation {
                 let points = ranges
                     .into_iter()
                     .enumerate()
-                    .map(|(j, range_m)| LosPoint { azimuth_deg: azimuth_deg_of(j * step), range_m })
+                    .map(|(j, range_m)| LosPoint {
+                        azimuth_deg: azimuth_deg_of(j * step),
+                        range_m,
+                    })
                     .collect();
-                DomeRing { elevation_deg, points }
+                DomeRing {
+                    elevation_deg,
+                    points,
+                }
             })
             .collect()
     }
@@ -523,7 +590,10 @@ mod tests {
     fn flat() -> (TerrainData, Origin) {
         (
             TerrainData::synthetic(30, 120, 3, 3, |_, _| 0),
-            Origin { lat_deg: 31.5, lon_deg: 121.5 },
+            Origin {
+                lat_deg: 31.5,
+                lon_deg: 121.5,
+            },
         )
     }
 
@@ -580,9 +650,25 @@ mod tests {
         let (lat, lon) = (31.5, 121.5);
         let at = |km: f64| lon + km / 94.9;
         // 尾根(東16km)の向こう25km地点は、41kmの地平線の内側でも尾根に遮られる。
-        assert!(!is_visible(&data, lat, lon, 100.0, 200_000.0, lat, at(25.0)));
+        assert!(!is_visible(
+            &data,
+            lat,
+            lon,
+            100.0,
+            200_000.0,
+            lat,
+            at(25.0)
+        ));
         // 反対側(西25km)は遮るものがなく見える。
-        assert!(is_visible(&data, lat, lon, 100.0, 200_000.0, lat, at(-25.0)));
+        assert!(is_visible(
+            &data,
+            lat,
+            lon,
+            100.0,
+            200_000.0,
+            lat,
+            at(-25.0)
+        ));
         // 尾根の手前は見える。
         assert!(is_visible(&data, lat, lon, 100.0, 200_000.0, lat, at(8.0)));
     }
@@ -600,29 +686,57 @@ mod tests {
         assert!(low < 5.0 && low > -20.0, "low={low}");
         // 最大観測範囲の外はNone、真上は観測点の高さ。
         assert!(min_visible_altitude(&data, lat, lon, 10.0, 20_000.0, lat, at(30.0)).is_none());
-        assert_eq!(min_visible_altitude(&data, lat, lon, 10.0, 20_000.0, lat, lon), Some(10.0));
+        assert_eq!(
+            min_visible_altitude(&data, lat, lon, 10.0, 20_000.0, lat, lon),
+            Some(10.0)
+        );
     }
 
     #[test]
     fn los_range_on_flat_ground_is_the_radio_horizon_in_every_direction() {
         let (data, origin) = flat();
-        let params = LosParams { observer_height_m: 10.0, max_range_m: 50_000.0 };
+        let params = LosParams {
+            observer_height_m: 10.0,
+            max_range_m: 50_000.0,
+        };
         let result = compute_los(&data, &origin, &params);
         assert_eq!(result.len(), NUM_AZIMUTHS);
         assert_eq!(result[1600].azimuth_deg, 90.0);
         let horizon = radio_horizon_m(10.0);
-        for p in [&result[0], &result[1600], &result[3200], &result[4800], &result[777]] {
-            assert!((p.range_m - horizon).abs() < 300.0, "az={} range={}", p.azimuth_deg, p.range_m);
+        for p in [
+            &result[0],
+            &result[1600],
+            &result[3200],
+            &result[4800],
+            &result[777],
+        ] {
+            assert!(
+                (p.range_m - horizon).abs() < 300.0,
+                "az={} range={}",
+                p.azimuth_deg,
+                p.range_m
+            );
         }
     }
 
     #[test]
     fn coverage_area_reaches_the_max_range_for_a_high_target_and_stops_at_the_ridge() {
         let (data, origin) = flat();
-        let params = LosParams { observer_height_m: 10.0, max_range_m: 30_000.0 };
+        let params = LosParams {
+            observer_height_m: 10.0,
+            max_range_m: 30_000.0,
+        };
         // 平坦地の上空1,000mを飛ぶ対象は、最大観測範囲(30km)までどの方位でも見える。
-        for p in compute_coverage_area(&data, &origin, &params, 1_000.0).iter().step_by(800) {
-            assert!((p.range_m - 30_000.0).abs() < 1.0, "az={} range={}", p.azimuth_deg, p.range_m);
+        for p in compute_coverage_area(&data, &origin, &params, 1_000.0)
+            .iter()
+            .step_by(800)
+        {
+            assert!(
+                (p.range_m - 30_000.0).abs() < 1.0,
+                "az={} range={}",
+                p.azimuth_deg,
+                p.range_m
+            );
         }
         // 東の尾根(標高1,500m)より低い高度の対象は、東側では尾根の手前までしか届かない。
         let cov = compute_coverage_area(&ridge(), &origin, &params, 500.0);
@@ -636,8 +750,14 @@ mod tests {
     #[test]
     fn sliced_computation_matches_the_batch_result() {
         let data = ridge();
-        let origin = Origin { lat_deg: 31.5, lon_deg: 121.5 };
-        let params = LosParams { observer_height_m: 100.0, max_range_m: 30_000.0 };
+        let origin = Origin {
+            lat_deg: 31.5,
+            lon_deg: 121.5,
+        };
+        let params = LosParams {
+            observer_height_m: 100.0,
+            max_range_m: 30_000.0,
+        };
         let batch = compute_los(&data, &origin, &params);
         let mut sliced = RangeComputation::new(&data, &origin, &params, RangeKind::Visible, 1);
         while !sliced.advance(&data, 777) {}
@@ -659,10 +779,17 @@ mod tests {
     #[test]
     fn coarser_azimuth_step_matches_the_full_result_at_the_same_azimuths() {
         let data = ridge();
-        let origin = Origin { lat_deg: 31.5, lon_deg: 121.5 };
-        let params = LosParams { observer_height_m: 100.0, max_range_m: 30_000.0 };
+        let origin = Origin {
+            lat_deg: 31.5,
+            lon_deg: 121.5,
+        };
+        let params = LosParams {
+            observer_height_m: 100.0,
+            max_range_m: 30_000.0,
+        };
         let full = compute_los(&data, &origin, &params);
-        let coarse = RangeComputation::new(&data, &origin, &params, RangeKind::Visible, 4).run(&data);
+        let coarse =
+            RangeComputation::new(&data, &origin, &params, RangeKind::Visible, 4).run(&data);
         assert_eq!(coarse.len(), NUM_AZIMUTHS / 4);
         for (j, p) in coarse.iter().enumerate() {
             assert_eq!(*p, full[j * 4]);
@@ -684,7 +811,10 @@ mod tests {
     #[test]
     fn dome_rings_are_full_spheres_over_flat_ground() {
         let (data, origin) = flat();
-        let params = LosParams { observer_height_m: 10.0, max_range_m: 30_000.0 };
+        let params = LosParams {
+            observer_height_m: 10.0,
+            max_range_m: 30_000.0,
+        };
         let rings = compute_los_dome(&data, &origin, &params, &[0.0, 5.0, 30.0]);
         assert_eq!(rings.len(), 3);
         for ring in &rings {

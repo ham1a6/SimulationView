@@ -37,7 +37,10 @@ pub(super) struct VertexBatch {
 
 impl VertexBatch {
     pub(super) fn empty() -> Self {
-        Self { buffer: None, count: 0 }
+        Self {
+            buffer: None,
+            count: 0,
+        }
     }
 
     pub(super) fn set(&mut self, device: &wgpu::Device, label: &str, vertices: &[DrawVertex]) {
@@ -45,11 +48,13 @@ impl VertexBatch {
             *self = Self::empty();
             return;
         }
-        self.buffer = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some(label),
-            contents: bytemuck::cast_slice(vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        }));
+        self.buffer = Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents: bytemuck::cast_slice(vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+        );
         self.count = vertices.len() as u32;
     }
 
@@ -57,7 +62,12 @@ impl VertexBatch {
         self.buffer.is_none()
     }
 
-    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, pipeline: &wgpu::RenderPipeline, space: &DrawSpace) {
+    pub(super) fn draw(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        pipeline: &wgpu::RenderPipeline,
+        space: &DrawSpace,
+    ) {
         let Some(buffer) = self.buffer.as_ref() else {
             return;
         };

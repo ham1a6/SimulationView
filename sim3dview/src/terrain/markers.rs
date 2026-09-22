@@ -14,14 +14,14 @@
 use leptos::prelude::*;
 
 use super::drawing_geometry::append_line_strip;
-use super::vertex::DrawVertex;
-use super::loader::TerrainData;
-use super::render_bias::{COVERAGE_AREA_M, DOME_M, MARKER_M};
-use super::los::{DomeComputation, DomeRing, LosParams, LosPoint, RangeComputation, RangeKind};
-use super::mesh::TerrainVertex;
 use super::geodesy::EnuTransform;
 use super::heightmap::sample_heightmap;
+use super::loader::TerrainData;
+use super::los::{DomeComputation, DomeRing, LosParams, LosPoint, RangeComputation, RangeKind};
+use super::mesh::TerrainVertex;
 use super::origin::Origin;
+use super::render_bias::{COVERAGE_AREA_M, DOME_M, MARKER_M};
+use super::vertex::DrawVertex;
 /// 地図上に配置したレーダー観測点1つ分の情報。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RadarMarker {
@@ -69,7 +69,13 @@ impl RadarMarkersState {
         let id = self.next_id.get_untracked();
         self.next_id.set(id + 1);
         self.markers.update(|list| {
-            list.push(RadarMarker { id, lat_deg, lon_deg, height_m: 10.0, max_range_m: 50_000.0 });
+            list.push(RadarMarker {
+                id,
+                lat_deg,
+                lon_deg,
+                height_m: 10.0,
+                max_range_m: 50_000.0,
+            });
         });
         self.selected.set(Some(id));
         id
@@ -109,7 +115,12 @@ const COVERAGE_PALETTE: [([f32; 3], [f32; 3]); 6] = [
 pub fn coverage_colors(marker_id: u64) -> ([f32; 3], [f32; 3], [f32; 4]) {
     let (dome, area) = COVERAGE_PALETTE[(marker_id.max(1) as usize - 1) % COVERAGE_PALETTE.len()];
     // 輪郭線は、塗りの色を白へ寄せた不透明色。
-    let outline = [0.5 * area[0] + 0.5, 0.5 * area[1] + 0.5, 0.5 * area[2] + 0.5, 1.0];
+    let outline = [
+        0.5 * area[0] + 0.5,
+        0.5 * area[1] + 0.5,
+        0.5 * area[2] + 0.5,
+        1.0,
+    ];
     (dome, area, outline)
 }
 
@@ -163,7 +174,7 @@ fn ring_stride(elevation_deg: f64, num_azimuths: usize) -> usize {
     // 浮動小数点の誤差(cos(60°)が0.5より少し大きい等)で、ちょうど2倍の仰角が1段手前になるのを防ぐ。
     while stride * 2 <= DOME_MAX_RING_STRIDE
         && (stride * 2) as f64 <= inverse_cos + 1e-9
-        && num_azimuths % (stride * 2) == 0
+        && num_azimuths.is_multiple_of(stride * 2)
     {
         stride *= 2;
     }
@@ -198,20 +209,40 @@ fn push_tri(out: &mut Vec<DrawVertex>, anchor: [f32; 3], color: [f32; 4], points
 
 /// ピンの形(頭の円+先端の三角形)を、`anchor`の画面上に大きさ`head_radius`px・先端の高さ`tip_y`pxで積む。
 /// 座標は先端の基準位置(0,0)から画面のpx(右・上が正)。先端の三角形の辺は頭の円の接線。
-fn push_pin_shape(out: &mut Vec<DrawVertex>, anchor: [f32; 3], color: [f32; 4], head_radius: f32, tip_y: f32) {
+fn push_pin_shape(
+    out: &mut Vec<DrawVertex>,
+    anchor: [f32; 3],
+    color: [f32; 4],
+    head_radius: f32,
+    tip_y: f32,
+) {
     let center_y = PIN_HEAD_CENTER_PX;
     let circle = |i: usize| {
         let t = std::f32::consts::TAU * i as f32 / PIN_HEAD_SEGMENTS as f32;
         [head_radius * t.cos(), center_y + head_radius * t.sin()]
     };
     for i in 0..PIN_HEAD_SEGMENTS {
-        push_tri(out, anchor, color, [[0.0, center_y], circle(i), circle(i + 1)]);
+        push_tri(
+            out,
+            anchor,
+            color,
+            [[0.0, center_y], circle(i), circle(i + 1)],
+        );
     }
     // 先端(0,tip_y)から頭の円へ引いた接線の接点。
     let beta = (head_radius / (center_y - tip_y)).acos();
     let tangent_x = head_radius * beta.sin();
     let tangent_y = center_y - head_radius * beta.cos();
-    push_tri(out, anchor, color, [[0.0, tip_y], [-tangent_x, tangent_y], [tangent_x, tangent_y]]);
+    push_tri(
+        out,
+        anchor,
+        color,
+        [
+            [0.0, tip_y],
+            [-tangent_x, tangent_y],
+            [tangent_x, tangent_y],
+        ],
+    );
 }
 
 /// 1つの観測点のマーカー(ピン。先端が観測点)を追加する。縁取り→本体→中の点の順に重ねる。
@@ -225,11 +256,8 @@ fn push_marker_pin(
 ) {
     let ground_elevation =
         sample_heightmap(data, marker.lat_deg, marker.lon_deg).unwrap_or(0.0) as f64;
-    let anchor = mesh_transform.transform(
-        marker.lat_deg,
-        marker.lon_deg,
-        ground_elevation + MARKER_M,
-    );
+    let anchor =
+        mesh_transform.transform(marker.lat_deg, marker.lon_deg, ground_elevation + MARKER_M);
     push_pin_shape(
         out,
         anchor,
@@ -241,9 +269,17 @@ fn push_marker_pin(
     for i in 0..PIN_HEAD_SEGMENTS {
         let point = |i: usize| {
             let t = std::f32::consts::TAU * i as f32 / PIN_HEAD_SEGMENTS as f32;
-            [PIN_DOT_RADIUS_PX * t.cos(), PIN_HEAD_CENTER_PX + PIN_DOT_RADIUS_PX * t.sin()]
+            [
+                PIN_DOT_RADIUS_PX * t.cos(),
+                PIN_HEAD_CENTER_PX + PIN_DOT_RADIUS_PX * t.sin(),
+            ]
         };
-        push_tri(out, anchor, MARKER_OUTLINE_COLOR, [[0.0, PIN_HEAD_CENTER_PX], point(i), point(i + 1)]);
+        push_tri(
+            out,
+            anchor,
+            MARKER_OUTLINE_COLOR,
+            [[0.0, PIN_HEAD_CENTER_PX], point(i), point(i + 1)],
+        );
     }
 }
 
@@ -260,7 +296,11 @@ pub fn build_marker_geometry(
     let mut out = Vec::new();
     for marker in markers {
         let is_selected = selected == Some(marker.id);
-        let color = if is_selected { SELECTED_MARKER_COLOR } else { MARKER_COLOR };
+        let color = if is_selected {
+            SELECTED_MARKER_COLOR
+        } else {
+            MARKER_COLOR
+        };
         push_marker_pin(&mut out, data, &mesh_transform, marker, color);
     }
     out
@@ -269,17 +309,45 @@ pub fn build_marker_geometry(
 /// 観測点の覆域ドームの計算(`compute_los_dome`)を始める(`azimuth_step`は`DOME_AZIMUTH_STEP`)。結果は`dome_geometry`へ渡す。
 /// 全方位の計算は重いので、`advance`を時間で区切って呼ぶこと(`ui::terrain_view::coverage`)。
 pub fn start_dome_computation(data: &TerrainData, marker: &RadarMarker) -> DomeComputation {
-    let origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
-    let params = LosParams { observer_height_m: marker.height_m, max_range_m: marker.max_range_m };
-    DomeComputation::new(data, &origin, &params, &DOME_RING_ELEVATIONS_DEG, DOME_AZIMUTH_STEP)
+    let origin = Origin {
+        lat_deg: marker.lat_deg,
+        lon_deg: marker.lon_deg,
+    };
+    let params = LosParams {
+        observer_height_m: marker.height_m,
+        max_range_m: marker.max_range_m,
+    };
+    DomeComputation::new(
+        data,
+        &origin,
+        &params,
+        &DOME_RING_ELEVATIONS_DEG,
+        DOME_AZIMUTH_STEP,
+    )
 }
 
 /// 観測点の2D覆域(指定した海抜高度での探知可能領域)の計算を始める(`azimuth_step`は`COVERAGE_AZIMUTH_STEP`)。
 /// 結果は`coverage_2d_geometry`へ渡す。
-pub fn start_coverage_computation(data: &TerrainData, marker: &RadarMarker, target_altitude_m: f64) -> RangeComputation {
-    let origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
-    let params = LosParams { observer_height_m: marker.height_m, max_range_m: marker.max_range_m };
-    RangeComputation::new(data, &origin, &params, RangeKind::AtAltitude(target_altitude_m), COVERAGE_AZIMUTH_STEP)
+pub fn start_coverage_computation(
+    data: &TerrainData,
+    marker: &RadarMarker,
+    target_altitude_m: f64,
+) -> RangeComputation {
+    let origin = Origin {
+        lat_deg: marker.lat_deg,
+        lon_deg: marker.lon_deg,
+    };
+    let params = LosParams {
+        observer_height_m: marker.height_m,
+        max_range_m: marker.max_range_m,
+    };
+    RangeComputation::new(
+        data,
+        &origin,
+        &params,
+        RangeKind::AtAltitude(target_altitude_m),
+        COVERAGE_AZIMUTH_STEP,
+    )
 }
 
 /// 覆域ドーム(半球状の面、TriangleList)の頂点列を作る。複数マーカーの覆域を同時に重ねると見づらいため、
@@ -305,10 +373,14 @@ pub fn dome_geometry(
         return out;
     }
     let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
-    let radar_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
+    let radar_origin = Origin {
+        lat_deg: marker.lat_deg,
+        lon_deg: marker.lon_deg,
+    };
     let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
-    let observer_height =
-        sample_heightmap(data, marker.lat_deg, marker.lon_deg).unwrap_or(0.0) as f64 + marker.height_m;
+    let observer_height = sample_heightmap(data, marker.lat_deg, marker.lon_deg).unwrap_or(0.0)
+        as f64
+        + marker.height_m;
     let (dome_color, _, _) = coverage_colors(marker.id);
 
     // ドーム上の頂点(リングごと・方位ごと。高いリングは間引く)を、地形メッシュのENU座標へ変換しておく。
@@ -324,10 +396,13 @@ pub fn dome_geometry(
                     let az_rad = ring.points[az_i].azimuth_deg.to_radians();
                     let range_m = ring.points[az_i].range_m;
                     let horizontal = range_m * el_rad.cos();
-                    let (lat, lon) =
-                        local_transform.inverse(horizontal * az_rad.sin(), horizontal * az_rad.cos());
+                    let (lat, lon) = local_transform
+                        .inverse(horizontal * az_rad.sin(), horizontal * az_rad.cos());
                     let absolute_height = observer_height + range_m * el_rad.sin() + DOME_M;
-                    TerrainVertex::unlit(mesh_transform.transform(lat, lon, absolute_height), dome_color)
+                    TerrainVertex::unlit(
+                        mesh_transform.transform(lat, lon, absolute_height),
+                        dome_color,
+                    )
                 })
                 .collect()
         })
@@ -342,14 +417,17 @@ pub fn dome_geometry(
     // (最上段リングは仰角87度で、ほぼ真上。遮蔽がなければ半径=最大観測範囲=球の頂点の高さ)。
     let top = dome_vertices.last().expect("リングは2つ以上ある");
     let top_ring = rings.last().expect("リングは2つ以上ある");
-    let avg_range = top_ring.points.iter().map(|p| p.range_m).sum::<f64>() / top_ring.points.len() as f64;
+    let avg_range =
+        top_ring.points.iter().map(|p| p.range_m).sum::<f64>() / top_ring.points.len() as f64;
     let apex_pos = mesh_transform.transform(
         marker.lat_deg,
         marker.lon_deg,
         observer_height + avg_range + DOME_M,
     );
     let apex = TerrainVertex::unlit(apex_pos, dome_color);
-    let steps: Vec<usize> = (0..top.len()).step_by((top.len() / DOME_APEX_SEGMENTS).max(1)).collect();
+    let steps: Vec<usize> = (0..top.len())
+        .step_by((top.len() / DOME_APEX_SEGMENTS).max(1))
+        .collect();
     for k in 0..steps.len() {
         out.extend([top[steps[k]], top[steps[(k + 1) % steps.len()]], apex]);
     }
@@ -377,7 +455,10 @@ pub fn coverage_2d_geometry(
         return out;
     }
     let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
-    let radar_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
+    let radar_origin = Origin {
+        lat_deg: marker.lat_deg,
+        lon_deg: marker.lon_deg,
+    };
     let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
 
     // 地表面に沿わせるため、各点(観測点自身も含む)は「その地点の地表標高+バイアス」の
@@ -392,13 +473,19 @@ pub fn coverage_2d_geometry(
         .iter()
         .map(|p| {
             let az_rad = p.azimuth_deg.to_radians();
-            let (lat, lon) = local_transform.inverse(p.range_m * az_rad.sin(), p.range_m * az_rad.cos());
+            let (lat, lon) =
+                local_transform.inverse(p.range_m * az_rad.sin(), p.range_m * az_rad.cos());
             position_at(lat, lon)
         })
         .collect();
 
     let (_, area_color, outline_color) = coverage_colors(marker.id);
-    let fill = [area_color[0], area_color[1], area_color[2], COVERAGE_AREA_ALPHA];
+    let fill = [
+        area_color[0],
+        area_color[1],
+        area_color[2],
+        COVERAGE_AREA_ALPHA,
+    ];
     let center = position_at(marker.lat_deg, marker.lon_deg);
     let n = boundary.len();
     for i in 0..n {
@@ -407,7 +494,13 @@ pub fn coverage_2d_geometry(
             out.push(DrawVertex::surface(position, fill, None));
         }
     }
-    append_line_strip(&mut out, &boundary, true, outline_color, COVERAGE_OUTLINE_WIDTH_PX);
+    append_line_strip(
+        &mut out,
+        &boundary,
+        true,
+        outline_color,
+        COVERAGE_OUTLINE_WIDTH_PX,
+    );
     out
 }
 
@@ -424,8 +517,13 @@ mod tests {
         assert_eq!(ring_stride(80.0, n), 4);
         assert_eq!(ring_stride(87.0, n), 16);
         // 上限を超えず、仰角が上がっても減らない。隣のリングとは整数倍(2のべき乗どうし)。
-        let strides: Vec<usize> = DOME_RING_ELEVATIONS_DEG.iter().map(|&e| ring_stride(e, n)).collect();
-        assert!(strides.iter().all(|&s| (DOME_MIN_RING_STRIDE..=DOME_MAX_RING_STRIDE).contains(&s) && n % s == 0));
+        let strides: Vec<usize> = DOME_RING_ELEVATIONS_DEG
+            .iter()
+            .map(|&e| ring_stride(e, n))
+            .collect();
+        assert!(strides
+            .iter()
+            .all(|&s| (DOME_MIN_RING_STRIDE..=DOME_MAX_RING_STRIDE).contains(&s) && n % s == 0));
         assert!(strides.windows(2).all(|w| w[1] >= w[0] && w[1] % w[0] == 0));
     }
 
@@ -448,7 +546,11 @@ mod tests {
             assert_eq!(triangles, n_lower + n_upper, "{n_lower}/{n_upper}");
             for (&(p, q), &count) in &edges {
                 let is_ring_edge = (p < 100 && q < 100) || (p >= 100 && q >= 100);
-                assert_eq!(count, if is_ring_edge { 1 } else { 2 }, "{n_lower}/{n_upper} edge {p}-{q}");
+                assert_eq!(
+                    count,
+                    if is_ring_edge { 1 } else { 2 },
+                    "{n_lower}/{n_upper} edge {p}-{q}"
+                );
             }
         }
     }
@@ -457,17 +559,25 @@ mod tests {
     #[test]
     fn dome_over_flat_ground_is_a_smooth_sphere_with_thinned_vertices() {
         let data = TerrainData::synthetic(30, 120, 3, 3, |_, _| 0);
-        let marker =
-            RadarMarker { id: 1, lat_deg: 31.5, lon_deg: 121.5, height_m: 10.0, max_range_m: 30_000.0 };
+        let marker = RadarMarker {
+            id: 1,
+            lat_deg: 31.5,
+            lon_deg: 121.5,
+            height_m: 10.0,
+            max_range_m: 30_000.0,
+        };
         let mut computation = start_dome_computation(&data, &marker);
         computation.advance(&data, usize::MAX);
         let rings = computation.finish();
         assert_eq!(rings.len(), DOME_RING_ELEVATIONS_DEG.len());
         assert_eq!(rings[0].points.len(), 6400 / DOME_AZIMUTH_STEP);
 
-        let mesh_origin = Origin { lat_deg: marker.lat_deg, lon_deg: marker.lon_deg };
+        let mesh_origin = Origin {
+            lat_deg: marker.lat_deg,
+            lon_deg: marker.lon_deg,
+        };
         let vertices = dome_geometry(&data, &mesh_origin, &marker, &rings);
-        assert!(!vertices.is_empty() && vertices.len() % 3 == 0);
+        assert!(!vertices.is_empty() && vertices.len().is_multiple_of(3));
         // 以前(3200方位を間引かずに38リング)の頂点数(約71万)の3分の1未満。
         assert!(vertices.len() < 240_000, "{}", vertices.len());
         for v in &vertices {
@@ -504,7 +614,9 @@ mod tests {
         push_pin_shape(&mut out, [1.0, 2.0, 3.0], [1.0, 0.0, 0.0, 1.0], 10.0, 0.0);
         // 頭の円(24分割)+先端の三角形。全頂点がアンカーを共有し、画面のオフセットだけが違う。
         assert_eq!(out.len(), (PIN_HEAD_SEGMENTS + 1) * 3);
-        assert!(out.iter().all(|v| v.position == [1.0, 2.0, 3.0] && v.params[2] == 1.0 && v.params[0] == 0.0));
+        assert!(out
+            .iter()
+            .all(|v| v.position == [1.0, 2.0, 3.0] && v.params[2] == 1.0 && v.params[0] == 0.0));
         // 先端(0,0)が一番下、頭のてっぺんは中心+半径。
         let ys: Vec<f32> = out.iter().map(|v| v.aux[1]).collect();
         assert!(ys.iter().cloned().fold(f32::MAX, f32::min) >= -1e-4);

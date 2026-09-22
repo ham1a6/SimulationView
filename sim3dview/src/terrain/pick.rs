@@ -5,9 +5,9 @@
 //! (地形メッシュの三角形と厳密に一致するわけではないが、見た目上は十分な精度)。
 
 use super::camera::Camera;
-use super::loader::TerrainData;
 use super::geodesy::EnuTransform;
 use super::heightmap::ground_at_enu;
+use super::loader::TerrainData;
 use super::origin::Origin;
 /// レイをマーチングする最大距離(メートル)。カメラは最大ズームアウト(`camera.rs`の
 /// MAX_DISTANCE=2,000,000m)まで地形から離れうるため、そこから地形データ範囲(現在は30°四方、
@@ -94,7 +94,10 @@ mod tests {
     fn flat() -> (TerrainData, Origin) {
         (
             TerrainData::synthetic(30, 130, 3, 3, |_, _| 0),
-            Origin { lat_deg: 31.5, lon_deg: 131.5 },
+            Origin {
+                lat_deg: 31.5,
+                lon_deg: 131.5,
+            },
         )
     }
 
@@ -112,8 +115,12 @@ mod tests {
         let (data, origin) = flat();
         for distance in [30_000.0, 400_000.0] {
             let camera = orbit(ViewMode::ThreeD, distance, 0.6).to_camera(1.0);
-            let (lat, lon) = pick_lat_lon(&data, &origin, &camera, 350.0, 350.0, 700.0, 700.0).unwrap();
-            assert!((lat - 31.5).abs() < 0.01 && (lon - 131.5).abs() < 0.01, "d={distance}: {lat},{lon}");
+            let (lat, lon) =
+                pick_lat_lon(&data, &origin, &camera, 350.0, 350.0, 700.0, 700.0).unwrap();
+            assert!(
+                (lat - 31.5).abs() < 0.01 && (lon - 131.5).abs() < 0.01,
+                "d={distance}: {lat},{lon}"
+            );
         }
     }
 
@@ -135,7 +142,10 @@ mod tests {
         assert!((lon - 131.5 - 0.15).abs() < 0.01, "lon={lon}");
         // 上へ100px = 北へ約14.3km(緯度約0.129度)。
         let (lat, lon) = pick_lat_lon(&data, &origin, &camera, 350.0, 250.0, 700.0, 700.0).unwrap();
-        assert!((lat - 31.5 - 0.129).abs() < 0.01 && (lon - 131.5).abs() < 0.01, "{lat},{lon}");
+        assert!(
+            (lat - 31.5 - 0.129).abs() < 0.01 && (lon - 131.5).abs() < 0.01,
+            "{lat},{lon}"
+        );
     }
 
     #[test]
@@ -144,6 +154,15 @@ mod tests {
         // 注視点を地形データの範囲の外(東へ約1,000km)にする。
         let mut o = orbit(ViewMode::TwoD, 100_000.0, 0.6);
         o.target = Vec3::new(1_000_000.0, 0.0, 0.0);
-        assert!(pick_lat_lon(&data, &origin, &o.to_camera(1.0), 350.0, 350.0, 700.0, 700.0).is_none());
+        assert!(pick_lat_lon(
+            &data,
+            &origin,
+            &o.to_camera(1.0),
+            350.0,
+            350.0,
+            700.0,
+            700.0
+        )
+        .is_none());
     }
 }

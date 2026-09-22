@@ -25,9 +25,16 @@ const SUBMENU_WIDTH_ESTIMATE_PX: f64 = 240.0;
 #[derive(Clone)]
 pub enum MenuItem {
     /// 押せる項目。`enabled`がfalseなら灰色で押せない。
-    Action { label: String, enabled: bool, on_select: UnsyncCallback<()> },
+    Action {
+        label: String,
+        enabled: bool,
+        on_select: UnsyncCallback<()>,
+    },
     /// 子のメニューを右に開く項目。
-    Submenu { label: String, items: Vec<MenuItem> },
+    Submenu {
+        label: String,
+        items: Vec<MenuItem>,
+    },
     /// 押せない見出し・情報の行。
     Label(String),
     Separator,
@@ -36,12 +43,20 @@ pub enum MenuItem {
 impl MenuItem {
     /// 押せる項目。選ばれたら`on_select`を呼ぶ(メニューは先に閉じる)。
     pub fn action(label: impl Into<String>, on_select: impl Fn() + 'static) -> Self {
-        Self::Action { label: label.into(), enabled: true, on_select: UnsyncCallback::new(move |()| on_select()) }
+        Self::Action {
+            label: label.into(),
+            enabled: true,
+            on_select: UnsyncCallback::new(move |()| on_select()),
+        }
     }
 
     /// 灰色で押せない項目(機能はあるが、いまは使えないことを見せたいとき)。
     pub fn disabled(label: impl Into<String>) -> Self {
-        Self::Action { label: label.into(), enabled: false, on_select: UnsyncCallback::new(|()| {}) }
+        Self::Action {
+            label: label.into(),
+            enabled: false,
+            on_select: UnsyncCallback::new(|()| {}),
+        }
     }
 
     /// `enabled`がfalseなら押せなくする(操作の項目だけに効く)。
@@ -53,7 +68,10 @@ impl MenuItem {
     }
 
     pub fn submenu(label: impl Into<String>, items: Vec<MenuItem>) -> Self {
-        Self::Submenu { label: label.into(), items }
+        Self::Submenu {
+            label: label.into(),
+            items,
+        }
     }
 
     pub fn label(text: impl Into<String>) -> Self {
@@ -81,7 +99,9 @@ pub struct ContextMenuState {
 
 impl ContextMenuState {
     pub fn new() -> Self {
-        Self { open: RwSignal::new(None) }
+        Self {
+            open: RwSignal::new(None),
+        }
     }
 
     /// 画面座標(client座標)`(x, y)`にメニューを出す。すでに開いていれば置き換える。項目が空なら何もしない。
@@ -190,19 +210,28 @@ pub fn ContextMenu() -> impl IntoView {
             };
             let rect = el.get_bounding_client_rect();
             let (vw, vh) = viewport_size();
-            let x = if rect.right() > vw - EDGE_MARGIN_PX { (vw - rect.width() - EDGE_MARGIN_PX).max(0.0) } else { rect.left() };
-            let y = if rect.bottom() > vh - EDGE_MARGIN_PX { (vh - rect.height() - EDGE_MARGIN_PX).max(0.0) } else { rect.top() };
+            let x = if rect.right() > vw - EDGE_MARGIN_PX {
+                (vw - rect.width() - EDGE_MARGIN_PX).max(0.0)
+            } else {
+                rect.left()
+            };
+            let y = if rect.bottom() > vh - EDGE_MARGIN_PX {
+                (vh - rect.height() - EDGE_MARGIN_PX).max(0.0)
+            } else {
+                rect.top()
+            };
             pos.set((x, y));
             placed.set(true);
         });
     });
 
     // Escで閉じる。コンポーネントが破棄されたらリスナーを外す。
-    let keydown_handle = window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
-        if ev.key() == "Escape" && state.is_open() {
-            state.close();
-        }
-    });
+    let keydown_handle =
+        window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
+            if ev.key() == "Escape" && state.is_open() {
+                state.close();
+            }
+        });
     on_cleanup(move || keydown_handle.remove());
 
     view! {

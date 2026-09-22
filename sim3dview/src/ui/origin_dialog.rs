@@ -10,8 +10,8 @@
 use leptos::prelude::*;
 
 use super::floating_panel::FloatingPanel;
-use crate::terrain::store::TerrainStore;
 use crate::terrain::origin::OriginState;
+use crate::terrain::store::TerrainStore;
 
 /// 原点設定フローティングパネルの開閉状態。トリガー(メニュー等)と本体で共有する。
 #[derive(Clone, Copy)]
