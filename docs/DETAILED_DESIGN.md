@@ -1247,6 +1247,29 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 **サンプル**: `scripts/gen_sample_models.py`が、標準ライブラリだけで5種類(航空機・ヘリ・艦船・車両・ミサイル)の簡易な低ポリゴンモデルを`sample/sim_frontend/assets/models/`へ書き出す(`index.html`のcopy-dirでtrunkが`models/`として配信、`app.rs`が種別ごとに登録)。
 サーバーのデモシナリオ(`snapshot_tracks`)は、航空機・ミサイルのピッチを上昇・降下の角度、ロールを旋回のバンク角(`atan(速度×旋回の角速度/g)`、±60度)に、艦船・車両を小さな揺れにする。表示メニューの「3Dモデル...」が設定ウインドウ。
 
+### 6.14 スクリーンショット・画面録画(`terrain::capture` / `ui::terrain_view::capture`)
+
+マップパネル(canvas)をPNG保存・WebM録画するおまけ機能。**サーバーへは一切送信しない、ブラウザ内だけで完結する処理**。
+ボタンをどこに置くかはアプリ固有のUIなので、このライブラリはcontext(`terrain::capture::CaptureState`)で要求を受けるだけ
+(`recenter::RecenterRequestState`と同じ「要求を運ぶだけのcontext」パターン。サンプルはVABパネル(`vab.rs`)に置いている)。
+
+| 担当 | 場所 | 役目 |
+|---|---|---|
+| アプリ | `sample/sim_frontend/src/components/vab.rs`・`app.rs` | ボタンの配置、`CaptureState`の`provide_context` |
+| context | `terrain::capture::CaptureState` | 要求(スクリーンショットの回数カウンタ・録画の開始/停止トグル・録画中フラグ)を運ぶだけ |
+| 実処理 | `ui::terrain_view::capture`(非公開) | `HTMLCanvasElement`のtoBlob・captureStream、`MediaRecorder`、ダウンロードのDOM操作 |
+
+**スクリーンショット**: `CaptureState::request_screenshot()`で要求カウンタを1増やす(`recenter_request.count`と同じ「0は未クリック、増えたら実行」の約束)。
+`TerrainView`のEffectがそれを見て、canvasの`toBlob("image/png")`結果を`sim3dview_YYYYMMDD_HHMMSS.png`として`<a download>`要素をその場で作ってクリックすることでダウンロードさせる。
+
+**画面録画**: `CaptureState::toggle_recording()`で`recording_requested`(bool)を反転させる。`TerrainView`のEffectはこの値と「今実際に録画中か」の食い違いを見て、
+開始時は`HTMLCanvasElement.captureStream()`(引数なし=canvasが実際に描画されるたびにフレームが入る。地形は常時アニメーションせず操作時だけ再描画するため、固定fps指定より効率が良い)の`MediaStream`を
+`MediaRecorder`に渡して`start()`、停止時は`stop()`する。コーデックは`vp9`→`vp8`→無指定(ブラウザ既定)の順に`MediaRecorder.isTypeSupported`で対応可否を見て選ぶ。
+`start()`に`timeslice`を渡さないため、`stop()`のタイミングで録画全体が1つの`Blob`として`ondataavailable`に1回だけ届く(スクリーンショットと同じ`<a download>`の仕組みで
+`sim3dview_YYYYMMDD_HHMMSS.webm`として保存)。ブラウザがMediaRecorder等に未対応で開始に失敗したら、`recording_requested`をfalseへ戻して諦める。
+
+**写るもの/写らないもの**: canvas上の描画(地形・作図・航跡シンボル・覆域等)はどちらにも写るが、航跡ラベル等のHTML要素の重ね合わせ(`terrain-track-labels`)は対象外(canvasの外にあるDOM要素のため)。
+
 ---
 
 ## 7. UI詳細設計

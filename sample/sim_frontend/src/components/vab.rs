@@ -20,8 +20,16 @@
 //! 知らせていないダミーボタンのため紐づけようがなく、「フロントエンド側で制御する方針に
 //! 変更する」との回答を受け、区画ごとに直近クリックしたボタンをローカルに記憶して
 //! 有効化表示する(`selected_mid`/`selected_bottom`。カテゴリ切り替え時はどちらもリセット)。
+//!
+//! **スクリーンショット・画面録画ボタン**: VABパネルの最上部に、マップパネル(地形canvas)を
+//! PNG保存/WebM録画するボタンを置く(要望により、このVABパネルに実装した)。サーバーへは
+//! 何も送らない完全にフロント側だけの機能で、実処理はsim3dviewライブラリ側
+//! (`terrain::capture::CaptureState`・`ui::terrain_view::TerrainView`)にある。このパネルは
+//! contextへ要求を出すだけ。
 
 use leptos::prelude::*;
+
+use sim3dview::terrain::capture::CaptureState;
 
 use crate::protocol::ClientCommand;
 use crate::ws::WsHandle;
@@ -59,6 +67,7 @@ pub fn VabPanel(
     mid_pages: Signal<usize>,
 ) -> impl IntoView {
     let signals = use_context::<WsSignals>().expect("WsSignals context not found");
+    let capture = use_context::<CaptureState>().expect("CaptureState context not found");
     // 選択中カテゴリ(先頭行のうち何番目のボタンが押されたか、0始まり)。既定は先頭。
     let selected_category = RwSignal::new(0usize);
     // 中段の現在表示中ページ(0始まり)。カテゴリを切り替えたら先頭ページに戻す。
@@ -71,6 +80,21 @@ pub fn VabPanel(
 
     view! {
         <div class="panel-section vab-panel">
+            <div class="vab-grid vab-capture-row">
+                <button
+                    class="vab-button"
+                    on:click=move |_| capture.request_screenshot()
+                >
+                    "スクリーンショット"
+                </button>
+                <button
+                    class="vab-button"
+                    class:vab-button-active=move || capture.is_recording.get()
+                    on:click=move |_| capture.toggle_recording()
+                >
+                    {move || if capture.is_recording.get() { "録画停止" } else { "録画開始" }}
+                </button>
+            </div>
             {move || {
                 let Some(cfg) = signals.vab_config.get() else {
                     return view! { <p class="placeholder">"(未受信)"</p> }.into_any();

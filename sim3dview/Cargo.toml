@@ -43,6 +43,14 @@ features = [
     "Storage",
     "Navigator",
     "KeyboardEvent",
+    # マップパネルのスクリーンショット(PNG)・画面録画(WebM)。terrain::capture・ui::terrain_view::capture。
+    "Blob",
+    "BlobEvent",
+    "HtmlAnchorElement",
+    "MediaRecorder",
+    "MediaRecorderOptions",
+    "MediaStream",
+    "Url",
 ]
 
 [dev-dependencies]

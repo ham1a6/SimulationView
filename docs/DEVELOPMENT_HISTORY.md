@@ -1762,3 +1762,22 @@ C++/Rust全ソースを通読し、`cargo check`(警告ゼロ化)・CMakeビル�
   計算の小分け・キャッシュ・複数覆域の同時表示など、平滑化以外の性能対策はそのまま残した。
 - **結果**: 遮蔽の境目(放射状の筋・低い高度でのギザギザ)は、平滑化前の生の計算結果どおりに戻る。単体テストは平滑化専用の5件(`smoothing_*`・`coverage_boundary_smoothing_*`・`ring_smoothing_*`)を削除し、残り(間引き・帯のつなぎ目・色・ピン形状)は変更なしで通ることを確認した。
 - **ドキュメント**: `docs/DETAILED_DESIGN.md`6.9節・9.10節、`docs/IMPLEMENTATION_GUIDE.md`のチェックリストから、平滑化の記述を「平滑化はしない」に書き換えた。技術解説ノート(36.2・36.3・36.6節)も同様に更新した。
+
+### マップパネルのスクリーンショット・画面録画(おまけ機能)
+
+- **要望**: 「マップパネルのスクショ/画面録画機能を追加して。スクショボタンはVABに実装してみて」
+- **設計**: 3Dモデル表示・作図と同じく「既存コードとの責任範囲をはっきり分けるおまけ機能」として作った。サーバーへは一切送信しない、ブラウザだけで完結する機能なので、
+  ライブラリ側は`recenter::RecenterRequestState`と同じ「要求を運ぶだけのcontext」パターンで`terrain::capture::CaptureState`を足し、実際にcanvasを触ってファイルを保存する処理は
+  `TerrainView`の非公開サブモジュール(`ui/terrain_view/capture.rs`)に閉じた。ボタンの配置(VABパネル)はサンプルアプリ側の責務
+- **実装**:
+  - スクリーンショット: `HTMLCanvasElement.toBlob("image/png")`→`<a download>`要素をその場で作ってクリックし、ブラウザの通常のダウンロードとして保存(`sim3dview_YYYYMMDD_HHMMSS.png`)
+  - 画面録画: `HTMLCanvasElement.captureStream()`(引数なし=canvasが実際に描画されるたびにフレームが入る。地形は常時アニメーションしないため固定fps指定より効率的)を`MediaRecorder`に渡す。
+    コーデックは`vp9`→`vp8`→無指定の順に`isTypeSupported`で確認して選ぶ。`start()`に`timeslice`を渡さないため`ondataavailable`は`stop()`のときに録画全体を1回だけ運ぶ
+    (`onstop`は使わなくて済む)。停止したら同じ`<a download>`の仕組みで`.webm`として保存
+  - `Closure::once`(1回呼ばれた時点でRust側のメモリも自動解放される。`mod.rs`のResizeObserver用の通常の`Closure`と違い、明示的な`on_cleanup`が要らない)を使い、
+    `forget()`してもリークしない形にした
+- **VABへの配置**: VABパネルの先頭行・中段・下段はサーバー`VabConfig`駆動/フロント側ダミーボタンという既存の作り(vab.rsの冒頭コメント参照)と性質が違う「完全にフロント側だけの本物のボタン」なので、
+  それらとは別に、パネル最上部に独立した2列の行(`vab-capture-row`)として追加した
+- **確認**(Browserペイン): スクリーンショットボタンで地形canvasと同じ内容のPNGが保存され、録画ボタンでカメラをドラッグ操作した後に停止すると有効なWebM(EBMLヘッダ)が保存されることを、
+  実際にダウンロードされたファイルのバイト列で確認した(`toDataURL`/`toBlob`はcanvasの`preserveDrawingBuffer`指定なしでも問題なく動いた)
+- **ドキュメント**: `sim3dview/README.md`に使い方の節、`docs/DETAILED_DESIGN.md`6.14節を追加した。

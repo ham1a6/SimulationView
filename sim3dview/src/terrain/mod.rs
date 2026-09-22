@@ -1,4 +1,5 @@
 pub mod camera;
+pub mod capture;
 pub mod draw_tool;
 pub mod drawing;
 pub(crate) mod drawing_geometry;

@@ -4,6 +4,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
+use sim3dview::terrain::capture::CaptureState;
 use sim3dview::terrain::draw_tool::DrawToolState;
 use sim3dview::terrain::drawing::DrawingState;
 use sim3dview::terrain::hillshade::HillshadeState;
@@ -57,6 +58,9 @@ pub fn App() -> impl IntoView {
     provide_context(RecenterRequestState::new());
     // 表示メニューの「陰影表示」のON/OFF(sim3dviewライブラリの型。既定はON)。
     provide_context(HillshadeState::default());
+    // VABパネルの「スクリーンショット」「録画開始/停止」ボタンからTerrainViewへの要求
+    // (sim3dviewライブラリの型)。サーバーへは何も送らない、完全にフロント側だけの機能。
+    provide_context(CaptureState::new());
     // 作図(図形・線)の一覧(sim3dviewライブラリの型)。表示メニューの「作図デモ」が図形を出し入れする。
     let drawings = DrawingState::new();
     provide_context(drawings);

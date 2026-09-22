@@ -213,6 +213,38 @@ view! { <LosView/> } // RadarMarkersState・TerrainStore contextが必要
 **断面図の中心**: `ui::cross_section_view::CrossSectionView`は、選択中の航跡のシンボル(`TracksState::selected`。`TracksState`を`provide_context`していれば)の位置を中心に、
 方位角の直線に沿った断面を出します。何も選択されていなければ基準位置(`OriginState`)が中心です。片側の長さを選べ、「進行方向」ボタンで方位角をシンボルの進行方向に合わせられます。
 
+## スクリーンショット・画面録画
+
+`terrain::capture::CaptureState`を`provide_context`すると、`TerrainView`が自身のcanvasの
+スクリーンショット(PNG)保存・画面録画(WebM)を行えるようになります(未提供でも動作しますが、
+その場合は何もできません)。ボタンをどこに置くかはこのライブラリの関知しないアプリ固有のUIなので、
+呼び出し側が置いてください(`sample/sim_frontend`ではVABパネルに置いています)。
+
+```rust
+use sim3dview::terrain::capture::CaptureState;
+
+provide_context(CaptureState::new());
+```
+
+```rust
+let capture = use_context::<CaptureState>().expect("CaptureState context not found");
+
+view! {
+    <button on:click=move |_| capture.request_screenshot()>"スクリーンショット"</button>
+    <button on:click=move |_| capture.toggle_recording()>
+        {move || if capture.is_recording.get() { "録画停止" } else { "録画開始" }}
+    </button>
+}
+```
+
+- `request_screenshot()`: canvasの現在の内容を`sim3dview_YYYYMMDD_HHMMSS.png`としてダウンロードします。
+- `toggle_recording()`: 呼ぶたびに録画の開始/停止を切り替えます。停止すると
+  `sim3dview_YYYYMMDD_HHMMSS.webm`としてダウンロードされます(`is_recording`で実際に録画中かどうかを
+  見られます。ブラウザがMediaRecorder等に未対応で開始に失敗した場合は自動的にfalseへ戻ります)。
+- サーバーへは何も送らない、完全にブラウザ内で完結する機能です(`HTMLCanvasElement.captureStream`+
+  `MediaRecorder`)。3D地形・図形・航跡シンボルはcanvas上の描画のためどちらにも写りますが、
+  航跡ラベル等のHTML要素の重ね合わせ(`ui::terrain_view`のDOMオーバーレイ)は対象外です。
+
 ## 作図(図形・線)
 
 `terrain::drawing::DrawingState`を`provide_context`し、`add`/`update`/`remove`/`clear`で図形を出し入れします

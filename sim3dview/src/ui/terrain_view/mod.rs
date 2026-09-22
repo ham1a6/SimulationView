@@ -12,6 +12,7 @@
 //! 右クリック/Backspaceで1つ戻す、Escで終了)。
 //! 地図の右クリックは、`MapMenuState`(と`ui::context_menu::ContextMenuState`)が提供されていれば、
 //! アプリが決めた項目の右クリックメニューを出す(提供されていなければ、その地点にレーダー観測点を追加する)。
+mod capture;
 mod coverage;
 mod frame;
 mod labels;
@@ -30,6 +31,7 @@ use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 use crate::terrain::camera::{CameraPreset, OrbitCamera, ViewMode};
+use crate::terrain::capture::CaptureState;
 use crate::terrain::draw_tool::DrawToolState;
 use crate::terrain::drawing::DrawingState;
 use crate::terrain::loader::WHOLE_TILE;
@@ -60,6 +62,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let recenter_request = use_context::<RecenterRequestState>().unwrap_or_default();
     // 未提供なら既定(陰影ON)のまま切り替えなしで動作する(上と同じく後付けのオプション機能)。
     let hillshade = use_context::<HillshadeState>().unwrap_or_default();
+    // 未提供ならスクリーンショット・画面録画なしで動作する(同上。`terrain::capture`)。
+    let capture = use_context::<CaptureState>().unwrap_or_default();
     // 未提供なら「クリックで原点指定」機能なしで動作する(上と同じく後付けのオプション機能)。
     let origin_pick = use_context::<OriginPickState>();
     // 未提供なら作図なしで動作する(上と同じく後付けのオプション機能)。
@@ -440,6 +444,67 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             renderer.set_hillshade(enabled);
             drop(s);
             render_now(&state);
+        });
+    }
+
+    // --- Effect 8: VAB等のスクリーンショットボタンの要求を受けてcanvasをPNG保存する ---
+    // `recenter_request`(Effect 6)と同じ「要求カウンタが増えたら実行」パターン。
+    // 実際のtoBlob呼び出し・ダウンロードは`capture`モジュール(web_sys直叩き)に任せる。
+    {
+        Effect::new(move |_| {
+            let count = capture.screenshot_requests.get();
+            if count == 0 {
+                return; // 初期値0はボタン未クリックの状態なので無視する。
+            }
+            let Some(canvas_el) = canvas_ref.get_untracked() else {
+                return;
+            };
+            let canvas: web_sys::HtmlCanvasElement =
+                (*canvas_el).clone().dyn_into().expect("canvas node_ref should be an HtmlCanvasElement");
+            capture::save_screenshot(&canvas);
+        });
+    }
+
+    // --- Effect 9: VAB等の録画ボタンの開始/停止要求を受けてMediaRecorderを出し入れする ---
+    // `recording_requested`はトグル(bool)なので、Effect 6/8と違い「変化したら」ではなく
+    // 「trueなのに録画中でない/falseなのに録画中」というズレを直す形で書く(録画中かどうかの
+    // 実体(`web_sys::MediaRecorder`)はこのEffectの外の`Rc<RefCell<..>>`に持たせ、次回の
+    // Effect実行(=次の要求)まで生かしておく)。
+    {
+        let recording: Rc<RefCell<Option<capture::Recording>>> = Rc::new(RefCell::new(None));
+        Effect::new(move |_| {
+            let requested = capture.recording_requested.get();
+            let mut slot = recording.borrow_mut();
+            match (requested, slot.is_some()) {
+                (true, false) => {
+                    let Some(canvas_el) = canvas_ref.get_untracked() else {
+                        return;
+                    };
+                    let canvas: web_sys::HtmlCanvasElement = (*canvas_el)
+                        .clone()
+                        .dyn_into()
+                        .expect("canvas node_ref should be an HtmlCanvasElement");
+                    match capture::start_recording(&canvas) {
+                        Ok(rec) => {
+                            *slot = Some(rec);
+                            capture.is_recording.set(true);
+                        }
+                        Err(e) => {
+                            log::warn!("[terrain] 画面録画の開始に失敗しました: {e:?}");
+                            // 開始できなかったので要求自体を取り消し、ボタンの表示を元に戻す。
+                            capture.recording_requested.set(false);
+                            capture.is_recording.set(false);
+                        }
+                    }
+                }
+                (false, true) => {
+                    if let Some(rec) = slot.take() {
+                        rec.stop(); // 停止後、ブラウザ側で非同期にWebMがダウンロードされる。
+                    }
+                    capture.is_recording.set(false);
+                }
+                _ => {}
+            }
         });
     }
 
