@@ -1,14 +1,65 @@
-# Sim3dView 詳細設計書
+# Sim3dView 設計書
 
-## 0. 本書の位置づけ
+## 0. 本書の位置づけと全体像
 
-設計書は次の3層で構成する(全体の索引は[README.md](README.md))。
+本書がSim3dViewの**唯一の設計書**である。システム概要、確定方針、詳細設計、実装仕様、
+再実装手順を一つにまとめる。セットアップと操作方法は[ルートREADME](../README.md)、
+ライブラリの公開APIは[sim3dview/README.md](../sim3dview/README.md)、変更の経緯は
+[DEVELOPMENT_HISTORY.md](DEVELOPMENT_HISTORY.md)を参照する。
 
-| 層 | 文書 | 内容 |
+### 0.1 目的と構成
+
+既存のC++シミュレータにRust/WASM/Leptos製Web UIを接続し、ALOS DSMを使った3D地形、
+見通し・覆域、作図、航跡、3Dモデルを表示する。地形表示と汎用UIは`sim3dview`ライブラリ、
+通信・VAB・状況パネルなどは`sample/`の参照アプリが担う。
+
+```mermaid
+flowchart LR
+    DSM["ALOS DSM / MSK<br/>GeoTIFF"] --> PRE["geotiff_preprocess<br/>タイルLOD生成"]
+    PRE --> ASSET["metadata / tile_index<br/>base / chunk files"]
+    CPP["C++ sim_server<br/>シミュレーション"] -->|"WebSocket<br/>MessagePack"| APP["Rust/Leptos<br/>sample app"]
+    ASSET -->|"HTTP Range"| LIB["sim3dview<br/>WASM + wgpu"]
+    APP --> LIB
+    LIB --> VIEW["3D地形・覆域・作図<br/>航跡・3Dモデル"]
+```
+
+### 0.2 文書内の読み順
+
+| 目的 | 節 |
+|---|---|
+| 全体像と確定方針 | 0節 |
+| 地形データ・前処理・座標系 | 1〜3節 |
+| 通信・C++サーバー | 4〜5節 |
+| Rustライブラリ・UI | 6〜7節 |
+| 図の索引 | 8節 |
+| 定数・アルゴリズム・バイト配置 | 9節 |
+| 再実装の順序と受け入れ基準 | 10節 |
+
+### 0.3 確定した設計方針
+
+| 項目 | 方針 |
+|---|---|
+| 接続 | WebSocketは指数バックオフ+ジッターで無制限再接続し、タブ非表示中は停止する |
+| クライアント | 全クライアントへ同じ状態をブロードキャストし、個別状態は持たない |
+| 地形 | `map_data`の全タイルを対象とし、1度タイルLOD+レベル1以上は6×6チャンクで扱う |
+| 地形取得 | 起動時に最粗レベルを取得し、カメラ位置に応じて詳細チャンクをHTTP Rangeで追加取得する |
+| 描画 | 実標高、標高グラデーション、切替可能なヒルシェードを使い、垂直誇張とオルソ画像は使わない |
+| 座標 | 原点を海抜0mのWGS84位置とする局所ENU(東=X、北=Y、上=Z)をC++とWASMで共有する |
+| 原点変更 | シミュレーション停止中だけ許可し、範囲外入力はUIとサーバーの双方で拒否する |
+| カメラ | 3D自由視点と北が上の2D真上表示を提供する |
+| VAB | 6行×4列。先頭行はカテゴリ、中段4行と下段1行はアプリ側コンテンツ。空ラベルはDOMを作らない |
+| 状況パネル | 表示項目を`StatusPanelConfig`でC++側から配信する |
+| レイアウト | 縦積みにせず、中央と右パネルをリサイズ可能にし、収まらない場合は横スクロールする |
+| エラー | `set_origin`等の拒否は黙って無視せず`CommandError`を返す |
+
+### 0.4 技術スタックと責務
+
+| 範囲 | 主な技術 | 責務 |
 |---|---|---|
-| 基本設計 | [BASIC_DESIGN.md](BASIC_DESIGN.md) | 背景・全体構成・技術スタック・確定した設計方針(17項目)・ディレクトリ構成 |
-| 詳細設計(システム) | **本書** | 地形データの実態・前処理の方針・座標系・通信プロトコル・C++サーバー・ライブラリの設計方針(モジュール構成・図・「なぜそうしたか」)・サンプルアプリのUI |
-| 詳細設計(ライブラリ実装仕様) | 本書 **9節** | 定数・アルゴリズム・バイト配置・手順・テストの要点を、実装コードから起こした仕様(シェーダー全文は`sim3dview/src/terrain/*.wgsl`) |
+| 前処理 | C++20、GDAL | GeoTIFFから原点非依存のタイルLODを生成 |
+| サーバー | C++、uWebSockets、msgpack-cxx、libuv | シミュレーション、WebSocket、地形のHTTP配信 |
+| ライブラリ | Rust、Leptos、wgpu、WebAssembly | 地形取得・測地・描画・覆域・作図・航跡・汎用UI |
+| サンプルアプリ | Rust、Leptos、rmp-serde | 通信、VAB、状況パネル、メニュー、ライブラリとの橋渡し |
 
 **役割分担(同じ事実を2か所に書かないための約束)**
 
@@ -708,7 +759,7 @@ classDiagram
 
 **テスト**: `cargo test -p sim3dview`(ネイティブ)。`TerrainData::synthetic`(`cfg(test)`)で合成地形を作り、標高サンプリング・丸み込みの`ground_at_enu`・LODの予算配分・反転Z・`screen_to_ray`・
 電波の地平線(見通し)・視錐台カリングなどを検証する。WGSL(`terrain.wgsl`・`draw.wgsl`)は`naga`で構文・型を検証し、uniform・頂点のレイアウトがRust側の構造体と一致することを確かめる
-(方針は[IMPLEMENTATION_GUIDE.md](IMPLEMENTATION_GUIDE.md) 4.3、テストの要点は9節の各「検証」)。
+(方針は10節、テストの要点は9節の各「検証」)。
 
 ### 6.1 コンポーネント構成図
 
@@ -2192,3 +2243,66 @@ uniformは作図の`World`用(`draw_world`。`view_proj`・`light`だけ使う)�
 `placement`(ヘディングは北から時計回り・ピッチ機首上げ・ロール右翼下がり・地点の局所の上に沿う・行列の位置と大きさとyaw補正・奥行きと画面の大きさ・切替距離とヒステリシス・最小サイズの倍率と上限・
 モデル別のインスタンス集約と未読み込み/未登録の除外・配置の位置と向き)、`geodesy::local_frame`(原点で単位行列・遠方で上がかたむく・正規直交の右手系)、`tracks`(`symbols_hidden`のトラックはシンボルだけ消える)、
 `renderer`(`model.wgsl`のnaga検証・`DrawUniform`の一致・頂点/インスタンスの属性のオフセットと`@location`)、`models`(登録・置き換え・解除)。実機: 最小サイズでモデルが出て向きが進行方向に合う・切替距離で入れ替わる。
+
+---
+
+## 10. 再実装ガイド
+
+`sim3dview`を一から実装する場合は、下記の依存順で進める。各フェーズで
+`cargo check -p sim3dview --target wasm32-unknown-unknown`と`cargo test -p sim3dview`を通してから次へ進む。
+前処理ツールはRust側と独立して並行実装できる。
+
+### 10.1 実装順序
+
+```mermaid
+flowchart LR
+    S0["0 骨組み"] --> S1["1 測地"] --> S2["2 データ取得・保持"] --> S3["3 標高・メッシュ"]
+    S3 --> S4["4 カメラ・ピッキング"]
+    S3 --> S6["6 見通し計算"]
+    S3 --> S7["7 レンダラー"]
+    S4 --> S5["5 LOD計画"]
+    S5 --> S8["8 TerrainView統合"]
+    S6 --> S8
+    S7 --> S8
+    S8 --> S9["9 観測点・見通しUI"] --> S10["10 作図"] --> S11["11 対話作図・メニュー"] --> S12["12 航跡"] --> S13["13 仕上げ"]
+    S12 --> S14["14 3Dモデル（任意）"]
+    A["A GeoTIFF前処理"] -. 独立 .-> S8
+```
+
+| # | フェーズ | 主な成果物 | 詳細仕様 | 受け入れ基準 |
+|---|---|---|---|---|
+| 0 | 骨組み | crate、空モジュール、`TerrainData::synthetic` | 9.2・9.13 | wasm32 checkとネイティブtestが通る |
+| A | 前処理 | `geotiff_preprocess` | 9.5 | ファイルサイズ、南北方向、隣接縁が正しい |
+| 1 | 測地 | `Ellipsoid`、`EnuTransform` | 9.3 | 往復変換、軸、遠方の曲率が正しい |
+| 2 | データ | `loader`、`fetch` | 9.1・9.2 | endian、補間、LODキャッシュ、破損入力を検証 |
+| 3 | 地形 | `heightmap`、`mesh` | 9.3・9.4 | 配色、法線、スカート、NaN三角形を検証 |
+| 4 | 視点 | `camera`、`pick`、`profile` | 9.6 | 反転Z、レイ、操作、2D表示を検証 |
+| 5 | LOD | `lod` | 9.7 | レベル選択、予算、視錐台、ヒステリシスを検証 |
+| 6 | 覆域 | `los` | 9.8 | 地平線、遮蔽、最小可視高度、ドームを検証 |
+| 7 | 描画 | `renderer`、WGSL | 9.9 | naga検証とRust/WGSLレイアウト一致 |
+| 8 | UI統合 | context、`TerrainView`、LOD適用 | 9.13 | 実機で地形、操作、原点変更、LOD差替えを確認 |
+| 9 | 観測点 | `markers`、見通しUI | 9.10・9.14 | 3D/2D覆域、極座標図、断面図を確認 |
+| 10 | 作図 | `drawing`、描画パス | 9.11 | 全図形とWorld/View/Screen固定を確認 |
+| 11 | 編集 | `draw_tool`、右クリックメニュー | 9.11・9.14 | 作成、取消、編集、JSON復元を確認 |
+| 12 | 航跡 | `tracks`、ラベル、選択 | 9.12・9.13 | 向き、追従、選択、メニューを確認 |
+| 13 | 仕上げ | CSS、公開API文書、ライセンス | 9.14 | 全テストとREADMEの例が通る |
+| 14 | 3Dモデル | glTF取込、配置、GPU描画 | 9.15 | 実寸、姿勢、最小サイズ、切替を確認 |
+
+### 10.2 完了条件
+
+1. `cargo check -p sim3dview --target wasm32-unknown-unknown`が通る。
+2. `cargo check -p sim_frontend --target wasm32-unknown-unknown`が通る。
+3. `cargo test -p sim3dview`が全件通る。
+4. 実データで各フェーズの実機項目を複数回確認する。
+5. [sim3dview/README.md](../sim3dview/README.md)の公開APIと一致する。
+
+### 10.3 実装時の重要チェック
+
+- GDALの北→南の行順を出力時に南→北へ反転する。
+- 遠方の地表には`ground_at_enu`を使い、接平面近似の`inverse`を使わない。
+- 深度は反転Z+有限far、クリア0.0、比較`Greater`で統一し、ピッキングのレイも同じ射影に合わせる。
+- Rust構造体とWGSLのuniform・頂点バイトレイアウトをテストする。
+- `Rc`を含むLeptos状態にはローカルシグナルを使い、公開コールバックは`UnsyncCallback`にする。
+- LOD適用は時間と頂点数で分割し、キャッシュ上限、視錐台カリング、ヒステリシスを維持する。
+- シェーダー全文は本書へ複製せず、エントリポイント、式、バイト契約だけを9節に記録する。
+- 定数・アルゴリズムを変えたら9節、設計理由を変えたら6節、依存を変えたら`THIRD_PARTY_NOTICE.md`を更新する。

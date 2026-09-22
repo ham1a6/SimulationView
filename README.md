@@ -18,7 +18,7 @@ sample/            「これはサンプルです」という位置づけのデ�
 tools/
   geotiff_preprocess/ GeoTIFF前処理ツール(ライブラリの一部。C++/GDAL)。ALOS DSM→1度タイルごとの
                      多段解像度グリッド+metadata.json。sim_serverとは独立したCMakeプロジェクト。
-docs/              設計書一式(基本設計・詳細設計(9節にライブラリ実装仕様)・実装ガイド・開発履歴)。索引はdocs/README.md。
+docs/              統合設計書(概要・詳細・実装仕様・再実装ガイド)と開発履歴。索引はdocs/README.md。
 scripts/           補助スクリプト(ライセンス表記の生成)。
 map_data/          入力: ALOS DSM GeoTIFFタイル(容量が大きいためgit管理外。各自で配置する)
 ```
@@ -28,8 +28,7 @@ map_data/          入力: ALOS DSM GeoTIFFタイル(容量が大きいためgit
 - このリポジトリを丸ごと動かして完成品(C++シミュレータ + Web UI)を試したい場合は、
   以下のセットアップ手順に従ってください。
 
-詳しい設計は [docs/README.md](docs/README.md)(設計書の索引)から、[基本設計書](docs/BASIC_DESIGN.md)・
-[詳細設計書](docs/DETAILED_DESIGN.md)(UML図つき。9節がライブラリ実装仕様)へ。開発環境固有の既知の問題は
+詳しい設計は[Sim3dView設計書](docs/DETAILED_DESIGN.md)(Mermaid図つき。9節が実装仕様、10節が再実装ガイド)へ。開発環境固有の既知の問題は
 本書の「既知の環境問題・トラブルシューティング」、実装の経緯・ハマりどころは [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) を参照。
 
 ---
@@ -294,10 +293,8 @@ C++シミュレータ本体・Web UI(サンプルアプリ)とも実装・動作
 
 - [README.md](README.md) — 本書。セットアップ・起動手順
 - [sim3dview/README.md](sim3dview/README.md) — `sim3dview`ライブラリの使い方(開発者向け)
-- [docs/README.md](docs/README.md) — 設計書一式の索引・読み順・保守ルール
-- [docs/BASIC_DESIGN.md](docs/BASIC_DESIGN.md) — 基本設計書(要求仕様・確定した設計方針・全体構成)
-- [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) — 詳細設計書(データ・座標系・プロトコル・C++・ライブラリの設計方針・UML図。9節にライブラリの定数・アルゴリズム・バイト配置の要点)
-- [docs/IMPLEMENTATION_GUIDE.md](docs/IMPLEMENTATION_GUIDE.md) — ドキュメントだけでライブラリを1から再実装するための実装ガイド
+- [docs/README.md](docs/README.md) — ドキュメントの索引・読み順・保守ルール
+- [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) — 統合設計書(全体像、設計方針、詳細設計、実装仕様、再実装ガイド、Mermaid図)
 - [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) — 実装の経緯・ハマりどころの記録(機能ごとの「要望→原因→修正→確認」)
 - [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md) — 利用しているサードパーティ(Rustクレート・C++ライブラリ・ALOS地形データ)の一覧・著作権表示・ライセンス。依存を変えたら`python scripts/gen_third_party_notice.py`で再生成する
 - [CLAUDE.md](CLAUDE.md) — AIエージェント向けの作業方針・要点(短い索引)
