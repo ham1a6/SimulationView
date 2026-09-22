@@ -146,20 +146,6 @@ body {
     cursor: not-allowed;
 }
 
-/* マップパネルのスクリーンショット/画面録画ボタン(vab.rs)。先頭行(サーバーVabConfig駆動)とは
-   独立した、完全にフロント側だけの機能(サーバーへは何も送らない)のため、常に2列で
-   カテゴリのグリッドの上に表示する。通常の`.vab-button`は正方形(aspect-ratio 1/1)だが、
-   ここは文字ラベルを収めるため長方形に上書きする。 */
-.vab-capture-row {
-    grid-template-columns: repeat(2, 1fr);
-    margin-bottom: 10px;
-}
-
-.vab-capture-row .vab-button {
-    aspect-ratio: auto;
-    padding: 0.4rem 0.25rem;
-}
-
 /* 中段・下段のダミーボタン(サーバーVabConfigとは独立、選択中カテゴリのプレースホルダ)。
    通常のvab-buttonより少し控えめな配色にして「本物のB1〜B4」と区別しやすくする。 */
 .vab-button-dummy {

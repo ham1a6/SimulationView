@@ -21,11 +21,14 @@
 //! 変更する」との回答を受け、区画ごとに直近クリックしたボタンをローカルに記憶して
 //! 有効化表示する(`selected_mid`/`selected_bottom`。カテゴリ切り替え時はどちらもリセット)。
 //!
-//! **スクリーンショット・画面録画ボタン**: VABパネルの最上部に、マップパネル(地形canvas)を
-//! PNG保存/WebM録画するボタンを置く(要望により、このVABパネルに実装した)。サーバーへは
-//! 何も送らない完全にフロント側だけの機能で、実処理はsim3dviewライブラリ側
-//! (`terrain::capture::CaptureState`・`ui::terrain_view::TerrainView`)にある。このパネルは
-//! contextへ要求を出すだけ。
+//! **スクリーンショット・画面録画ボタン**: マップパネル(地形canvas)をPNG保存/WebM録画する
+//! ボタンを、中段の先頭2枠(既定のカテゴリ・1ページ目なら「B1-1」「B1-2」の位置。要望により
+//! この位置に実装した)に固定で置く。通常の中段ダミーボタン(`mid_button`)を、この2枠だけ
+//! 差し替える形(`vab_dummy_mid_0`/`_1`は送らない)。カテゴリやページを変えてもこの2枠だけは
+//! 動かない(`i == 0`/`i == 1`、中段グリッドの絶対インデックスの先頭2つは、必ず1ページ目の
+//! 先頭2列になるため)。サーバーへは何も送らない完全にフロント側だけの機能で、実処理は
+//! sim3dviewライブラリ側(`terrain::capture::CaptureState`・`ui::terrain_view::TerrainView`)に
+//! ある。このパネルはcontextへ要求を出すだけ。
 
 use leptos::prelude::*;
 
@@ -80,21 +83,6 @@ pub fn VabPanel(
 
     view! {
         <div class="panel-section vab-panel">
-            <div class="vab-grid vab-capture-row">
-                <button
-                    class="vab-button"
-                    on:click=move |_| capture.request_screenshot()
-                >
-                    "スクリーンショット"
-                </button>
-                <button
-                    class="vab-button"
-                    class:vab-button-active=move || capture.is_recording.get()
-                    on:click=move |_| capture.toggle_recording()
-                >
-                    {move || if capture.is_recording.get() { "録画停止" } else { "録画開始" }}
-                </button>
-            </div>
             {move || {
                 let Some(cfg) = signals.vab_config.get() else {
                     return view! { <p class="placeholder">"(未受信)"</p> }.into_any();
@@ -169,6 +157,28 @@ pub fn VabPanel(
                                 })
                             })
                             .map(|i| {
+                                // 中段の先頭2枠(B1-1・B1-2の位置)は、カテゴリ・ページによらず
+                                // 常にスクリーンショット・画面録画ボタン(要望による固定配置)。
+                                if i == 0 {
+                                    return view! {
+                                        <button class="vab-button" on:click=move |_| capture.request_screenshot()>
+                                            "スクショ"
+                                        </button>
+                                    }
+                                        .into_any();
+                                }
+                                if i == 1 {
+                                    return view! {
+                                        <button
+                                            class="vab-button"
+                                            class:vab-button-active=move || capture.is_recording.get()
+                                            on:click=move |_| capture.toggle_recording()
+                                        >
+                                            {move || if capture.is_recording.get() { "停止" } else { "録画" }}
+                                        </button>
+                                    }
+                                        .into_any();
+                                }
                                 let (label, id) = mid_button(&cat_for_mid, i);
                                 let on_click = move |_| {
                                     conn.send_command(&ClientCommand::vab_press(id.clone()));
@@ -184,6 +194,7 @@ pub fn VabPanel(
                                         {label}
                                     </button>
                                 }
+                                    .into_any()
                             })
                             .collect::<Vec<_>>()}
                     </div>
