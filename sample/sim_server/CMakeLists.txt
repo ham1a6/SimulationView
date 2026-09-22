@@ -58,13 +58,13 @@ target_include_directories(msgpack_cxx INTERFACE ${MSGPACK_CXX_DIR}/include)
 target_compile_definitions(msgpack_cxx INTERFACE MSGPACK_NO_BOOST)
 
 # --- sim_server 本体 -------------------------------------------------------
-add_executable(sim_server
-    src/main.cpp
-    src/simulation.cpp
-    src/ws_server.cpp
-)
+add_library(simulation_core STATIC src/simulation.cpp)
+target_include_directories(simulation_core PUBLIC include)
+target_link_libraries(simulation_core PUBLIC msgpack_cxx)
+
+add_executable(sim_server src/main.cpp src/ws_server.cpp)
 target_include_directories(sim_server PRIVATE include)
-target_link_libraries(sim_server PRIVATE uwebsockets msgpack_cxx)
+target_link_libraries(sim_server PRIVATE simulation_core uwebsockets)
 
 if (WIN32)
     target_compile_definitions(sim_server PRIVATE _WIN32_WINNT=0x0601 NOMINMAX)
@@ -73,4 +73,16 @@ endif()
 
 if (MSVC)
     target_compile_options(sim_server PRIVATE /Zc:__cplusplus)
+    target_compile_options(simulation_core PRIVATE /Zc:__cplusplus)
+endif()
+
+include(CTest)
+if (BUILD_TESTING)
+    add_executable(simulation_test tests/simulation_test.cpp)
+    target_link_libraries(simulation_test PRIVATE simulation_core)
+    add_test(NAME simulation_state COMMAND simulation_test)
+
+    add_executable(http_utils_test tests/http_utils_test.cpp)
+    target_include_directories(http_utils_test PRIVATE include)
+    add_test(NAME http_utils COMMAND http_utils_test)
 endif()

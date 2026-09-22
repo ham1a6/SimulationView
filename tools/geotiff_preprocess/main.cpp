@@ -57,6 +57,8 @@
 
 #include <gdal_priv.h>
 
+#include "preprocess_core.hpp"
+
 namespace fs = std::filesystem;
 
 namespace {
@@ -384,37 +386,12 @@ SourceGrid load_dsm_tile(const std::string& path) {
     return grid;
 }
 
-struct TileId {
-    int lat = 0; // タイル南西角の緯度(整数度)
-    int lon = 0; // タイル南西角の経度(整数度)
-};
+using sim3dview::preprocess::MosaicBounds;
+using sim3dview::preprocess::TileId;
 
 // ファイル名からタイルIDを取り出す。例: "ALPSMLC30_N035E138_DSM.tif" -> lat=35, lon=138。
 std::optional<TileId> parse_tile_filename(const std::string& filename) {
-    const size_t suffix_pos = filename.find("_DSM.tif");
-    if (suffix_pos == std::string::npos || suffix_pos < 8) {
-        return std::nullopt;
-    }
-    // "_DSM.tif" の直前8文字が "N035E138" のような形式のはず。
-    const std::string token = filename.substr(suffix_pos - 8, 8);
-    const char lat_hemi = token[0];
-    const char lon_hemi = token[4];
-    if ((lat_hemi != 'N' && lat_hemi != 'S') || (lon_hemi != 'E' && lon_hemi != 'W')) {
-        return std::nullopt;
-    }
-    try {
-        int lat = std::stoi(token.substr(1, 3));
-        int lon = std::stoi(token.substr(5, 3));
-        if (lat_hemi == 'S') {
-            lat = -lat;
-        }
-        if (lon_hemi == 'W') {
-            lon = -lon;
-        }
-        return TileId{lat, lon};
-    } catch (const std::exception&) {
-        return std::nullopt;
-    }
+    return sim3dview::preprocess::parse_tile_filename(filename);
 }
 
 // 見つかったタイル1枚分(タイルID + ファイルパス)。
@@ -450,33 +427,11 @@ std::vector<DiscoveredTile> discover_tiles(const std::string& map_data_dir) {
 // モザイクの外接矩形(整数度)。タイルの南西角IDの最小/最大から、実際に見つかったタイル群
 // 全体を覆う範囲を求める(1.2節)。固定のハードコード値は持たない: map_data/に別の場所の
 // タイルが追加/削除されても、この関数の結果だけが変わりモザイクが自動的に追従する。
-struct MosaicBounds {
-    int min_lat = 0;
-    int max_lat = 0; // 外接矩形の北端(タイル南西角緯度の最大値+1)
-    int min_lon = 0;
-    int max_lon = 0; // 外接矩形の東端(タイル南西角経度の最大値+1)
-};
-
 MosaicBounds compute_mosaic_bounds(const std::vector<DiscoveredTile>& tiles) {
-    if (tiles.empty()) {
-        throw std::runtime_error("no *_DSM.tif tiles found");
-    }
-    MosaicBounds bounds{tiles[0].id.lat, tiles[0].id.lat + 1, tiles[0].id.lon, tiles[0].id.lon + 1};
-    for (const auto& tile : tiles) {
-        bounds.min_lat = std::min(bounds.min_lat, tile.id.lat);
-        bounds.max_lat = std::max(bounds.max_lat, tile.id.lat + 1);
-        bounds.min_lon = std::min(bounds.min_lon, tile.id.lon);
-        bounds.max_lon = std::max(bounds.max_lon, tile.id.lon + 1);
-    }
-    return bounds;
-}
-
-// タイルID(南西角の整数度)から "N035E138" 形式の名前を作る(フロントのタイルURLと一致させる)。
-std::string tile_name(const TileId& id) {
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "%c%03d%c%03d", id.lat >= 0 ? 'N' : 'S', std::abs(id.lat),
-                  id.lon >= 0 ? 'E' : 'W', std::abs(id.lon));
-    return buf;
+    std::vector<TileId> ids;
+    ids.reserve(tiles.size());
+    for (const auto& tile : tiles) ids.push_back(tile.id);
+    return sim3dview::preprocess::compute_mosaic_bounds(ids);
 }
 
 // 1度タイルの標高(row0=北端の3600x3600、NaN=データなし)から、cells分割の(cells+1)x(cells+1)
@@ -552,18 +507,10 @@ void write_chunked_level_file(const fs::path& path, const std::vector<int16_t>& 
     if (!out) {
         throw std::runtime_error("failed to open output file: " + path.string());
     }
-    std::vector<int16_t> record(static_cast<size_t>(chunk_cells + 1) * (chunk_cells + 1));
-    for (int cy = 0; cy < kChunksPerTile; ++cy) {
-        for (int cx = 0; cx < kChunksPerTile; ++cx) {
-            for (int j = 0; j <= chunk_cells; ++j) {
-                const int16_t* src =
-                    grid.data() + static_cast<size_t>(cy * chunk_cells + j) * nodes + cx * chunk_cells;
-                std::copy(src, src + chunk_cells + 1,
-                          record.begin() + static_cast<size_t>(j) * (chunk_cells + 1));
-            }
-            out.write(reinterpret_cast<const char*>(record.data()),
-                      static_cast<std::streamsize>(record.size() * sizeof(int16_t)));
-        }
+    for (const auto& record :
+         sim3dview::preprocess::split_chunks(grid, cells, kChunksPerTile)) {
+        out.write(reinterpret_cast<const char*>(record.data()),
+                  static_cast<std::streamsize>(record.size() * sizeof(int16_t)));
     }
 }
 

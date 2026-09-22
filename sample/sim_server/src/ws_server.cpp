@@ -1,4 +1,5 @@
 #include "ws_server.hpp"
+#include "http_utils.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -43,26 +44,7 @@ using ServerWebSocket = uWS::WebSocket<SSL, true, PerSocketData>;
 // endは含む(HTTPのRangeの仕様どおり)。END省略時は末尾まで。
 bool parse_byte_range(std::string_view header, std::uintmax_t total, std::uintmax_t& start,
                       std::uintmax_t& end) {
-    constexpr std::string_view kPrefix = "bytes=";
-    if (header.substr(0, kPrefix.size()) != kPrefix) {
-        return false;
-    }
-    const std::string spec(header.substr(kPrefix.size()));
-    const size_t dash = spec.find('-');
-    if (dash == std::string::npos || dash == 0 || spec.find(',') != std::string::npos) {
-        return false; // "-N"(末尾からN)と複数範囲は使わない。
-    }
-    try {
-        start = std::stoull(spec.substr(0, dash));
-        end = (dash + 1 < spec.size()) ? std::stoull(spec.substr(dash + 1)) : total - 1;
-    } catch (const std::exception&) {
-        return false;
-    }
-    if (total == 0 || start >= total) {
-        return false;
-    }
-    end = std::min<std::uintmax_t>(end, total - 1);
-    return start <= end;
+    return http_utils::parse_byte_range(header, total, start, end);
 }
 
 // ファイルの大きさと更新時刻から、キャッシュの検証用ETagを作る(ファイルが変われば値も変わる)。
@@ -81,34 +63,7 @@ std::string make_etag(const std::string& path, std::uintmax_t size) {
 
 // If-None-Matchの値(カンマ区切りの複数・`W/`付き・`*`)に、現在のETagが含まれるか。
 bool etag_matches(std::string_view if_none_match, const std::string& etag) {
-    if (if_none_match.empty() || etag.empty()) {
-        return false;
-    }
-    if (if_none_match == "*") {
-        return true;
-    }
-    size_t pos = 0;
-    while (pos < if_none_match.size()) {
-        size_t end = if_none_match.find(',', pos);
-        if (end == std::string_view::npos) {
-            end = if_none_match.size();
-        }
-        std::string_view token = if_none_match.substr(pos, end - pos);
-        while (!token.empty() && token.front() == ' ') {
-            token.remove_prefix(1);
-        }
-        while (!token.empty() && token.back() == ' ') {
-            token.remove_suffix(1);
-        }
-        if (token.substr(0, 2) == "W/") {
-            token.remove_prefix(2);
-        }
-        if (token == etag) {
-            return true;
-        }
-        pos = end + 1;
-    }
-    return false;
+    return http_utils::etag_matches(if_none_match, etag);
 }
 
 // 地形データ(metadata.json/tile_index.json/base.bin/tiles/L*/*.bin)の簡易静的ファイル配信。
@@ -172,12 +127,7 @@ void serve_terrain_file(uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req,
 // URLのパス要素(タイルのレベル・ファイル名)として安全か: 英数字・'_'・'.'だけで、".."を
 // 含まない(パストラバーサルで任意のファイルを読ませないための入力検証)。
 bool is_safe_path_component(const std::string& name) {
-    if (name.empty() || name.size() > 64 || name.find("..") != std::string::npos) {
-        return false;
-    }
-    return std::all_of(name.begin(), name.end(), [](unsigned char c) {
-        return std::isalnum(c) || c == '_' || c == '.';
-    });
+    return http_utils::is_safe_path_component(name);
 }
 
 } // namespace
