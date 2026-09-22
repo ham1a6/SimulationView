@@ -29,6 +29,12 @@
 //! 先頭2列になるため)。サーバーへは何も送らない完全にフロント側だけの機能で、実処理は
 //! sim3dviewライブラリ側(`terrain::capture::CaptureState`・`ui::terrain_view::TerrainView`)に
 //! ある。このパネルはcontextへ要求を出すだけ。
+//!
+//! **シミュレーション開始/一時停止ボタン**: 上と同じ固定配置の考え方で、続く2枠
+//! (`i == 2`/`i == 3`。既定なら「B1-3」「B1-4」の位置)を「開始」「一時停止」ボタンにする
+//! (`SimulationStatusPanel`の同名ボタンと同じ`ClientCommand::resume`/`pause`を送るだけで、
+//! 状態の押し分け表示は持たない。左パネル上の`SimulationStatusPanel`側のボタンは残したまま、
+//! VABにも同じ操作口を増やす)。
 
 use leptos::prelude::*;
 
@@ -175,6 +181,24 @@ pub fn VabPanel(
                                             on:click=move |_| capture.toggle_recording()
                                         >
                                             {move || if capture.is_recording.get() { "停止" } else { "録画" }}
+                                        </button>
+                                    }
+                                        .into_any();
+                                }
+                                // 続く2枠(B1-3・B1-4の位置)は、シミュレーションの開始/一時停止
+                                // (SimulationStatusPanelと同じコマンドを送るだけの操作口)。
+                                if i == 2 {
+                                    return view! {
+                                        <button class="vab-button" on:click=move |_| conn.send_command(&ClientCommand::resume())>
+                                            "開始"
+                                        </button>
+                                    }
+                                        .into_any();
+                                }
+                                if i == 3 {
+                                    return view! {
+                                        <button class="vab-button" on:click=move |_| conn.send_command(&ClientCommand::pause())>
+                                            "一時停止"
                                         </button>
                                     }
                                         .into_any();
