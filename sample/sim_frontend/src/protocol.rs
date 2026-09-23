@@ -14,7 +14,6 @@ use std::fmt;
 #[repr(u8)]
 pub enum MsgType {
     SimState = 0x01,
-    VabConfig = 0x02,
     OriginState = 0x03,
     StatusPanelConfig = 0x04,
     CommandError = 0x05,
@@ -26,7 +25,6 @@ impl MsgType {
     pub fn from_byte(b: u8) -> Option<Self> {
         match b {
             0x01 => Some(MsgType::SimState),
-            0x02 => Some(MsgType::VabConfig),
             0x03 => Some(MsgType::OriginState),
             0x04 => Some(MsgType::StatusPanelConfig),
             0x05 => Some(MsgType::CommandError),
@@ -41,7 +39,6 @@ impl MsgType {
 #[derive(Debug, Clone)]
 pub enum ServerMessage {
     SimState(SimState),
-    VabConfig(VabConfig),
     OriginState(OriginState),
     StatusPanelConfig(StatusPanelConfig),
     CommandError(CommandError),
@@ -86,7 +83,6 @@ pub fn decode_frame(bytes: &[u8]) -> Result<ServerMessage, DecodeFrameError> {
     }
     match msg_type {
         MsgType::SimState => decode!(SimState, SimState),
-        MsgType::VabConfig => decode!(VabConfig, VabConfig),
         MsgType::OriginState => decode!(OriginState, OriginState),
         MsgType::StatusPanelConfig => decode!(StatusPanelConfig, StatusPanelConfig),
         MsgType::CommandError => decode!(CommandError, CommandError),
@@ -107,24 +103,6 @@ pub struct SimState {
     pub frame_id: u32,
     /// StatusPanelConfig.items と同じ順序・同じ数(v1では数値項目のみ)。
     pub status_values: Vec<f64>,
-}
-
-/// VAB(操作ボタン)1個分。ラベルが空文字のボタンは「未使用の穴」(DETAILED_DESIGN.md 7.4節)。
-#[derive(Debug, Clone, Deserialize)]
-pub struct VabButton {
-    pub id: String,
-    pub label: String,
-    pub enabled: bool,
-}
-
-/// VABボタン配置設定(状態変化時のみ送信)。
-#[derive(Debug, Clone, Deserialize)]
-pub struct VabConfig {
-    #[allow(dead_code)] // UIは先頭行(カテゴリ選択、cols個ぶん)しか使わないが、msgpackが
-    // 配列位置エンコードのためフィールド自体は削除できない(vab.rs参照)。
-    pub rows: u32,
-    pub cols: u32,
-    pub buttons: Vec<VabButton>,
 }
 
 /// 基準位置(原点)。DETAILED_DESIGN.md 3節・4.3節。サーバーが保持する状態が正。
@@ -211,11 +189,11 @@ pub struct TrackList {
 /// (プレフィックスバイトなし、msgpack本体のみで送信する)
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct ClientCommand {
-    /// "vab_press" / "pause" / "resume" / "set_param" / "set_origin"
+    /// "pause" / "resume" / "set_param" / "set_origin"
     #[serde(rename = "type")]
     pub type_: String,
-    /// vab_press時のみ使用
-    pub button_id: String,
+    /// 旧ボタンIDの予約スロット。配列位置の互換性のため空文字で送る。
+    pub reserved: String,
     /// set_param時のみ使用
     pub value: f64,
     /// set_origin時のみ使用
@@ -249,14 +227,6 @@ impl ClientCommand {
             ..Default::default()
         }
     }
-
-    pub fn vab_press(button_id: impl Into<String>) -> Self {
-        Self {
-            type_: "vab_press".to_string(),
-            button_id: button_id.into(),
-            ..Default::default()
-        }
-    }
 }
 
 #[cfg(test)]
@@ -277,13 +247,6 @@ mod tests {
                 &(1.0_f64, vec![0.0_f32], 2_u32, vec![3.0_f64])
             )),
             Ok(ServerMessage::SimState(_))
-        ));
-        assert!(matches!(
-            decode_frame(&frame(
-                MsgType::VabConfig,
-                &(1_u32, 1_u32, vec![("id", "label", true)])
-            )),
-            Ok(ServerMessage::VabConfig(_))
         ));
         assert!(matches!(
             decode_frame(&frame(MsgType::OriginState, &(35.0_f64, 139.0_f64))),
@@ -307,6 +270,32 @@ mod tests {
         assert!(matches!(
             decode_frame(&frame(MsgType::TrackList, &(0.0_f64, Vec::<(u32,)>::new()))),
             Ok(ServerMessage::TrackList(_))
+        ));
+    }
+
+    #[test]
+    fn commands_keep_wire_positions_without_button_ids() {
+        for cmd in [
+            ClientCommand::resume(),
+            ClientCommand::pause(),
+            ClientCommand::set_origin(35.0, 139.0),
+        ] {
+            let bytes = rmp_serde::to_vec(&cmd).unwrap();
+            let wire: (String, String, f64, f64, f64) = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(
+                wire,
+                (
+                    cmd.type_,
+                    String::new(),
+                    cmd.value,
+                    cmd.lat_deg,
+                    cmd.lon_deg
+                )
+            );
+        }
+        assert!(matches!(
+            decode_frame(&[0x02]),
+            Err(DecodeFrameError::UnknownType(0x02))
         ));
     }
 

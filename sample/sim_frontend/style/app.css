@@ -120,6 +120,11 @@ body {
 }
 
 .vab-button {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
     aspect-ratio: 1 / 1;
     background: #234;
     color: var(--fg);
@@ -128,6 +133,25 @@ body {
     cursor: pointer;
     font-size: 0.8rem;
     padding: 0.25rem;
+}
+
+/* 文字をレイアウト計算から外し、長さによる列幅・行高の変化を防ぐ。 */
+.vab-label-frame {
+    position: absolute;
+    inset: 0.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.vab-label-text {
+    flex: none;
+    width: max-content;
+    white-space: pre;
+    line-height: 1.2;
+    transform-origin: center;
+    visibility: hidden;
 }
 
 .vab-button:hover:not(:disabled) {

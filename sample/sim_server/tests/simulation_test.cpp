@@ -43,5 +43,13 @@ int main() {
     sim.enqueue_command(9, origin);
     tick = sim.step(0.0);
     assert(tick.errors.size() == 1 && !tick.origin_changed);
+    // 廃止したUI操作や未知のコマンドも、要求元に明示的に拒否を返す。
+    for (const char* type : {"vab_press", "unknown"}) {
+        sim.enqueue_command(11, command(type));
+        tick = sim.step(0.0);
+        assert(tick.errors.size() == 1 && tick.errors[0].client_id == 11);
+        assert(tick.errors[0].error.command_type == type);
+        assert(!tick.time_advanced && !tick.origin_changed && !tick.app_status_changed);
+    }
     std::filesystem::remove(metadata);
 }

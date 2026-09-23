@@ -226,8 +226,6 @@ void WsServer::Impl::run_app(AppT app) {
         // 接続直後に現在の状態を1回送信する(DETAILED_DESIGN.md 4.2節/4.3節)。
         impl->send_to(ws, protocol::encode_frame(MsgType::OriginState,
                                                    impl->simulation.snapshot_origin()));
-        impl->send_to(ws,
-                       protocol::encode_frame(MsgType::VabConfig, impl->simulation.vab_config()));
         impl->send_to(ws, protocol::encode_frame(MsgType::StatusPanelConfig,
                                                    impl->simulation.status_panel_config()));
         impl->send_to(ws, protocol::encode_frame(MsgType::AppStatus,

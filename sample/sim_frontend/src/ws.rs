@@ -17,7 +17,7 @@ use web_sys::{BinaryType, CloseEvent, MessageEvent, WebSocket};
 
 use crate::protocol::{
     decode_frame, AppStatus, ClientCommand, CommandError, OriginState, ServerMessage, SimState,
-    StatusPanelConfig, TrackList, VabConfig,
+    StatusPanelConfig, TrackList,
 };
 
 const INITIAL_BACKOFF_MS: u32 = 1_000;
@@ -61,7 +61,6 @@ impl fmt::Display for ConnectionStatus {
 pub struct WsSignals {
     pub status: RwSignal<ConnectionStatus>,
     pub origin: RwSignal<Option<OriginState>>,
-    pub vab_config: RwSignal<Option<VabConfig>>,
     pub status_panel_config: RwSignal<Option<StatusPanelConfig>>,
     pub last_sim_state: RwSignal<Option<SimState>>,
     pub last_command_error: RwSignal<Option<CommandError>>,
@@ -76,7 +75,6 @@ impl WsSignals {
         Self {
             status: RwSignal::new(ConnectionStatus::Connecting),
             origin: RwSignal::new(None),
-            vab_config: RwSignal::new(None),
             status_panel_config: RwSignal::new(None),
             last_sim_state: RwSignal::new(None),
             last_command_error: RwSignal::new(None),
@@ -242,7 +240,6 @@ impl WsConnection {
         };
         match message {
             ServerMessage::SimState(state) => self.signals.last_sim_state.set(Some(state)),
-            ServerMessage::VabConfig(cfg) => self.signals.vab_config.set(Some(cfg)),
             ServerMessage::OriginState(origin) => self.signals.origin.set(Some(origin)),
             ServerMessage::StatusPanelConfig(cfg) => {
                 self.signals.status_panel_config.set(Some(cfg));

@@ -10,34 +10,6 @@ namespace sim3dview {
 
 namespace {
 
-protocol::VabConfig make_dummy_vab_config() {
-    // DETAILED_DESIGN.md 7.4節: 開発用ダミー値は縦6行(1行+4行+1行のグループ分け)×横4列。
-    // フロント側(vab.rs)が「最初の行・最後の行」を汎用的に離して描画するため、
-    // rows=6にするだけで見た目上は1+4+1のグループ構成になる(グループ数自体を
-    // サーバー側で持つ必要はない)。
-    constexpr uint32_t kRows = 6;
-    constexpr uint32_t kCols = 4;
-
-    protocol::VabConfig config;
-    config.rows = kRows;
-    config.cols = kCols;
-    config.buttons.reserve(kRows * kCols);
-    for (uint32_t row = 0; row < kRows; ++row) {
-        for (uint32_t col = 0; col < kCols; ++col) {
-            protocol::VabButton button;
-            button.id = "btn_" + std::to_string(row) + "_" + std::to_string(col);
-            // DETAILED_DESIGN.md 7.4節: 空ラベルのボタンは「未使用の穴」。ダミーとして
-            // 中央4行ブロックの右下1個を穴にしておく(先頭行・末尾行は単独ボタン行として
-            // 常に埋めておいたほうが見た目が自然なため)。
-            const bool is_hole = (row == kRows - 2) && (col == kCols - 1);
-            button.label = is_hole ? "" : ("B" + std::to_string(row * kCols + col + 1));
-            button.enabled = !is_hole;
-            config.buttons.push_back(std::move(button));
-        }
-    }
-    return config;
-}
-
 protocol::StatusPanelConfig make_dummy_status_panel_config() {
     // DETAILED_DESIGN.md 7.5節: 表示項目はC++側が自由に定義する。開発用ダミー項目。
     protocol::StatusPanelConfig config;
@@ -79,8 +51,7 @@ std::optional<double> find_number(const std::string& text, const std::string& ke
 } // namespace
 
 Simulation::Simulation(const std::string& terrain_metadata_path)
-    : vab_config_(make_dummy_vab_config()),
-      status_panel_config_(make_dummy_status_panel_config()),
+    : status_panel_config_(make_dummy_status_panel_config()),
       scenario_(make_demo_scenario(origin_)) {
     std::ifstream file(terrain_metadata_path);
     std::ostringstream buffer;
@@ -157,13 +128,11 @@ void Simulation::apply_command(const protocol::ClientCommand& cmd, ClientId clie
             running_ = true;
             out_app_status_changed = true;
         }
-    } else if (cmd.type == "vab_press") {
-        // 実アクチュエーション対象がないため、フェーズ5時点でも押下ログのみ。
-        std::cout << "[vab_press] button_id=" << cmd.button_id << std::endl;
     } else if (cmd.type == "set_param") {
         std::cout << "[set_param] value=" << cmd.value << std::endl;
     } else {
-        std::cerr << "[simulation] unknown ClientCommand.type: " << cmd.type << std::endl;
+        out_errors.push_back(OutgoingCommandError{
+            client_id, protocol::CommandError{cmd.type, "未対応のコマンドです"}});
     }
 }
 

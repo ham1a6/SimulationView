@@ -71,9 +71,8 @@ public:
     // デモシナリオの航跡(航空機・ヘリ・艦船・車両)の、現在のシミュレーション時刻での状態。
     protocol::TrackList snapshot_tracks() const;
 
-    // VabConfig/StatusPanelConfigは起動後不変(v1はダミー固定値)なので、
+    // StatusPanelConfigは起動後不変(v1はダミー固定値)なので、
     // 生成後は読み取り専用として扱い、mutex保護なしで直接返してよい。
-    const protocol::VabConfig& vab_config() const { return vab_config_; }
     const protocol::StatusPanelConfig& status_panel_config() const {
         return status_panel_config_;
     }
@@ -103,7 +102,6 @@ private:
     double t_ = 0.0;
     uint32_t frame_id_ = 0;
 
-    protocol::VabConfig vab_config_;
     protocol::StatusPanelConfig status_panel_config_;
 
     // デモシナリオ: 航跡1個分の周回軌道。中心(center)のまわりの楕円(東西radius_east_m・南北radius_north_m)を、

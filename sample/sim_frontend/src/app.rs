@@ -205,8 +205,8 @@ pub fn App() -> impl IntoView {
                 <div class="app-layout" style:grid-template-columns=grid_columns>
                     <div class="left-panel">
                         <SimulationStatusPanel/>
-                        // 中段のページ数(1=単一ページ、2以上=ページ送りあり)。ここで自由に決められる。
-                        <VabPanel conn=conn mid_pages=2usize/>
+                        // B1〜B4の中段ページ数。ページ送りは常に表示し、単一ページでは左右とも無効。
+                        <VabPanel conn=conn mid_pages=[1usize, 2, 2, 2]/>
                     </div>
 
                     <div class="center-panel">

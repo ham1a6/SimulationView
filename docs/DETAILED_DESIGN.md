@@ -47,7 +47,7 @@ flowchart LR
 | 座標 | 原点を海抜0mのWGS84位置とする局所ENU(東=X、北=Y、上=Z)をC++とWASMで共有する |
 | 原点変更 | シミュレーション停止中だけ許可し、範囲外入力はUIとサーバーの双方で拒否する |
 | カメラ | 3D自由視点と北が上の2D真上表示を提供する |
-| VAB | 6行×4列。先頭行はカテゴリ、中段4行と下段1行はアプリ側コンテンツ。空ラベルはDOMを作らない |
+| VAB | 6行×4列。配置・表示・操作はすべてフロントが決定。実処理だけ業務コマンドを送信する。空ラベルはDOMを作らない |
 | 状況パネル | 表示項目を`StatusPanelConfig`でC++側から配信する |
 | レイアウト | 縦積みにせず、中央と右パネルをリサイズ可能にし、収まらない場合は横スクロールする |
 | エラー | `set_origin`等の拒否は黙って無視せず`CommandError`を返す |
@@ -328,7 +328,7 @@ msgpackへのシリアライズは、Rust側(rmp-serde)・C++側(msgpack-cxxの`
 | 値 | 名前 | 方向 | 送信タイミング |
 |---|---|---|---|
 | 0x01 | SimState | Server→Client | 高頻度(約60Hz) |
-| 0x02 | VabConfig | Server→Client | 状態変化時、接続直後にも1回 |
+| 0x02 | 予約(旧VabConfig) | — | 使用しない・再利用しない |
 | 0x03 | OriginState | Server→Client | 状態変化時、接続直後にも1回、全クライアントへbroadcast |
 | 0x04 | StatusPanelConfig | Server→Client | 状態変化時、接続直後にも1回 |
 | 0x05 | CommandError | Server→Client | コマンド拒否時。**要求元クライアントのみ**に送信 |
@@ -346,16 +346,7 @@ frame_id: u32               // フレーム番号。running状態に関わらず
 status_values: Vec<f64>     // StatusPanelConfig.items と同じ順序・同じ数
 ```
 
-**VabConfig**(サーバー→クライアント、状態変化時のみ)
-```
-rows: u32
-cols: u32
-buttons: Vec<VabButton>
-  VabButton:
-    id: String
-    label: String            // 空文字列 = 「未使用の穴」(6.2節)
-    enabled: bool
-```
+VAB設定は通信せず、フロントの`components/vab.rs`で定義する。
 
 **OriginState**(サーバー→クライアント、状態変化時+接続直後)
 ```
@@ -405,8 +396,8 @@ tracks: Vec<Track>             // 全トラックの最新状態(消えたトラ
 
 **ClientCommand**(クライアント→サーバー)
 ```
-type: String                   // "vab_press" / "pause" / "resume" / "set_param" / "set_origin"
-button_id: String              // vab_press時のみ使用
+type: String                   // "pause" / "resume" / "set_param" / "set_origin"
+reserved: String               // 旧ボタンIDの予約スロット(空文字)、配列位置を維持
 value: f64                     // set_param時のみ使用
 lat_deg: f64                   // set_origin時のみ使用
 lon_deg: f64                   // set_origin時のみ使用
@@ -415,7 +406,7 @@ lon_deg: f64                   // set_origin時のみ使用
 ### 4.4 送信頻度
 
 - シミュレーションループ(simスレッド)は約60Hz(16ms間隔)で駆動する
-- `VabConfig`/`OriginState`/`StatusPanelConfig`は変化があったときのみ送信(毎フレーム送らない)
+- `OriginState`/`StatusPanelConfig`は変化があったときのみ送信(毎フレーム送らない)
 - `TrackList`は全トラックの最新状態をまとめて、シミュレーション進行中だけ約20Hzで送る(3フレームに1回)。位置は
   シミュレーション時刻の関数で、停止中は変わらないので送らない(新規接続には接続直後に1回)。フロントの描画は全体の再描画になるので、
   60Hzで送らずに表示に十分な頻度に抑えている
@@ -429,7 +420,7 @@ lon_deg: f64                   // set_origin時のみ使用
 - **ブラウザタブが非表示の間は再接続の試行を一時停止**する(Page Visibility API)。タブがアクティブに
   戻ったタイミングで即座に再接続を再開する(バックオフの残り時間を待たない)
 - リトライ回数の上限は設けない(タブが表示されている間は無制限にリトライ)
-- 再接続成功後は、サーバーから`OriginState`/`VabConfig`/`StatusPanelConfig`が接続直後の仕様により
+- 再接続成功後は、サーバーから`OriginState`/`StatusPanelConfig`が接続直後の仕様により
   再送されるため、フロント側の表示状態は自然に復旧する
 
 ### 4.6 プロトコルのクラス図
@@ -439,7 +430,6 @@ classDiagram
     class MsgType {
         <<enumeration>>
         SimState = 0x01
-        VabConfig = 0x02
         OriginState = 0x03
         StatusPanelConfig = 0x04
         CommandError = 0x05
@@ -451,16 +441,6 @@ classDiagram
         +Vec~f32~ positions
         +u32 frame_id
         +Vec~f64~ status_values
-    }
-    class VabConfig {
-        +u32 rows
-        +u32 cols
-        +Vec~VabButton~ buttons
-    }
-    class VabButton {
-        +String id
-        +String label
-        +bool enabled
     }
     class OriginState {
         +f64 lat_deg
@@ -480,7 +460,7 @@ classDiagram
     }
     class ClientCommand {
         +String type
-        +String button_id
+        +String reserved
         +f64 value
         +f64 lat_deg
         +f64 lon_deg
@@ -504,7 +484,6 @@ classDiagram
         +f64 heading_deg
         +f64 speed_mps
     }
-    VabConfig "1" *-- "many" VabButton
     StatusPanelConfig "1" *-- "many" StatusItem
     TrackList "1" *-- "many" Track
 ```
@@ -521,8 +500,6 @@ sequenceDiagram
     WS->>WS: client_idを採番、clientsマップへ登録
     WS->>Sim: snapshot_origin()
     WS-->>C: OriginState (0x03)
-    WS->>Sim: vab_config()
-    WS-->>C: VabConfig (0x02)
     WS->>Sim: status_panel_config()
     WS-->>C: StatusPanelConfig (0x04)
     WS->>Sim: snapshot_app_status()
@@ -575,10 +552,13 @@ sequenceDiagram
     participant Sim as Simulation
 
     U->>V: クリック(有効なボタン)
-    V->>V: ClientCommand::vab_press(button_id)
+    V->>V: 表示定義から操作を選ぶ(ローカル操作はここで完結)
+    V->>V: 開始/一時停止ならClientCommand::resume()/pause()
     V->>WS: WebSocket送信(msgpack, プレフィックスなし)
     WS->>Sim: enqueue_command(client_id, cmd)
-    Sim->>Sim: step()内でapply_command()<br/>type=="vab_press" → ログ出力(v1はダミー、実アクチュエーション対象なし)
+    Sim->>Sim: step()内でコマンドを検証・実行
+    Sim-->>WS: 状態更新またはCommandError
+    WS-->>V: 応答・状態通知
 ```
 
 ---
@@ -642,7 +622,6 @@ classDiagram
         -bool running_
         -double t_
         -uint32_t frame_id_
-        -VabConfig vab_config_
         -StatusPanelConfig status_panel_config_
         -mutex queue_mutex_
         -deque~QueuedCommand~ command_queue_
@@ -652,7 +631,6 @@ classDiagram
         +snapshot_origin() OriginState
         +snapshot_app_status() AppStatus
         +snapshot_tracks() TrackList
-        +vab_config() VabConfig
         +status_panel_config() StatusPanelConfig
         -apply_queued_commands()
         -apply_command(cmd, client_id)
@@ -817,7 +795,6 @@ classDiagram
     class WsSignals {
         +RwSignal~ConnectionStatus~ status
         +RwSignal~Option~OriginState~~ origin
-        +RwSignal~Option~VabConfig~~ vab_config
         +RwSignal~Option~StatusPanelConfig~~ status_panel_config
         +RwSignal~Option~SimState~~ last_sim_state
         +RwSignal~Option~CommandError~~ last_command_error
@@ -1403,66 +1380,36 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 
 ### 7.4 VAB仕様
 
-- 開発用ダミー`VabConfig`の初期値: rows=6, cols=4(24ボタン)
-- ボタンの操作種別: 単純クリックのみ
-- ラベルが空文字の`VabButton`は「未使用の穴」として、**DOM要素自体を生成しない**
-- 実装上の注意: 穴を`filter()`で除外すると自動配置(auto-placement)がずれるため、先頭行の
-  各ボタンには`grid-row`/`grid-column`を配列インデックスから明示的に計算して指定する
-  (`row = 1; col = i + 1;`。先頭行のみを扱うため`row`は常に1)
+VABの配置・ラベル・有効/無効・選択表示・クリック時の処理は、すべて
+`sample/sim_frontend/src/components/vab.rs`が決定する。サーバーはVAB設定やボタンID、
+カテゴリ、ページを持たず、業務コマンドを検証・実行して状態通知または拒否応答を返す。
+未対応コマンドは要求元に`CommandError`を返す。状況パネルの設定配信は7.5節のまま。
 
-**カテゴリ選択タブ + 動的コンテンツ**(要望により追加): VabConfigの**先頭行(`cols`個)だけ**を
-「カテゴリ選択タブ」として扱い、サーバーが決めたラベル・有効/無効のまま描画する(押すと従来
-通り`vab_press`コマンドを送る)。**先頭行より後ろ(中段・下段、元のB5〜B24相当)は、サーバーの
-VabConfigの内容を使わず、選択中カテゴリに応じて内容が切り替わるフロント側だけのダミー
-コンテンツに置き換える**(`components/vab.rs`):
+- 先頭行は`CATEGORIES`に定義したB1〜B4の4カテゴリ。空ラベルはDOMを生成せず、
+  `grid-row`/`grid-column`で位置を維持する。未接続でも表示・選択できる。
+- 中段は4行×4列を1ページとし、`mid_pages: Signal<[usize; 4]>`でB1〜B4それぞれのページ数を指定する。
+  既定値とサンプル設定は`[1, 2, 2, 2]`(B1は単一ページ、B2〜B4は2ページ)。0は1扱い。
+  ページ送り「◀ 現在ページ/総ページ数 ▶」は常に表示する。1ページなら「◀ 1/1 ▶」で左右とも無効、
+  複数ページなら先頭で左、末尾で右を無効にする。
+  全体のインデックスは`行 * (ページ数 * 4) + ページ * 4 + 列`。
+- 下段は4個固定。中段のダミーラベルは`{カテゴリ}-{n}`、下段は`{カテゴリ}A{n}`。
+  カテゴリ・ページ・ダミーボタンの操作はローカル状態だけを更新し、通信しない。
+- 中段の絶対インデックス0/1はスクリーンショット・録画、2/3は開始・一時停止。
+  どのカテゴリでも1ページ目の先頭行に配置する。キャプチャは`CaptureState`へ要求し、
+  開始・一時停止だけが`resume`/`pause`コマンドを送る。成功時の状態は既存の`AppStatus`等で受け取る。
+- 先頭行は`selected_category`、ダミーの中段・下段は`selected_mid`/`selected_bottom`で
+  選択色を決める。カテゴリ押下時はページを0、ダミー選択を`None`へ戻す。
+  録画表示は`CaptureState.is_recording`に従う。
+- ボタンは列幅に従う正方形とし、グリッド列は`minmax(0, 1fr)`、ラベルは絶対配置で寸法計算から除外する。
+  `VabLabel`が枠と文字を`ResizeObserver`で監視し、`min(1, 枠幅/文字幅, 枠高/文字高)`で等比縮小する(文字寸法は整数丸めによる欠けを防ぐ1pxの余裕込み)。
+  改行は保持し、自動折返しは行わない。長い文字列でもボタンや隣接要素の位置は変わらず、全文はtitleでも確認できる。
+  初回計測までは文字を隠し、破棄時に監視を解除する。
+- `.vab-button-active`は同じ詳細度の`.vab-button-dummy`よりCSSで後ろに定義する。
 
-- 中段: `MID_ROWS`(4)行×(`mid_pages`×`cols`)列のダミーボタン。**ページ数は`VabPanel`の`mid_pages`プロパティで、パネルを置く側が決める**
-  (`Signal<usize>`なので実行中に変えられる。省略時は2、0は1扱い。サンプルは`app.rs`で`mid_pages=2usize`)。**1なら単一ページで、ページ送りを出さない**。
-  1ページあたり`cols`列だけを表示し、2以上のときは
-  **「◀ 1/N ▶」のページ送りボタン(`.vab-pager`)で切り替える**(横スクロールバー方式は
-  「ボタンによってページを切り替える感じにしたい」との要望により不採用にした)。現在ページ
-  (`current_page`、ローカル状態)×`cols`列目から`cols`個ぶんの列だけをグリッドに描画し、
-  ◀/▶は端のページで無効化する。カテゴリ(先頭行)を切り替えたら現在ページは先頭に戻す
-- 下段: `BOTTOM_COLS`(4)列の固定ダミーボタン(横スクロールなし)
-- ラベルは選択中カテゴリの先頭行ボタンのラベルを使い、中段は`"{カテゴリ}-{n}"`、下段は
-  `"{カテゴリ}A{n}"`という形式にして両者を区別している。クリックすると
-  `vab_dummy_mid_{i}`/`vab_dummy_bottom_{i}`というローカル生成idで通常通り`vab_press`を送る
-  (サーバー側は汎用的に`button_id`をログするだけなので、未知のidでも問題なく動作する)
-- **例外**: 中段グリッドの絶対インデックス`i == 0`/`i == 1`(既定のカテゴリ・1ページ目なら
-  「B1-1」「B1-2」の位置)の2枠だけは、カテゴリ・ページによらず常にスクリーンショット・
-  画面録画ボタン(要望による固定配置。6.14節)に差し替わり、`vab_dummy_mid_0`/`_1`は送らない。
-  続く`i == 2`/`i == 3`(「B1-3」「B1-4」の位置)も同様に固定で、シミュレーションの
-  開始/一時停止ボタン(`resume`/`pause`コマンドを送るだけ。状態に応じた押し分け表示は持たない)。
-  元は`SimulationStatusPanel`(25.1節)にもあったが、重複するため要望によりそちらから撤去し、
-  VABへ一本化した(`SimulationStatusPanel`は接続状態・原点・フレーム・航跡数の表示専用になった)
-
-VABはまだ実ハードウェア非連動の開発用ダミー段階であるため、**「カテゴリごとに実際に何を
-表示・操作すべきか」はまだフロント側だけの試作**であり、サーバー(C++)側はカテゴリという
-概念自体を持たない(先頭行の4ボタンを含め、VabConfig自体は今まで通り単一の固定24ボタン
-グリッドを1回だけ送る)。サーバー側を本当にカテゴリ対応させる(カテゴリ選択に応じて
-別のVabConfigを配信する等)のは将来の課題(CLAUDE.md参照)。
-
-**有効化状態(色反転)**(「vabについて通常状態と色を反転した有効化状態を用意したい」との
-要望により追加): 全VABボタン共通の`.vab-button-active`(背景を`var(--accent)`、文字色を
-濃紺に反転する見た目)を、区画ごとに異なるソースで切り替える。
-
-- 先頭行(B1〜B4相当): 「フロント側で現在の選択状況を有効化表示する」との要望通り、
-  既存の`selected_category`(カテゴリ選択の選択中インデックス)をそのまま使う
-  (元々`.vab-button-selected`という名前だったものを、有効化状態の汎用クラスとして
-  `.vab-button-active`に統合した)
-- 中段・下段: 当初の要望は「それ以外はC++側からのステータスをもって切り替える」だったが、
-  この2区画は選択中カテゴリに応じてフロント側だけで生成するダミーボタン(`vab_dummy_mid_{i}`/
-  `vab_dummy_bottom_{i}`)であり、C++側はその存在自体を知らない(VabConfigは先頭行の
-  `cols`個しか使っていない、上記参照)。C++からステータスを紐づけようがないため、
-  「フロントエンド側で制御する方針に変更する」との回答を受け、区画ごとに直近クリックした
-  ボタンのインデックスをローカルに保持(`selected_mid`/`selected_bottom`、いずれも
-  `RwSignal<Option<usize>>`)して有効化表示するようにした。カテゴリ切り替え時
-  (先頭行クリック時)はどちらも`None`にリセットする(前カテゴリでの押下状態を
-  引き継がない)
-- 実装上の注意: `.vab-button-active`と`.vab-button-dummy`は詳細度が同じ単一クラス
-  セレクタのため、CSS上の宣言順で後ろにある方が勝つ。中段・下段では両クラスが同時に
-  付与されるため、`.vab-button-active`を`.vab-button-dummy`より**後ろ**に定義する
-  必要がある(`style/app.css`)
+旧`VabConfig`と`vab_press`は廃止した。0x02は予約番号として再利用しない。
+`ClientCommand`は既存コマンドの配列位置を維持するため第2要素を空文字の`reserved`として残す。
+フロントとサーバーは合わせて更新する。新しい機能もフロントの表示定義から業務コマンドへ
+対応付け、サーバーに画面の配置やボタンIDを持ち込まない。
 
 ### 7.5 状況パネル仕様
 

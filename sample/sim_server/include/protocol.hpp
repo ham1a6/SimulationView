@@ -14,7 +14,7 @@ namespace sim3dview::protocol {
 
 enum class MsgType : uint8_t {
     SimState = 0x01,          // Server -> Client (高頻度)
-    VabConfig = 0x02,         // Server -> Client (状態変化時)
+    // 0x02は旧VAB設定の予約番号。再利用しない。
     OriginState = 0x03,       // Server -> Client (状態変化時、接続直後にも送信)
     StatusPanelConfig = 0x04, // Server -> Client (状態変化時、接続直後にも送信)
     CommandError = 0x05,      // Server -> Client (要求元クライアントのみ)
@@ -33,24 +33,6 @@ struct SimState {
     std::vector<double> status_values;
 
     MSGPACK_DEFINE(t, positions, frame_id, status_values);
-};
-
-// VAB(操作ボタン)1個分。ラベルが空文字のボタンは「未使用の穴」(DETAILED_DESIGN.md 7.4節)。
-struct VabButton {
-    std::string id;
-    std::string label;
-    bool enabled = true;
-
-    MSGPACK_DEFINE(id, label, enabled);
-};
-
-// VABボタン配置設定(状態変化時のみ送信)。
-struct VabConfig {
-    uint32_t rows = 0;
-    uint32_t cols = 0;
-    std::vector<VabButton> buttons;
-
-    MSGPACK_DEFINE(rows, cols, buttons);
 };
 
 // 基準位置(原点)。DETAILED_DESIGN.md 3節・4.3節。サーバーが保持する状態が正。
@@ -146,13 +128,13 @@ struct TrackList {
 
 // クライアントからの操作コマンド。DETAILED_DESIGN.md 4.3節。
 struct ClientCommand {
-    std::string type; // "vab_press" / "pause" / "resume" / "set_param" / "set_origin"
-    std::string button_id; // vab_press時のみ使用
+    std::string type; // "pause" / "resume" / "set_param" / "set_origin"
+    std::string reserved; // 旧ボタンIDの予約スロット(空文字)。配列位置の互換性を維持する。
     double value = 0.0;    // set_param時のみ使用
     double lat_deg = 0.0;  // set_origin時のみ使用
     double lon_deg = 0.0;  // set_origin時のみ使用
 
-    MSGPACK_DEFINE(type, button_id, value, lat_deg, lon_deg);
+    MSGPACK_DEFINE(type, reserved, value, lat_deg, lon_deg);
 };
 
 // --- フレーミング用ヘルパー ---------------------------------------------
