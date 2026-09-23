@@ -41,7 +41,7 @@ enum MenuId {
 }
 
 #[component]
-pub fn MenuBar() -> impl IntoView {
+pub fn MenuBar(show_left_panel: RwSignal<bool>, show_right_panel: RwSignal<bool>) -> impl IntoView {
     let open_menu = RwSignal::new(None::<MenuId>);
     let origin_dialog =
         use_context::<OriginDialogState>().expect("OriginDialogState context not found");
@@ -99,6 +99,28 @@ pub fn MenuBar() -> impl IntoView {
                 .into_any(),
                 MenuId::View => view! {
                     <div class="menu-dropdown">
+                        <button
+                            class="menu-dropdown-item"
+                            role="menuitemcheckbox"
+                            aria-checked=move || show_left_panel.get().to_string()
+                            on:click=move |_| {
+                                open_menu.set(None);
+                                show_left_panel.update(|on| *on = !*on);
+                            }
+                        >
+                            {move || if show_left_panel.get() { "✓ 左ステータスパネル" } else { "　 左ステータスパネル" }}
+                        </button>
+                        <button
+                            class="menu-dropdown-item"
+                            role="menuitemcheckbox"
+                            aria-checked=move || show_right_panel.get().to_string()
+                            on:click=move |_| {
+                                open_menu.set(None);
+                                show_right_panel.update(|on| *on = !*on);
+                            }
+                        >
+                            {move || if show_right_panel.get() { "✓ 右ステータスパネル" } else { "　 右ステータスパネル" }}
+                        </button>
                         <button
                             class="menu-dropdown-item"
                             on:click=move |_| {

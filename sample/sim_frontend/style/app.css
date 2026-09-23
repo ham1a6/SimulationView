@@ -52,6 +52,10 @@ body {
     height: 100%;
 }
 
+.app-layout.left-panel-hidden {
+    grid-template-columns: minmax(min-content, 1fr);
+}
+
 .left-panel,
 .right-panel {
     display: grid;

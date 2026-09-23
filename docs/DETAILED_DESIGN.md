@@ -1365,6 +1365,10 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 
 ### 7.2 レスポンシブ方式
 
+- 「表示」メニューの「左ステータスパネル」「右ステータスパネル」で左右の列を個別に表示・非表示へ切り替える。初期状態は両方表示し、表示中はメニューに✓を付ける。設定はページ内だけで保持し、再読み込みで初期状態へ戻る。
+- 左の対象はシミュレーションステータスパネルとVAB、右の対象はトップ・ボトムステータスパネル。非表示の列と右側の仕切りの幅は地図へ割り当て、両側非表示なら地図だけにする。
+- パネルは非表示中もマウントを維持し、VABのページ・タブの選択・分割比率を再表示時に保持する。地図の再生成は行わず、既存のResizeObserverで描画サイズを追従させる。
+
 - 3カラムの横並びレイアウトは崩さない(縦積みへの再レイアウトは行わない)
 - 画面幅が狭くなった場合は、`minmax()`の`fr`部分により中央・右パネルの幅が比例的に縮小する
 - `minmax()`の下限を下回る場合は、外側コンテナ(`.app-shell`)に`overflow-x: auto`を設定してあるため
@@ -2164,7 +2168,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 
 ### 9.14 UI部品(`sim3dview::ui`)
 
-- **`SplitPane(first, second, initial_fraction=0.5, min_first=160, min_second=160)`**: 左右のビューを常時マウントする横分割部品。最小幅は正の有限値、初期比率は有限値(0.001〜0.999に制限)。CSS Gridを`minmax(min_first, f fr) 6px minmax(min_second, (1-f) fr)`とし、全体の最小幅は両側最小幅+6px。親が横スクロールを担当する。左ボタンのpointerdownで実測した左幅L・両区画合計Tを保存し、moveで`f=clamp(L+dx, min_first, T-min_second)/T`へ更新する。1本のpointerのみ受け付け、pointer captureで区画外も追跡し、up/cancel/lostpointercaptureで終了する。CSSは`.sim3d-split-pane`・`.sim3d-split-content`・`.sim3d-split-handle`。検証: 実寸に比例する移動、左右最小幅、最小幅合計でのドラッグ、実画面での繰り返し操作。
+- **`SplitPane(first, second, initial_fraction=0.5, min_first=160, min_second=160, second_visible=true)`**: 左右のビューを常時マウントする横分割部品。最小幅は正の有限値、初期比率は有限値(0.001〜0.999に制限)。CSS Gridを`minmax(min_first, f fr) 6px minmax(min_second, (1-f) fr)`とし、全体の最小幅は両側最小幅+6px。親が横スクロールを担当する。`second_visible: Signal<bool>`がfalseなら第二区画と仕切りを`display:none`で隠し、列定義を`minmax(min_first, 1fr)`、最小幅を`min_first`へ変更する。内容と分割比率は保持する。左ボタンのpointerdownで実測した左幅L・両区画合計Tを保存し、moveで`f=clamp(L+dx, min_first, T-min_second)/T`へ更新する。1本のpointerのみ受け付け、pointer captureで区画外も追跡し、up/cancel/lostpointercaptureで終了する。CSSは`.sim3d-split-pane`・`.sim3d-split-content`・`.sim3d-split-handle`。検証: 実寸に比例する移動、左右最小幅、最小幅合計でのドラッグ、実画面での繰り返し操作。
 
 - **`pointer_drag::{DragTracker, DragUpdate, DragEnd}`**: 同時に1本のpointer IDだけを追跡する純粋な状態管理。move時に直前位置からの`delta`と開始位置からの`total`、up時に`DragEnd`を返す。別pointerのmove/up/cancelは無視する。DOMのpointer captureは呼び出し側の責務。`TerrainView`・`FloatingPanel`・サンプルアプリの区画リサイザーで共用する
 - **`TabbedPanel(title?, tabs: Vec<Tab>, active: Option<RwSignal<usize>>)`**(`title`は省略可。省略/空文字なら見出しを出さない) + `tab(label, view)`: `active`を渡すと呼び出し側からタブを切り替えられる。**全タブの中身を初回に1度だけ生成してDOMに残し、非選択は`display:none`で隠す**(切替で作り直さない)。タブが1個でもタブバーは表示する

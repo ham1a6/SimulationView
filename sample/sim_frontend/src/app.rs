@@ -32,6 +32,8 @@ const MIN_RIGHT_PX: f64 = 260.0;
 
 #[component]
 pub fn App() -> impl IntoView {
+    let show_left_panel = RwSignal::new(true);
+    let show_right_panel = RwSignal::new(true);
     let signals = WsSignals::new();
     provide_context(signals);
     // 原点設定フローティングパネルの開閉状態(メニューバーから開く。sim3dviewライブラリの型)。
@@ -90,10 +92,10 @@ pub fn App() -> impl IntoView {
     let initial_fraction = 2.0 / 3.0;
     view! {
         <div class="app-root">
-            <MenuBar/>
+            <MenuBar show_left_panel=show_left_panel show_right_panel=show_right_panel/>
             <div class="app-shell">
-                <div class="app-layout">
-                    <div class="left-panel">
+                <div class="app-layout" class:left-panel-hidden=move || !show_left_panel.get()>
+                    <div class="left-panel" style:display=move || if show_left_panel.get() { "grid" } else { "none" }>
                         <SimulationStatusPanel/>
                         // B1〜B4の中段ページ数。ページ送りは常に表示し、単一ページでは左右とも無効。
                         <VabPanel conn=conn mid_pages=[1usize, 2, 2, 2]/>
@@ -103,6 +105,7 @@ pub fn App() -> impl IntoView {
                         min_first=MIN_CENTER_PX
                         min_second=MIN_RIGHT_PX
                         initial_fraction=initial_fraction
+                        second_visible=Signal::derive(move || show_right_panel.get())
                         first=move || view! {
                             <div class="center-panel"><MainPanel/></div>
                         }

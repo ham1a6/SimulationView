@@ -15,6 +15,9 @@ pub fn SplitPane(
     #[prop(default = 0.5)] initial_fraction: f64,
     #[prop(default = 160.0)] min_first: f64,
     #[prop(default = 160.0)] min_second: f64,
+    /// 第二区画と仕切りの表示。非表示中も内容と分割比率を保持する。
+    #[prop(default = Signal::derive(|| true), into)]
+    second_visible: Signal<bool>,
 ) -> impl IntoView {
     assert!(min_first.is_finite() && min_first > 0.0);
     assert!(min_second.is_finite() && min_second > 0.0);
@@ -25,17 +28,29 @@ pub fn SplitPane(
     let drag = RwSignal::new(DragTracker::default());
     let start = RwSignal::new(None::<(f64, f64)>);
     let columns = move || {
+        if !second_visible.get() {
+            return format!("minmax({min_first}px, 1fr)");
+        }
         let f = fraction.get();
         format!(
             "minmax({min_first}px, {f}fr) 6px minmax({min_second}px, {}fr)",
             1.0 - f
         )
     };
-    let minimum = format!("{}px", min_first + min_second + 6.0);
+    let minimum = move || {
+        let width = if second_visible.get() {
+            min_first + min_second + 6.0
+        } else {
+            min_first
+        };
+        format!("{width}px")
+    };
+    let second_display = move || if second_visible.get() { "" } else { "none" };
     view! {
         <div class="sim3d-split-pane" style:grid-template-columns=columns style:min-width=minimum>
             <div class="sim3d-split-content" node_ref=left>{first.run()}</div>
             <div class="sim3d-split-handle"
+                style:display=second_display
                 on:pointerdown=move |ev: leptos::ev::PointerEvent| {
                     if ev.button() != 0 || start.get_untracked().is_some() { return; }
                     let (Some(l), Some(r)) = (left.get(), right.get()) else { return; };
@@ -68,7 +83,7 @@ pub fn SplitPane(
                     if drag.try_update(|d| d.cancel(ev.pointer_id())).unwrap_or(false) { start.set(None); }
                 }
             ></div>
-            <div class="sim3d-split-content" node_ref=right>{second.run()}</div>
+            <div class="sim3d-split-content" node_ref=right style:display=second_display>{second.run()}</div>
         </div>
     }
 }
