@@ -1,5 +1,6 @@
 #include <cstdint>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 
 #include "ws_server.hpp"
@@ -7,7 +8,9 @@
 namespace {
 
 void print_usage(const char* exe) {
-    std::cerr << "usage: " << exe << " [port] [--cert <cert.pem> --key <key.pem>]\n"
+    std::cerr << "usage: " << exe << " [port] [--host <address>] [--terrain-dir <path>]"
+              << " [--cert <cert.pem> --key <key.pem>]\n"
+              << "  port: 0〜65535。0は空きポートを自動割り当て\n"
               << "  --cert/--key: 両方指定するとHTTPS/WSSで待ち受ける(省略時は平文のHTTP/WS)\n";
 }
 
@@ -16,14 +19,25 @@ void print_usage(const char* exe) {
 int main(int argc, char** argv) {
     uint16_t port = 9001;
     sim3dview::TlsConfig tls;
+    std::string host = "0.0.0.0";
+    std::string terrain_dir = "assets/terrain";
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         if ((arg == "--cert" || arg == "--key") && i + 1 < argc) {
             (arg == "--cert" ? tls.cert_file : tls.key_file) = argv[++i];
+        } else if (arg == "--host" && i + 1 < argc) {
+            host = argv[++i];
+        } else if (arg == "--terrain-dir" && i + 1 < argc) {
+            terrain_dir = argv[++i];
         } else if (!arg.empty() && arg[0] != '-') {
             try {
-                port = static_cast<uint16_t>(std::stoi(arg));
+                size_t consumed = 0;
+                const int parsed = std::stoi(arg, &consumed);
+                if (consumed != arg.size() || parsed < 0 || parsed > 65535) {
+                    throw std::out_of_range("port");
+                }
+                port = static_cast<uint16_t>(parsed);
             } catch (const std::exception&) {
                 std::cerr << "invalid port argument: " << arg << std::endl;
                 return 1;
@@ -41,8 +55,13 @@ int main(int argc, char** argv) {
     std::cout << "Sim3dView sim_server starting (" << (tls.enabled() ? "TLS" : "no TLS") << ")"
               << std::endl;
 
-    sim3dview::WsServer server(port, std::move(tls));
-    server.run();
+    try {
+        sim3dview::WsServer server(port, std::move(tls), host, terrain_dir);
+        server.run();
+    } catch (const std::exception& e) {
+        std::cerr << e.what() << std::endl;
+        return 1;
+    }
 
     return 0;
 }

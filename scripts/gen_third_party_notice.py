@@ -287,6 +287,15 @@ for name, key in order:
     w(body)
     w('```\n')
 
+# ---- 6.1. 任意のデスクトップ配布
+desktop_package = json.loads(read(REPO + 'sample/sim_desktop/package.json'))
+electron_version = desktop_package['devDependencies']['electron']
+w('### Electronデスクトップ版の追加依存\n')
+w(f'`sample/sim_desktop`はElectron {electron_version}(MIT)を使用します。配布元: <https://github.com/electron/electron>。')
+w('Electronに同梱されるChromium・Node.js等のライセンス/著作権表示は、配布フォルダーの`LICENSE`と`LICENSES.chromium.html`を参照してください。'
+  '`package.cjs`はElectronの配布ファイルをそのままコピーし、これらの表示を保持します。\n')
+w('npmの取得・展開用依存は開発時だけ使用し、アプリの`node_modules`は配布しません。ブラウザ版にはElectronは含まれません。\n')
+
 # ---- 7. 含めないもの・更新
 w('## 7. この文書に含めないもの・更新方法\n')
 w('**含めないもの**')

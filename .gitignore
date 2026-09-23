@@ -17,6 +17,9 @@ sample/sim_server/assets/terrain/tiles/
 # Rust (workspace: sim3dview ライブラリ + sample/sim_frontend サンプルアプリ)
 /target/
 sample/sim_frontend/dist/
+sample/sim_desktop/node_modules/
+sample/sim_desktop/out/
+.npm-cache/
 
 # エディタ・OS
 .vs/

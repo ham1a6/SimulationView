@@ -12,6 +12,7 @@
 #include <iostream>
 #include <mutex>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -133,10 +134,14 @@ bool is_safe_path_component(const std::string& name) {
 } // namespace
 
 struct WsServer::Impl {
-    Impl(uint16_t port_, TlsConfig tls_) : port(port_), tls(std::move(tls_)) {}
+    Impl(uint16_t port_, TlsConfig tls_, std::string host_, std::string terrain_dir_)
+        : port(port_), tls(std::move(tls_)), host(std::move(host_)),
+          terrain_dir(std::move(terrain_dir_)), simulation(terrain_dir + "/metadata.json") {}
 
     uint16_t port;
     TlsConfig tls;
+    std::string host;
+    std::string terrain_dir;
     Simulation simulation;
 
     // ClientId -> 送信関数 のマップ。uWSイベントループスレッドからのみ生ポインタ(WebSocket*)を
@@ -173,7 +178,8 @@ struct WsServer::Impl {
     void run_app(AppT app);
 };
 
-WsServer::WsServer(uint16_t port, TlsConfig tls) : impl_(new Impl(port, std::move(tls))) {}
+WsServer::WsServer(uint16_t port, TlsConfig tls, std::string host, std::string terrain_dir)
+    : impl_(new Impl(port, std::move(tls), std::move(host), std::move(terrain_dir))) {}
 
 WsServer::~WsServer() {
     impl_->keep_running = false;
@@ -252,19 +258,19 @@ void WsServer::Impl::run_app(AppT app) {
 
     // 地形データの静的配信(DETAILED_DESIGN.md 5.4節: WebSocketの/simエンドポイントとは独立したHTTPルート)。
     // フロント(trunk serve)とは別オリジンからfetchされるためCORSヘッダーを付与する。
-    app.get("/terrain/metadata.json", [](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
-        serve_terrain_file(res, req, "assets/terrain/metadata.json", "application/json");
+    app.get("/terrain/metadata.json", [impl](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
+        serve_terrain_file(res, req, impl->terrain_dir + "/metadata.json", "application/json");
     });
-    app.get("/terrain/tile_index.json", [](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
-        serve_terrain_file(res, req, "assets/terrain/tile_index.json", "application/json");
+    app.get("/terrain/tile_index.json", [impl](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
+        serve_terrain_file(res, req, impl->terrain_dir + "/tile_index.json", "application/json");
     });
     // 全タイルの最粗レベルを連結したもの(起動時にフロントが一度だけ取得する)。
-    app.get("/terrain/base.bin", [](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
-        serve_terrain_file(res, req, "assets/terrain/base.bin", "application/octet-stream");
+    app.get("/terrain/base.bin", [impl](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
+        serve_terrain_file(res, req, impl->terrain_dir + "/base.bin", "application/octet-stream");
     });
     // 細かいレベルのタイル(例: /terrain/tiles/L2/N035E138.bin)。カメラに近いチャンクだけ
     // フロントが必要に応じて取得する(大きいファイルはHTTP Rangeで部分取得)。
-    app.get("/terrain/tiles/:level/:name", [](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
+    app.get("/terrain/tiles/:level/:name", [impl](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
         const std::string level(req->getParameter(0));
         const std::string name(req->getParameter(1));
         if (!is_safe_path_component(level) || !is_safe_path_component(name)) {
@@ -273,20 +279,32 @@ void WsServer::Impl::run_app(AppT app) {
             res->end("Bad Request");
             return;
         }
-        serve_terrain_file(res, req, "assets/terrain/tiles/" + level + "/" + name,
+        serve_terrain_file(res, req, impl->terrain_dir + "/tiles/" + level + "/" + name,
                             "application/octet-stream");
     });
 
-    // "0.0.0.0"を明示し、全ネットワークインターフェースでバインドする
-    // (LAN上の別端末からもsim_frontendで接続できるようにするため)。
-    app.listen("0.0.0.0", impl->port, [impl](us_listen_socket_t* token) {
+    // 通常はLAN公開、Electronは127.0.0.1とポート0を指定する(設計書7.9節)。
+    bool listening = false;
+    app.listen(impl->host, impl->port, [impl, &listening](us_listen_socket_t* token) {
         if (token) {
-            std::cout << "[ws_server] listening on " << (SSL ? "wss" : "ws") << "://0.0.0.0:"
-                       << impl->port << "/sim (all interfaces)" << std::endl;
+            const int actual_port = us_socket_local_port(0, reinterpret_cast<us_socket_t*>(token));
+            if (actual_port <= 0) {
+                us_listen_socket_close(SSL, token);
+                return;
+            }
+            impl->port = static_cast<uint16_t>(actual_port);
+            listening = true;
+            std::cout << "[ws_server] listening on " << (SSL ? "wss" : "ws") << "://"
+                      << impl->host << ":" << impl->port << "/sim" << std::endl;
+            // Electronは自身が起動したプロセスの標準出力で起動完了を判定する。
+            std::cout << "SIM3DVIEW_READY " << impl->port << std::endl;
         } else {
             std::cerr << "[ws_server] failed to listen on port " << impl->port << std::endl;
         }
     });
+    if (!listening) {
+        throw std::runtime_error("サーバーの待ち受けを開始できませんでした");
+    }
 
     // simスレッド: Simulation::step()を約60Hzで進め、結果をuWSスレッドへ
     // Loop::defer()経由で配信させる(別スレッドから直接ws->send()してはならない)。

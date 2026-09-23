@@ -60,6 +60,7 @@ flowchart LR
 | サーバー | C++、uWebSockets、msgpack-cxx、libuv | シミュレーション、WebSocket、地形のHTTP配信 |
 | ライブラリ | Rust、Leptos、wgpu、WebAssembly | 地形取得・測地・描画・覆域・作図・航跡・汎用UI |
 | サンプルアプリ | Rust、Leptos、rmp-serde | 通信、VAB、状況パネル、メニュー、ライブラリとの橋渡し |
+| デスクトップ起動 | Electron、Node.js (`sample/sim_desktop`) | 専用ウィンドウ、C++子プロセス管理、ビルド済みUI配信、地形フォルダー選択 |
 
 **役割分担(同じ事実を2か所に書かないための約束)**
 
@@ -701,6 +702,13 @@ classDiagram
 Range解析、ETag照合、安全なパス要素の判定は`include/http_utils.hpp`の純粋関数へ分離し、
 `ws_server.cpp`のHTTP処理から利用する。シミュレーション本体はCMakeの`simulation_core`静的ライブラリとし、
 サーバー実行ファイルとCTestの双方から同じ実装をリンクする。
+
+CLIの既定は従来どおり`0.0.0.0:9001`、地形は`assets/terrain`。
+`--host`で待受アドレス、`--terrain-dir`で前処理済み地形のルートを指定できる。
+指定した地形ルートはHTTP配信と`Simulation`の原点範囲検証の両方に使う。
+位置引数のポートは0〜65535を受け付け、0ではOSが空きポートを割り当てる。
+待受成功時に標準出力へ`SIM3DVIEW_READY <実ポート>`を改行・flush付きで出し、失敗時は終了コード1で終了する。
+Electronはこの通知を使うため、空きポートの事前探索や既存サーバーへの誤接続は行わない。
 
 ### 5.5 GeoTIFF前処理ツール(geotiff_preprocess)のクラス構成
 
@@ -1607,6 +1615,31 @@ stateDiagram-v2
 接続直後にのみ配信する(毎フレームは送らない)。
 
 ---
+
+### 7.9 Electronデスクトップ起動
+
+`sample/sim_desktop`はWindows x64用の起動アプリ。`sim3dview`の責務とブラウザ起動手順は変えない。
+Electronメインプロセスが`sim_server.exe 0 --host 127.0.0.1 --terrain-dir <選択先>`を起動し、
+15秒以内の準備完了通知を待って、ビルド済みUIを別のループバック空きポートで配信する。
+UI出力先は`sample/sim_desktop/out/frontend`とし、Trunk開発サーバーの出力と分ける。
+
+表示URLに`?sim_port=<実ポート>`を渡す。`sample/sim_frontend/src/ws.rs`はこの値をHTTP/WS双方に使う。
+指定なし・数字以外・0・65535超過は従来の9001番へ戻す。ホスト・TLSは従来どおりページから決める。
+ポート選択はアプリ側だけの責務で、ライブラリへElectronやサーバー情報を持ち込まない。
+ブラウザ版とデスクトップ版はそれぞれ独立したシミュレーションを持ち、地形だけを共有する。
+
+地形ルートは環境変数`SIM3DVIEW_TERRAIN_DIR`、保存設定、既定フォルダーの順で選ぶ。
+既定は開発時`sample/sim_server/assets/terrain`、配布時はexe隣の`terrain`。
+保存設定または既定フォルダーが無効ならフォルダー選択を開き、選択をユーザーデータへ保存する。
+環境変数指定が無効な場合は誤設定としてエラーを表示する。
+サーバー実行ファイルは`SIM3DVIEW_SERVER_EXE`でも指定できる。
+通常終了時は自分が起動した子プロセスだけを停止し、C++の異常終了・描画プロセス停止は通知してアプリを閉じる。
+デスクトップアプリ自体の強制終了やOSクラッシュ時の子プロセス回収は保証しない。
+
+ウィンドウはNode統合を無効、contextIsolationとsandboxを有効にし、Node/IPCをUIへ公開しない。
+外部オリジンへの遷移・新規ウィンドウを拒否する。UI配信はHostと実パスを検査し、公開ルート外のファイルを返さない。
+配布フォルダーにはElectron実行環境、UI、C++実行ファイルと同じフォルダーのDLL、ライセンスを含める。
+地形は外部フォルダーで管理し、配布生成時にはコピーしない。
 
 ## 8. UML図一覧(索引)
 

@@ -182,6 +182,12 @@ tools\geotiff_preprocess\build\Debug\geotiff_preprocess.exe
 
 ## アプリの起動方法
 
+従来のブラウザ版に加え、WindowsではElectronデスクトップ版も使える。
+デスクトップ版は`sample/sim_desktop`で`npm ci`、`npm run build:ui`、`npm start`を実行すると、
+C++サーバーと専用ウィンドウが一緒に起動する(C++のDebugビルドと前処理済み地形、Node.js 22.12以降が必要)。
+配布用exeの生成や地形フォルダー指定は[デスクトップ版README](sample/sim_desktop/README.md)を参照。
+以下のブラウザ版の手順も従来どおり使え、デスクトップ版と同時起動できる(シミュレーション状態は別々)。
+
 ビルドとデータ生成が済んだら、**2つのプロセスを同時に起動**する(別々のターミナルで)。
 
 ### ターミナル1: C++側(sim_server)を起動

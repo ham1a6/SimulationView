@@ -341,11 +341,32 @@ fn page_host_and_tls() -> (String, bool) {
     (hostname, is_tls)
 }
 
-/// 接続先WebSocket URLを、現在のページのホスト名・スキームから組み立てる。
+/// デスクトップ版のポート指定を検証し、省略・不正値ではブラウザ版の既定へ戻す。
+fn port_from_query(query: &str) -> u16 {
+    query
+        .trim_start_matches('?')
+        .split('&')
+        .find_map(|part| part.strip_prefix("sim_port="))
+        .filter(|value| !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()))
+        .and_then(|value| value.parse::<u16>().ok())
+        .filter(|port| *port != 0)
+        .unwrap_or(9001)
+}
+
+// Electronは自身のサーバーの割当ポートをURLに渡す。ブラウザ版は従来どおり9001。
+fn server_port() -> u16 {
+    let query = web_sys::window()
+        .and_then(|w| w.location().search().ok())
+        .unwrap_or_default();
+    port_from_query(&query)
+}
+
+/// 接続先WebSocket URLを、現在のページと省略可能なポート指定から組み立てる。
 pub fn default_ws_url() -> String {
     let (hostname, is_tls) = page_host_and_tls();
     let scheme = if is_tls { "wss" } else { "ws" };
-    format!("{scheme}://{hostname}:9001/sim")
+    let port = server_port();
+    format!("{scheme}://{hostname}:{port}/sim")
 }
 
 /// `sim3dview::terrain::store::TerrainStore::new()`へ渡す
@@ -355,12 +376,30 @@ pub fn default_ws_url() -> String {
 pub fn default_terrain_base_url() -> String {
     let (hostname, is_tls) = page_host_and_tls();
     let scheme = if is_tls { "https" } else { "http" };
-    format!("{scheme}://{hostname}:9001/terrain")
+    let port = server_port();
+    format!("{scheme}://{hostname}:{port}/terrain")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn desktop_port_preserves_browser_default_and_rejects_invalid_values() {
+        for query in [
+            "",
+            "?other=123",
+            "?sim_port=0",
+            "?sim_port=65536",
+            "?sim_port=-1",
+            "?sim_port=+80",
+            "?sim_port=abc",
+        ] {
+            assert_eq!(port_from_query(query), 9001, "{query}");
+        }
+        assert_eq!(port_from_query("?sim_port=49152"), 49152);
+        assert_eq!(port_from_query("?other=1&sim_port=65535&more=2"), 65535);
+    }
 
     #[test]
     fn reconnect_backoff_saturates_and_clamps_jitter() {

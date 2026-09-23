@@ -4,7 +4,7 @@ Sim3dView(`sim3dview`ライブラリ・`sample/sim_frontend`・`sample/sim_serve
 
 > **この文書について**: 依存関係とライセンスの情報を機械的に集めた**参考資料**で、法的な助言ではありません。製品として配布する前に、最新の依存関係(`Cargo.lock`・`vcpkg.json`)で再生成し、必要に応じて法務の確認を受けてください。本プロジェクト自身のライセンスは、このファイルの対象外です(リポジトリにLICENSEファイルはまだありません)。
 
-- 生成日: 2026-09-21(`Cargo.lock`の内容とvcpkg・サブモジュールの版に基づく)
+- 生成日: 2026-09-23(`Cargo.lock`の内容とvcpkg・サブモジュールの版に基づく)
 - 再生成の手順は末尾の「この文書の更新方法」を参照
 
 ## 目次
@@ -1890,6 +1890,13 @@ OTHER DEALINGS IN THE SOFTWARE.
 
 For more information, please refer to <http://unlicense.org/>
 ```
+
+### Electronデスクトップ版の追加依存
+
+`sample/sim_desktop`はElectron 44.4.4(MIT)を使用します。配布元: <https://github.com/electron/electron>。
+Electronに同梱されるChromium・Node.js等のライセンス/著作権表示は、配布フォルダーの`LICENSE`と`LICENSES.chromium.html`を参照してください。`package.cjs`はElectronの配布ファイルをそのままコピーし、これらの表示を保持します。
+
+npmの取得・展開用依存は開発時だけ使用し、アプリの`node_modules`は配布しません。ブラウザ版にはElectronは含まれません。
 
 ## 7. この文書に含めないもの・更新方法
 
