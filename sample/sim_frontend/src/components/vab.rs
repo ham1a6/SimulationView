@@ -172,7 +172,11 @@ pub fn VabPanel(
                                 // サーバーへ送るのは画面のボタンIDではなく業務コマンド。
                                 if i == 2 {
                                     return view! {
-                                        <button class="vab-button" on:click=move |_| conn.send_command(&ClientCommand::resume())>
+                                        <button
+                                            class="vab-button"
+                                            on:click=move |_| conn.send_command(&ClientCommand::resume())
+                                            on:dblclick=move |_| conn.send_command(&ClientCommand::pause())
+                                        >
                                             <VabLabel text=Signal::derive(|| "開始".to_string())/>
                                         </button>
                                     }
