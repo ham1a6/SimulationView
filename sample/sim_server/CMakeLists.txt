@@ -24,8 +24,9 @@ add_library(usockets STATIC
 )
 target_include_directories(usockets PUBLIC ${USOCKETS_DIR}/src)
 find_package(OpenSSL REQUIRED)
+find_package(Threads REQUIRED)
 target_compile_definitions(usockets PUBLIC LIBUS_USE_OPENSSL)
-target_link_libraries(usockets PUBLIC OpenSSL::SSL OpenSSL::Crypto)
+target_link_libraries(usockets PUBLIC OpenSSL::SSL OpenSSL::Crypto Threads::Threads)
 
 if (WIN32)
     # libusockets.h は _WIN32 かつ他のイベンティング指定が無い場合、自動的に

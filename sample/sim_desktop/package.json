@@ -2,11 +2,11 @@
   "name": "sim3dview-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Sim3dViewのWindowsデスクトップ起動アプリ",
+  "description": "Sim3dViewのWindows/Linuxデスクトップ起動アプリ",
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
-    "build:ui": "powershell -NoProfile -ExecutionPolicy Bypass -File build-ui.ps1",
+    "build:ui": "node build-ui.cjs",
     "test": "node --test test/*.test.cjs",
     "test:ui": "electron test/electron-smoke.cjs",
     "package": "node package.cjs"

@@ -1,6 +1,6 @@
 # Sim3dView デスクトップ版
 
-既存のRust/WASM画面をElectronで表示し、専用のC++サーバーを自動起動するWindows x64アプリ。
+既存のRust/WASM画面をElectronで表示し、専用のC++サーバーを自動起動するWindows/Linux x64アプリ。
 ブラウザ版の`sim_server.exe` + `trunk serve`による起動も引き続き使える。
 双方は別のシミュレーションとして動作し、同じ前処理済み地形を読み取り専用で共有する。
 
@@ -16,7 +16,7 @@ npm run build:ui
 npm start
 ```
 
-初回の`npm start`ではElectron本体のダウンロードが発生する。
+`npm ci`ではElectron本体のダウンロードが発生する。
 `npm run build:ui`はReleaseのHTML/JS/WASMを`out/frontend`へ生成する。
 Trunk開発サーバーの`sample/sim_frontend/dist`は使わない。UIを編集したら再ビルドして起動する。
 ブラウザ版のサーバーが9001番で起動中でも、Electronは別の空きポートを使う。
@@ -64,6 +64,38 @@ Visual C++のランタイムが無いPCではMicrosoft Visual C++ Redistributabl
 Electronの`LICENSE`、`LICENSES.chromium.html`と、プロジェクトの`THIRD_PARTY_NOTICE.md`を一緒に配布する。
 `SIM3DVIEW_SERVER_EXE`を指定して別の実行ファイルを同梱することも可能だが、配布にはReleaseビルドを使う。
 
+## Linuxでの起動と配布
+
+ルートREADMEのLinux手順でサーバーと地形を準備し、Node.js 22.12以降を導入する。
+X11またはWaylandのデスクトップセッションと、WebGPU対応GPU・ドライバーが必要。
+Ubuntu 24.04ではElectron用の共有ライブラリも導入する。
+
+```bash
+sudo apt-get install -y libgtk-3-0t64 libnss3 libasound2t64 libgbm1
+cd sample/sim_desktop
+npm ci
+npm run build:ui
+npm test
+npm start
+```
+
+サーバーの既定パスは`sample/sim_server/build/sim_server`。
+別のビルド場所や地形を使う場合は次のように指定する。
+
+```bash
+SIM3DVIEW_SERVER_EXE=/absolute/path/to/sim_server SIM3DVIEW_TERRAIN_DIR=/absolute/path/to/terrain npm start
+npm run package
+```
+
+配布生成はLinux x64上で行う。Releaseビルドを使い、
+`out/Sim3dView-linux-x64-<生成時刻>/Sim3dView`を起動する。
+フォルダー全体を実行権限を保つ形式(tar等)で渡す。
+Linuxのシステム共有ライブラリは同梱しないため、配布先にもElectronの依存と
+OpenSSL・zlib・C++ランタイムが必要。同じUbuntuリリース・x64を配布先の基準とし、
+`ldd resources/server/sim_server`で未解決の共有ライブラリがないことを確認する。
+Electronのsandboxは有効のまま使用し、管理者(root)では起動しない。
+環境側でsandboxが拒否される場合はそのエラーを管理者に確認する。
+
 ## 検証
 
 ```powershell
@@ -73,7 +105,7 @@ npm run test:ui
 
 Nodeの組み込みテストで静的配信のMIME/パス境界、実サーバー2個の同時起動、
 HTTP Range、WebSocket接続、子プロセス終了を検証する。
-実サーバーテストにはビルド済みC++サーバーと既定の地形が必要。
+実サーバーテストにはビルド済みC++サーバーが必要。通信専用の最小地形ファイルは一時生成する。
 `test:ui`はElectron本体を起動し、開始・一時停止、2D/3D切替、再読み込みを繰り返し、
 スクリーンショットを`out/smoke`へ保存する。終了後のポート解放も確認する。
 3D描画はスクリーンショットに加え、実際にカメラを操作して確認する。

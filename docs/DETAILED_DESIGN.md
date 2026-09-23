@@ -1565,8 +1565,8 @@ stateDiagram-v2
 
 ### 7.9 Electronデスクトップ起動
 
-`sample/sim_desktop`はWindows x64用の起動アプリ。`sim3dview`の責務とブラウザ起動手順は変えない。
-Electronメインプロセスが`sim_server.exe 0 --host 127.0.0.1 --terrain-dir <選択先>`を起動し、
+`sample/sim_desktop`はWindows/Linux x64用の起動アプリ。`sim3dview`の責務とブラウザ起動手順は変えない。
+Electronメインプロセスが`sim_server[.exe] 0 --host 127.0.0.1 --terrain-dir <選択先>`を起動し、
 15秒以内の準備完了通知を待って、ビルド済みUIを別のループバック空きポートで配信する。
 UI出力先は`sample/sim_desktop/out/frontend`とし、Trunk開発サーバーの出力と分ける。
 
@@ -1585,7 +1585,14 @@ UI出力先は`sample/sim_desktop/out/frontend`とし、Trunk開発サーバー�
 
 ウィンドウはNode統合を無効、contextIsolationとsandboxを有効にし、Node/IPCをUIへ公開しない。
 外部オリジンへの遷移・新規ウィンドウを拒否する。UI配信はHostと実パスを検査し、公開ルート外のファイルを返さない。
-配布フォルダーにはElectron実行環境、UI、C++実行ファイルと同じフォルダーのDLL、ライセンスを含める。
+UIビルドはNode.jsからTrunkを起動し、PowerShellに依存しない。
+開発時のサーバーはWindowsでは`build/Debug/sim_server.exe`、Linuxでは単一構成の`build/sim_server`。
+配布生成は実行中のOS向けに行い、WindowsはRelease、LinuxはCMakeで指定した構成を使う。
+配布フォルダーにはElectron実行環境、UI、C++実行ファイル、ライセンスを含める。
+Windowsではサーバーと同じフォルダーのDLLもコピーする。Linuxでは実行権限を付け、
+システム共有ライブラリは配布先OSで導入する。同じディストリビューション・アーキテクチャを配布の基準にする。
+LinuxのC++ビルドはシステムのOpenSSL・zlib・GDALを利用し、スレッド依存はCMakeの`Threads::Threads`で指定する。
+GDALはConfig形式を優先し、見つからなければCMakeのFindGDALへフォールバックする。
 地形は外部フォルダーで管理し、配布生成時にはコピーしない。
 
 ## 8. UML図一覧(索引)

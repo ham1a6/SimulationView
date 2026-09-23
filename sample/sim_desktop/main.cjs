@@ -4,6 +4,7 @@ const { app, BrowserWindow, dialog, Menu } = require('electron');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { DesktopRuntime, validateTerrain } = require('./runtime.cjs');
+const { platformLayout, developmentServer } = require('./platform.cjs');
 app.setName('Sim3dView');
 
 let runtime;
@@ -42,7 +43,7 @@ function fail(error) {
   if (quitting || failed) return;
   failed = true;
   dialog.showErrorBox('Sim3dViewを起動・継続できません',
-    `${error.message}\n\nUIのビルド、sim_server.exeと必要なDLL、地形フォルダーを確認してください。`);
+    `${error.message}\n\nUIのビルド、sim_server実行ファイルと必要な共有ライブラリ、地形フォルダーを確認してください。`);
   app.quit();
 }
 
@@ -50,8 +51,8 @@ async function start() {
   const terrainDir = await terrainDirectory();
   if (!terrainDir || quitting) { app.quit(); return; }
   const serverExe = process.env.SIM3DVIEW_SERVER_EXE || (app.isPackaged
-    ? path.join(process.resourcesPath, 'server/sim_server.exe')
-    : path.resolve(__dirname, '../sim_server/build/Debug/sim_server.exe'));
+    ? path.join(process.resourcesPath, 'server', platformLayout().server)
+    : developmentServer());
   runtime = new DesktopRuntime({
     serverExe: path.resolve(serverExe), terrainDir,
     frontendDir: app.isPackaged ? path.join(__dirname, 'frontend') : path.join(__dirname, 'out/frontend'),

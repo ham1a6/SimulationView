@@ -1,0 +1,46 @@
+name: Linux
+
+on: [push, pull_request, workflow_dispatch]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: 必要なサブモジュールだけを取得
+        run: |
+          git submodule update --init sample/sim_server/third_party/uWebSockets sample/sim_server/third_party/msgpack-cxx
+          git -C sample/sim_server/third_party/uWebSockets submodule update --init uSockets libdeflate
+      - name: C++依存を導入
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev zlib1g-dev libgdal-dev
+      - name: C++ビルドと単体テスト
+        run: |
+          cmake -S sample/sim_server -B sample/sim_server/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build sample/sim_server/build --parallel 2
+          ctest --test-dir sample/sim_server/build --output-on-failure
+          cmake -S tools/geotiff_preprocess -B tools/geotiff_preprocess/build -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          cmake --build tools/geotiff_preprocess/build --parallel 2
+          ctest --test-dir tools/geotiff_preprocess/build --output-on-failure
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: デスクトップ通信テスト
+        working-directory: sample/sim_desktop
+        run: npm test
+      - name: RustとWASMの検証
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo check -p sim3dview --target wasm32-unknown-unknown --locked
+          cargo check -p sim_frontend --target wasm32-unknown-unknown --locked
+          cargo test -p sim3dview --locked
+      - name: UIとLinux配布フォルダーの生成
+        working-directory: sample/sim_desktop
+        run: |
+          cmake -S ../sim_server -B ../sim_server/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build ../sim_server/build --parallel 2
+          cargo install trunk --locked
+          npm ci
+          npm run build:ui
+          npm run package
+          test -x out/Sim3dView-linux-x64-*/Sim3dView
+          test -x out/Sim3dView-linux-x64-*/resources/server/sim_server

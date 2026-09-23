@@ -35,11 +35,14 @@ map_data/          入力: ALOS DSM GeoTIFFタイル(容量が大きいためgit
 
 ## 動作環境
 
-現時点で動作確認済みなのは **Windows + Visual Studio 2022** の組み合わせのみ。
+Windows + Visual Studio 2022、およびLinux x64向けのビルド・起動に対応する。
+Linuxの手順は下の「Linuxでのセットアップ」を参照。GPU描画は利用する実機で確認する。
+Ubuntu 24.04コンテナでC++サーバー・地形前処理のビルドと単体テストを確認済み。
+Linux実機でのElectronウィンドウ・GPU描画は未確認。
 
 | 種別 | 必須 | 備考 |
 |---|---|---|
-| OS | Windows 10/11 | |
+| OS | Windows 10/11 または Linux x64 | 以下の表・既存手順はWindows向け |
 | Visual Studio 2022(Community可) | ✅ | 「C++によるデスクトップ開発」ワークロードを入れること。**CMake・vcpkgが同梱**されており、別途インストール不要 |
 | Git | ✅ | サブモジュール取得に使用 |
 | Rust ツールチェーン | ✅ | 未導入なら下記手順でセットアップする |
@@ -47,7 +50,49 @@ map_data/          入力: ALOS DSM GeoTIFFタイル(容量が大きいためgit
 
 ---
 
-## セットアップ手順(初回、ゼロから)
+## Linuxでのセットアップ
+
+Ubuntu 24.04 x64を基準に、リポジトリルートから実行する。
+Rust/Cargoはrustupで導入済みであること。Windowsと同じ作業ツリーを共有する場合も、
+CMakeの`build`ディレクトリはOSごとに別のチェックアウトで生成する。
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential cmake ninja-build pkg-config git curl libssl-dev zlib1g-dev libgdal-dev
+git submodule update --init sample/sim_server/third_party/uWebSockets sample/sim_server/third_party/msgpack-cxx
+git -C sample/sim_server/third_party/uWebSockets submodule update --init uSockets libdeflate
+rustup target add wasm32-unknown-unknown
+cargo install trunk --locked
+
+cmake -S sample/sim_server -B sample/sim_server/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build sample/sim_server/build --parallel
+ctest --test-dir sample/sim_server/build --output-on-failure
+cmake -S tools/geotiff_preprocess -B tools/geotiff_preprocess/build -G Ninja -DCMAKE_BUILD_TYPE=Release
+cmake --build tools/geotiff_preprocess/build --parallel
+ctest --test-dir tools/geotiff_preprocess/build --output-on-failure
+```
+
+ALOSの入力GeoTIFFを`map_data/`へ配置して前処理する。既に前処理済みなら省略できる。
+
+```bash
+./tools/geotiff_preprocess/build/geotiff_preprocess map_data sample/sim_server/assets/terrain
+./sample/sim_server/build/sim_server 9001 --host 127.0.0.1 --terrain-dir sample/sim_server/assets/terrain
+```
+
+別ターミナルでUIを起動し、WebGPU対応ブラウザで`http://localhost:8081`を開く。
+
+```bash
+cd sample/sim_frontend
+NO_COLOR=true trunk serve
+```
+
+専用ウィンドウで起動する場合は[デスクトップ版のLinux手順](sample/sim_desktop/README.md#linuxでの起動と配布)を使う。
+LAN公開時はサーバーの`--host`を公開先に合わせ、HTTPS/WSS用の証明書を`--cert`/`--key`へ指定する。
+Linuxでも地形・通信・描画の仕様は共通で、vcpkgやPowerShellは不要。
+`.github/workflows/linux.yml`でC++テスト、Rust/WASM検証、実サーバー通信、UI・配布生成を実行する。
+GPU描画・ウィンドウ操作の検証はCIの対象外。
+
+## Windowsでのセットアップ手順(初回、ゼロから)
 
 ### 1. リポジトリの取得
 

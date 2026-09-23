@@ -7,6 +7,7 @@ const path = require('node:path');
 const os = require('node:os');
 const http = require('node:http');
 const { DesktopRuntime, serveFrontend, validateTerrain } = require('../runtime.cjs');
+const { developmentServer } = require('../platform.cjs');
 
 test('UI配信はWASMのMIME、HEAD、外部パス・Host拒否を維持する', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'sim3dview-'));
@@ -42,8 +43,16 @@ test('地形ファイル不足はサーバー起動前に検出する', async ()
 });
 
 test('実サーバーは自動ポートで並行起動し、HTTP Range・WS接続・終了を行える', async t => {
-  const serverExe = process.env.SIM3DVIEW_SERVER_EXE || path.resolve(__dirname, '../../sim_server/build/Debug/sim_server.exe');
-  const terrainDir = path.resolve(__dirname, '../../sim_server/assets/terrain');
+  const serverExe = process.env.SIM3DVIEW_SERVER_EXE || developmentServer();
+  // 通信検証用の最小データを一時生成し、実地形の有無に依存させない。
+  const terrainDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim3dview-terrain-'));
+  t.after(() => fs.rm(terrainDir, { recursive: true, force: true }));
+  await fs.mkdir(path.join(terrainDir, 'tiles'));
+  await fs.writeFile(path.join(terrainDir, 'metadata.json'), JSON.stringify({
+    geodetic_bounds: { min_lat: 20, max_lat: 50, min_lon: 120, max_lon: 150 },
+  }));
+  await fs.writeFile(path.join(terrainDir, 'tile_index.json'), '[]');
+  await fs.writeFile(path.join(terrainDir, 'base.bin'), Buffer.alloc(32));
   const frontendDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim3dview-ui-'));
   t.after(() => fs.rm(frontendDir, { recursive: true, force: true }));
   await fs.writeFile(path.join(frontendDir, 'index.html'), '<title>test</title>');

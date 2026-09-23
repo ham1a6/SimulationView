@@ -12,8 +12,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 add_executable(geotiff_preprocess main.cpp)
 target_include_directories(geotiff_preprocess PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-find_package(GDAL CONFIG REQUIRED)
-target_link_libraries(geotiff_preprocess PRIVATE GDAL::GDAL)
+# vcpkgのConfigとLinuxディストリビューションのFindGDALの双方に対応する。
+find_package(GDAL CONFIG QUIET)
+if (NOT GDAL_FOUND)
+    find_package(GDAL REQUIRED)
+endif()
+find_package(Threads REQUIRED)
+target_link_libraries(geotiff_preprocess PRIVATE GDAL::GDAL Threads::Threads)
 
 if (MSVC)
     target_compile_options(geotiff_preprocess PRIVATE /Zc:__cplusplus)
