@@ -48,6 +48,7 @@ body {
 .app-layout {
     display: grid;
     grid-template-rows: 100%;
+    grid-template-columns: var(--panel-width) minmax(min-content, 1fr);
     height: 100%;
 }
 
@@ -67,10 +68,12 @@ body {
 }
 
 .right-panel {
+    height: 100%;
     grid-template-rows: 1fr 1fr;
 }
 
 .center-panel {
+    height: 100%;
     position: relative;
     overflow: hidden;
     background: #000;
@@ -235,17 +238,6 @@ body {
     text-align: center;
 }
 
-/* 地図・右パネルの境界のドラッグ可能なリサイザー(6.1節)。 */
-.resizer {
-    background: var(--border);
-    cursor: col-resize;
-    touch-action: none;
-}
-
-.resizer:hover,
-.resizer:active {
-    background: var(--accent);
-}
 
 .kv-list {
     display: grid;

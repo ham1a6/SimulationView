@@ -730,7 +730,7 @@ Electronはこの通知を使うため、空きポートの事前探索や既存
 
 ### 6.0 ライブラリ(`sim3dview`)のモジュール構成
 
-公開(`pub mod`)は、アプリが使う`camera`・`draw_tool`・`drawing`・`hillshade`・`markers`・`origin`・`origin_pick`・`recenter`・`store`・`tracks`と`ui`だけで、
+公開(`pub mod`)は、アプリが使う`camera`・`capture`・`draw_tool`・`drawing`・`hillshade`・`markers`・`measurement`・`models`・`origin`・`origin_pick`・`recenter`・`store`・`tracks`と`ui`・`viewer`で、
 それ以外は`pub(crate)`(ライブラリの内部。詳細は9.13節)。
 
 | 領域 | モジュール | 役割 | 実装仕様 |
@@ -753,6 +753,11 @@ Electronはこの通知を使うため、空きポートの事前探索や既存
 **テスト**: `cargo test --workspace`(ネイティブ)。`TerrainData::synthetic`(`cfg(test)`)で合成地形を作り、標高サンプリング・丸み込みの`ground_at_enu`・LODの予算配分・反転Z・`screen_to_ray`・
 電波の地平線(見通し)・視錐台カリングなどを検証する。WGSL(`terrain.wgsl`・`draw.wgsl`)は`naga`で構文・型を検証し、uniform・頂点のレイアウトがRust側の構造体と一致することを確かめる
 (方針は10節、テストの要点は9節の各「検証」)。
+
+**組み込みの補助API**: `viewer::ViewerState`で地図機能の状態生成とcontext登録をまとめられる。
+取得先URL・作図保存キー・モデルはアプリが指定する。通信との橋渡し・原点クリックのコールバック・
+メニュー・ダイアログはアプリが担当し、従来の個別登録も維持する(9.13.1節)。
+距離・方位計算は公開モジュール`terrain::measurement`へ集約し、内部のENU変換を公開せず再利用する(9.3.1節)。
 
 ### 6.1 コンポーネント構成図
 
@@ -1346,7 +1351,7 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 全て削除した)。上記の名前は設計書・コード上の呼び名としてだけ残る。`TabbedPanel`の`title`は
 省略可能(省略/空文字なら見出しを出さずタブバーだけ)で、サンプルは指定しない。
 
-- CSS Gridで4列(左パネル固定 / メインパネル / リサイザー(6px) / 右パネル)を構成する
+- 外側のCSS Gridは左固定パネルと可変区画の2列。可変区画は`SplitPane`でメインパネル・リサイザー・右パネルに分割する
 - 左パネルは`display:grid; grid-template-rows: 1fr auto;`で上下2分割
   (シミュレーションステータスパネル/VABパネル)。VABパネル側は`auto`で内容の高さに
   ぴったり合わせ、余った分はシミュレーションステータスパネル側(`1fr`)が吸収する
@@ -1356,10 +1361,7 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
   こちらは両方とも内容量の変動が小さいため固定分割のままでよい)。両パネルとも
   `TabbedPanel`(7.6節)で実装しており、現状は1タブのみだが後から同じ枠に別タブを追加できる
 - 左パネル幅は`--panel-width`(CSS変数、既定320px)で固定
-- 地図・右パネルの幅は`grid-template-columns`の`minmax(下限px, Nfr)`で指定し、`N`(fr値)を
-  Leptosの`RwSignal<f64>`で保持する。ドラッグ量(スクリーン座標のpx)をそのままfr値に加減算する
-  設計のため、fr値の初期値もpxスケールの数値にしておく(小さい値だと1回のドラッグで下限に
-  張り付いてしまう不具合が実装時に発生し、修正済み)
+- 地図・右パネルの初期比率と最小幅はsampleが指定する。`SplitPane`が実測幅を基にドラッグ量を比率へ変換し、両側の最小幅を維持する(9.14節)
 
 ### 7.2 レスポンシブ方式
 
@@ -1371,12 +1373,8 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 
 ### 7.3 リサイザー(splitter)の実装
 
-- 地図・右パネルの境界にドラッグ可能な6px幅の要素を配置する
-- `on:pointerdown`でドラッグ開始位置を記録し、`element.set_pointer_capture(pointer_id)`で
-  ドラッグ中にカーソルが要素外に出てもイベントを受け取り続けるようにする
-- `on:pointermove`でドラッグ量(dx)を計算し、center_fr/right_frシグナルを更新する
-  (center_fr += dx, right_fr -= dx)
-- `on:pointerup`/`on:pointercancel`でドラッグ終了
+- 共通部品`ui::split_pane::SplitPane`がドラッグ・pointer capture・終了処理を担当する。アルゴリズムは9.14節。
+- sampleは左区画に地図、右区画にステータスパネルを渡す。初期比率2:1、最小幅320px/260px、狭い画面での外側横スクロールを指定する。
 
 ### 7.4 VAB仕様
 
@@ -1728,6 +1726,15 @@ record_bytes = (n+1)² × 2
 - `ground_at_geodetic(data, transform, lat, lon) -> (east,north,up)`: `elevation = sample_heightmap(..) or 0`→`transform(lat,lon,elevation)`
 
 検証: 平坦で400km離れた点の`up`は`-d²/(2a)`と3%以内。標高1000mの丘なら`up`の差は1000mから10m以内。原点を変えても`ground_at_geodetic`→`ground_at_enu`で緯度経度が1e-5度以内で戻る。
+
+#### 9.3.1 公開の距離・方位計算(`terrain::measurement`)
+
+`distance_and_bearing(lat0, lon0, lat1, lon1)`は度単位の緯度経度を受け、
+平均半径6,371,000mの球面上の大円距離(m)と初期方位(北から時計回り、0以上360未満の度)を返す。
+haversineの中間値を0〜1へ制限して丸め誤差を抑え、方位はatan2で計算する。
+有限値・緯度-90〜90度を前提とする。楕円体の厳密距離ではなく、同一点・対蹠点の方位は利用しない。
+sampleの航跡詳細はこのAPIを呼び、日本語方位名や単位の整形はsampleに残す。
+検証: 東西・北方向、日付変更線、同一点、対蹠点。
 
 ### 9.4 メッシュ生成(`terrain::mesh`)
 
@@ -2144,7 +2151,20 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 - 取得予定のキーは`spawn_local`で取得(`chunk=None`→`fetch_tile_level`+`insert_tile_level`、`Some(c)`→`fetch_chunk_grid`+`insert_chunk_grid`)。完了後に`loading`から外し、エラーは`log::warn`+`failed`へ。**デバウンスなしで`schedule_lod_soon`**
 - **`changed`のとき**: `target_up`・`camera.target.z`を新しい地形で更新、`terrain.evict_unused(keep=画面に出しているもの, 300MiB)`、観測点・地表基準の作図・トラックの`rebuild_*`、`render_frame`。最後に、反映を次に回したなら`schedule_lod_soon`、取得の上限で始められなかったなら`schedule_lod`
 
+#### 9.13.1 状態の一括初期化(`viewer::ViewerState`)
+
+`new(terrain_base_url)`は`TerrainStore`・`OriginState`・`RadarMarkersState`・`RecenterRequestState`・
+`HillshadeState`・`CaptureState`・`DrawingState`・`DrawToolState`・`TracksState`・`ModelsState`を生成する。
+`DrawingState`と`DrawToolState`は同じ作図一覧を共有する。生成時にはfetchも永続化も開始しない。
+`persist_drawings(&'static str)`は既存の保存・復元処理へ委譲する任意の設定で、生成直後に1回だけ呼ぶ。
+`provide()`は10個の状態を現在のLeptos Ownerへ登録して自分を返す。子ビュー生成前に同じOwnerで1回だけ呼ぶ。
+公開フィールドのハンドルへ受信した原点・航跡やモデル設定をアプリが反映できる。
+原点クリック、メニュー、ダイアログ開閉のcontextは登録しない。既存の個別登録と置き換え可能だが二重登録は避ける。
+検証: context経由の更新共有、対話作成と作図一覧の結線、10個のcontext登録。
+
 ### 9.14 UI部品(`sim3dview::ui`)
+
+- **`SplitPane(first, second, initial_fraction=0.5, min_first=160, min_second=160)`**: 左右のビューを常時マウントする横分割部品。最小幅は正の有限値、初期比率は有限値(0.001〜0.999に制限)。CSS Gridを`minmax(min_first, f fr) 6px minmax(min_second, (1-f) fr)`とし、全体の最小幅は両側最小幅+6px。親が横スクロールを担当する。左ボタンのpointerdownで実測した左幅L・両区画合計Tを保存し、moveで`f=clamp(L+dx, min_first, T-min_second)/T`へ更新する。1本のpointerのみ受け付け、pointer captureで区画外も追跡し、up/cancel/lostpointercaptureで終了する。CSSは`.sim3d-split-pane`・`.sim3d-split-content`・`.sim3d-split-handle`。検証: 実寸に比例する移動、左右最小幅、最小幅合計でのドラッグ、実画面での繰り返し操作。
 
 - **`pointer_drag::{DragTracker, DragUpdate, DragEnd}`**: 同時に1本のpointer IDだけを追跡する純粋な状態管理。move時に直前位置からの`delta`と開始位置からの`total`、up時に`DragEnd`を返す。別pointerのmove/up/cancelは無視する。DOMのpointer captureは呼び出し側の責務。`TerrainView`・`FloatingPanel`・サンプルアプリの区画リサイザーで共用する
 - **`TabbedPanel(title?, tabs: Vec<Tab>, active: Option<RwSignal<usize>>)`**(`title`は省略可。省略/空文字なら見出しを出さない) + `tab(label, view)`: `active`を渡すと呼び出し側からタブを切り替えられる。**全タブの中身を初回に1度だけ生成してDOMに残し、非選択は`display:none`で隠す**(切替で作り直さない)。タブが1個でもタブバーは表示する

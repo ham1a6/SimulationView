@@ -7,6 +7,7 @@ pub mod los_view;
 pub mod model_settings_dialog;
 pub mod origin_dialog;
 pub mod pointer_drag;
+pub mod split_pane;
 pub mod tabbed_panel;
 pub mod terrain_view;
 pub mod util;

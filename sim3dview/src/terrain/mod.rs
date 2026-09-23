@@ -11,6 +11,7 @@ pub(crate) mod loader;
 pub(crate) mod lod;
 pub(crate) mod los;
 pub mod markers;
+pub mod measurement;
 pub(crate) mod mesh;
 pub mod models;
 pub mod origin;

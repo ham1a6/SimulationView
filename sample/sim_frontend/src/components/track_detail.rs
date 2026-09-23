@@ -8,6 +8,7 @@
 use leptos::prelude::*;
 
 use sim3dview::terrain::drawing::Altitude;
+use sim3dview::terrain::measurement::distance_and_bearing;
 use sim3dview::terrain::origin::OriginState;
 use sim3dview::terrain::tracks::{Track, TracksState};
 
@@ -33,18 +34,6 @@ const COMPASS: [&str; 16] = [
 /// 方位(度、北から時計回り)の16方位の名前。
 fn compass_name(deg: f64) -> &'static str {
     COMPASS[((deg.rem_euclid(360.0) / 22.5) + 0.5).floor() as usize % 16]
-}
-
-/// 点(lat0, lon0)から点(lat1, lon1)への、球面(平均半径6371km)の大円距離(メートル)と初期方位(度、北から時計回り)。
-fn distance_and_bearing(lat0: f64, lon0: f64, lat1: f64, lon1: f64) -> (f64, f64) {
-    const EARTH_RADIUS_M: f64 = 6_371_000.0;
-    let (p0, p1) = (lat0.to_radians(), lat1.to_radians());
-    let dlon = (lon1 - lon0).to_radians();
-    let a = ((p1 - p0) * 0.5).sin().powi(2) + p0.cos() * p1.cos() * (dlon * 0.5).sin().powi(2);
-    let distance = 2.0 * EARTH_RADIUS_M * a.sqrt().min(1.0).asin();
-    let bearing =
-        (dlon.sin() * p1.cos()).atan2(p0.cos() * p1.sin() - p0.sin() * p1.cos() * dlon.cos());
-    (distance, bearing.to_degrees().rem_euclid(360.0))
 }
 
 fn format_latitude(lat: f64) -> String {
@@ -168,20 +157,6 @@ mod tests {
         assert_eq!(compass_name(202.4), "南南西");
         assert_eq!(compass_name(359.0), "北");
         assert_eq!(compass_name(-90.0), "西");
-    }
-
-    #[test]
-    fn distance_and_bearing_are_consistent() {
-        // 赤道上で東へ1度: 約111.2km・真東。
-        let (d, b) = distance_and_bearing(0.0, 0.0, 0.0, 1.0);
-        assert!((d - 111_195.0).abs() < 100.0, "d={d}");
-        assert!((b - 90.0).abs() < 1e-6, "b={b}");
-        // 真北へ0.5度: 約55.6km・方位0。
-        let (d, b) = distance_and_bearing(35.0, 139.0, 35.5, 139.0);
-        assert!((d - 55_597.0).abs() < 100.0, "d={d}");
-        assert!(b.abs() < 1e-6 || (b - 360.0).abs() < 1e-6, "b={b}");
-        // 同じ点: 距離0。
-        assert!(distance_and_bearing(35.0, 139.0, 35.0, 139.0).0 < 1e-6);
     }
 
     #[test]

@@ -959,3 +959,25 @@
     margin: 0.25rem 0;
     background: var(--border);
 }
+
+/* 左右の区画を分割し、最小幅と横スクロールを維持する。 */
+.sim3d-split-pane {
+    display: grid;
+    grid-template-rows: minmax(0, 1fr);
+    height: 100%;
+}
+.sim3d-split-content {
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+}
+.sim3d-split-handle {
+    background: var(--border);
+    cursor: col-resize;
+    touch-action: none;
+    user-select: none;
+}
+.sim3d-split-handle:hover,
+.sim3d-split-handle:active {
+    background: var(--accent);
+}

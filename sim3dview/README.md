@@ -19,8 +19,8 @@ ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し(Line of 
   作図エディタ、右クリックメニュー)と、Pointer Events用の純粋なドラッグ状態管理
 - `style/sim3dview.css`: 上記コンポーネントのスタイル
 
-公開しているのは、アプリが使う`terrain::{camera, draw_tool, drawing, hillshade, markers, models, origin, origin_pick, recenter, store, tracks}`と
-`ui`の各部品だけで、それ以外の`terrain`のモジュール(座標変換・LOD・描画・見通し計算など)はライブラリの内部(`pub(crate)`)です。
+公開しているのは、アプリが使う`terrain::{camera, capture, draw_tool, drawing, hillshade, markers, models, origin, origin_pick, recenter, store, tracks}`と
+`terrain::measurement`の距離・方位計算、`viewer::ViewerState`と`ui`の各部品です。それ以外の`terrain`のモジュール(ENU座標変換・LOD・描画・見通し計算など)はライブラリの内部(`pub(crate)`)です。
 モジュール構成は[DETAILED_DESIGN.md](../docs/DETAILED_DESIGN.md) 6.0節を参照してください。
 
 > このライブラリを**1から再実装したい**(仕様どおりに作り直す・別環境へ移植する)場合は、
@@ -138,6 +138,62 @@ crates.io公開クレートとして使う場合)では、`sim3dview/style/sim3d
 | `--fg` | 通常の文字色 | `#eee` |
 | `--border` | 枠線色 | `#3a3a3a` |
 | `--accent` | 強調色(選択中・フォーカス等) | `#9cf` |
+
+## 状態をまとめて初期化する
+
+機能を組み合わせる場合は`ViewerState`で状態の生成とcontext登録をまとめられます。
+Leptosコンポーネント内で、子ビューを生成する前に1回呼んでください。
+従来の個別登録も利用できます。同じOwnerで同じ状態を二重登録しないでください。
+
+```rust
+use sim3dview::viewer::ViewerState;
+
+let viewer = ViewerState::new("http://localhost:9001/terrain")
+    .persist_drawings("my_app.drawings") // 任意。省略すると保存・復元しない
+    .provide();
+
+// 受信データはアプリが既存の公開ハンドルへ反映する。
+// viewer.origin.0.set(Some(origin));
+// viewer.tracks.set(tracks);
+// viewer.models.set_source(kind, source);
+```
+
+生成するのは地形ストア・原点・観測点・中心点移動・陰影・キャプチャ・作図・作図ツール・航跡・モデルの
+10個の状態です。`new`自体は通信を開始しません。保存キーはアプリが選び、`persist_drawings`は生成直後に1回だけ呼びます。
+原点クリックのコールバック、メニュー項目、ダイアログの開閉と配置はアプリ側で設定します。
+
+## パネルを左右に分割する
+
+```rust
+use sim3dview::ui::split_pane::SplitPane;
+
+let initial_fraction = 2.0 / 3.0;
+view! {
+    <SplitPane
+        initial_fraction=initial_fraction
+        min_first=320.0
+        min_second=260.0
+        first=move || view! { <div>"地図など"</div> }
+        second=move || view! { <div>"情報パネルなど"</div> }
+    />
+}
+```
+
+`first`と`second`は常時マウントされる左右のビューです。高さは親の100%を使うため親の高さを確保してください。
+最小幅は正の有限値(CSS px、既定各160)、左側の初期比率は有限値(既定0.5、0.001〜0.999へ制限)です。
+狭い画面では最小幅の合計+6pxを維持するため、親で`overflow-x: auto`を指定します。
+`.sim3d-split-pane`・`.sim3d-split-content`・`.sim3d-split-handle`のCSSはライブラリに含まれます。
+
+## 距離と方位を計算する
+
+```rust
+use sim3dview::terrain::measurement::distance_and_bearing;
+let (distance_m, bearing_deg) = distance_and_bearing(35.0, 139.0, 35.5, 139.0);
+```
+
+引数は度単位の緯度経度、戻り値は大円距離(m)と北から時計回りの初期方位(0以上360未満の度)です。
+半径6371kmの球面近似で、楕円体上の厳密な距離ではありません。有限値・緯度-90〜90度を前提とし、
+同一点・対蹠点の方位は使用しないでください。日本語方位名や表示単位の整形はアプリ側で行います。
 
 ## 原点をサーバーと同期する
 
