@@ -15,6 +15,7 @@
 mod capture;
 mod coverage;
 mod frame;
+mod frame_request;
 mod labels;
 mod lod_driver;
 mod models;
@@ -91,6 +92,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         camera: OrbitCamera::preset(preset, 0.0),
         target_up: 0.0,
         initializing: false,
+        frame_request: Default::default(),
         interaction: InteractionState::default(),
         radar_markers,
         drawings,
@@ -458,6 +460,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     // `recenter_request`(Effect 6)と同じ「要求カウンタが増えたら実行」パターン。
     // 実際のtoBlob呼び出し・ダウンロードは`capture`モジュール(web_sys直叩き)に任せる。
     {
+        let state = state.clone();
         Effect::new(move |_| {
             let count = capture.screenshot_requests.get();
             if count == 0 {
@@ -470,6 +473,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 .clone()
                 .dyn_into()
                 .expect("canvas node_ref should be an HtmlCanvasElement");
+            // 通常描画は次フレームまで集約するため、保存時は最新状態を先に描く。
+            draw_frame(&state);
             capture::save_screenshot(&canvas);
         });
     }

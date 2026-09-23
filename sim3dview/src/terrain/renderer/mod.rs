@@ -253,16 +253,32 @@ impl TerrainRenderer {
     /// 作図(`terrain::drawing`)の頂点列を更新する。作図の一覧・原点・地形のLOD・canvasの大きさが
     /// 変わるたびに`drawing_geometry::build`で作り直して呼ぶ。
     pub fn update_drawings(&mut self, batches: &DrawingBatches) {
-        self.world_opaque
-            .set(&self.device, "draw_world_opaque", &batches.world.opaque);
-        self.world_blend
-            .set(&self.device, "draw_world_blend", &batches.world.blend);
-        self.view_opaque
-            .set(&self.device, "draw_view_opaque", &batches.view.opaque);
-        self.view_blend
-            .set(&self.device, "draw_view_blend", &batches.view.blend);
+        self.world_opaque.set(
+            &self.device,
+            &self.queue,
+            "draw_world_opaque",
+            &batches.world.opaque,
+        );
+        self.world_blend.set(
+            &self.device,
+            &self.queue,
+            "draw_world_blend",
+            &batches.world.blend,
+        );
+        self.view_opaque.set(
+            &self.device,
+            &self.queue,
+            "draw_view_opaque",
+            &batches.view.opaque,
+        );
+        self.view_blend.set(
+            &self.device,
+            &self.queue,
+            "draw_view_blend",
+            &batches.view.blend,
+        );
         self.screen_batch
-            .set(&self.device, "draw_screen", &batches.screen);
+            .set(&self.device, &self.queue, "draw_screen", &batches.screen);
     }
 
     /// canvasの内部解像度(ピクセル)。作図の画面座標(`Position::Screen`)の角の位置を決めるのに使う。
@@ -274,20 +290,24 @@ impl TerrainRenderer {
     /// 削除/選択変更のたびに呼び直す想定(`terrain/markers.rs`が頂点データを作る)。
     pub fn update_markers(&mut self, vertices: &[DrawVertex]) {
         self.markers
-            .set(&self.device, "marker_vertex_buffer", vertices);
+            .set(&self.device, &self.queue, "marker_vertex_buffer", vertices);
     }
 
     /// 2D地図モードの覆域(塗り+輪郭線)の頂点データを更新する。深度テストなしで描く(`terrain/markers.rs`)。
     pub fn update_coverage_2d(&mut self, vertices: &[DrawVertex]) {
-        self.coverage_2d
-            .set(&self.device, "coverage_2d_vertex_buffer", vertices);
+        self.coverage_2d.set(
+            &self.device,
+            &self.queue,
+            "coverage_2d_vertex_buffer",
+            vertices,
+        );
     }
 
     /// 航跡(トラック)の頂点データ(シンボル・航跡・高度線)を更新する。トラックの受信・原点変更・地形のLOD切り替え・
     /// 2D/3D切り替えのたびに`terrain::tracks::build_track_geometry`で作り直して呼ぶ。
     pub fn update_tracks(&mut self, vertices: &[DrawVertex]) {
         self.tracks
-            .set(&self.device, "tracks_vertex_buffer", vertices);
+            .set(&self.device, &self.queue, "tracks_vertex_buffer", vertices);
     }
 
     /// 3Dモデル(`terrain::models`)を1つ登録する(`key`はモデルの識別子。アプリが登録したURL)。同じキーがあれば置き換える。
@@ -640,7 +660,7 @@ impl TerrainRenderer {
                 depth_ops: Some(wgpu::Operations {
                     // 反転Z(reversed-Z): 「最も遠い」を表す深度値は0.0(camera.rs参照)。
                     load: wgpu::LoadOp::Clear(0.0),
-                    store: wgpu::StoreOp::Store,
+                    store: wgpu::StoreOp::Discard,
                 }),
                 stencil_ops: None,
             }),

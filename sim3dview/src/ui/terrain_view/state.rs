@@ -6,6 +6,7 @@ use std::rc::Rc;
 use leptos::prelude::*;
 
 use super::coverage::CoverageState;
+use super::frame_request::FrameRequest;
 use super::models::ModelsView;
 use crate::terrain::camera::OrbitCamera;
 use crate::terrain::drawing::DrawingState;
@@ -30,7 +31,6 @@ pub(super) struct LodState {
     pub(super) failed: HashSet<FetchKey>,
     pub(super) update_pending: bool,
     pub(super) update_soon_pending: bool,
-    pub(super) fade_frame_pending: bool,
 }
 
 pub(super) struct ViewState {
@@ -44,6 +44,7 @@ pub(super) struct ViewState {
     /// 置くことで、ズームインしても地表に埋まらないようにする(camera.rs参照)。
     pub(super) target_up: f32,
     pub(super) initializing: bool,
+    pub(super) frame_request: FrameRequest,
     pub(super) interaction: InteractionState,
     pub(super) radar_markers: RadarMarkersState,
     /// 作図(図形・線)の一覧(`terrain::drawing`)。

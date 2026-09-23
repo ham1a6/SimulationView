@@ -992,6 +992,10 @@ ENU座標系(東=X, 北=Y, 上=Z)は右手系(East×North=Up)。wgpu/glamの一�
 
 ### 6.8 頂点シェーダ・フラグメントシェーダ・アンチエイリアス
 
+入力・通信・LODフェードからの描画要求は、次の`requestAnimationFrame`に集約して最新状態を1回だけ描く。
+画質を維持したまま重複描画を避け、航跡などの動的頂点バッファは容量が足りる間再利用する。
+深度は各パス内でだけ使い、後続パスへ保存しない。倍率・LOD・描画順は変えない(詳細は9.9・9.13節)。
+
 シェーダー(`terrain.wgsl`・`draw.wgsl`)の**全文は`sim3dview/src/terrain/terrain.wgsl`・`draw.wgsl`、uniform・頂点のバイトレイアウトは9.9節**。
 `terrain.wgsl`は、カメラの`view_proj`と陰影のON/OFFフラグをuniform(`@group(0) @binding(0)`)で受け取り、頂点位置を変換して、頂点色に陰影を掛けて出力する。
 エントリポイントは、地形本体(`vs_main`/`fs_main`)・レベル切り替え中のクロスフェード(`vs_fade`/`fs_fade`。6.10節)・覆域ドーム用の固定半透明(`fs_dome`)・水域(`vs_fullscreen`/`fs_water`)・縮小(`fs_downsample`)。
@@ -1905,7 +1909,8 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 | ③ 縮小 | スワップチェーン(canvas解像度、1サンプル) | 内部解像度の解決結果を線形フィルタで2×2平均して縮小 |
 
 - **MSAA=4**+**スーパーサンプリング×2**。内部テクスチャの一辺は`SUPERSAMPLE_MAX_DIMENSION=4096`で頭打ち(`supersample_size(w,h) = (min(max(w,1)*2, 4096), min(max(h,1)*2, 4096))`)
-- 深度は`Depth32Float`・**反転Z**(比較`Greater`、クリア0.0)。パス①の深度は`Store`、パス②では`Discard`。裏面カリングは**無効**(`cull_mode: None`。既知の技術的負債。有効化するなら先にスカートの巻き順を4辺で揃える)。空・データ範囲外は黒
+- 深度は`Depth32Float`・**反転Z**(比較`Greater`、クリア0.0)。パス①・②の深度はともに`Discard`(②は再クリアし、③は深度を使わないため、パス終了後の保存が不要)。裏面カリングは**無効**(`cull_mode: None`。既知の技術的負債。有効化するなら先にスカートの巻き順を4辺で揃える)。空・データ範囲外は黒
+- **動的頂点バッファ**: 作図・マーカー・2D覆域・航跡の`VertexBatch`は`VERTEX | COPY_DST`で確保し、容量内なら`queue.write_buffer`で上書きする。容量不足時だけ必要バイト数の次の2の累乗まで拡張する(デバイスの`max_buffer_size`を上限とする)。描画頂点数は容量ではなく最新の入力長。空の入力ではバッファを解放する。
 
 **頂点・uniformのバイトレイアウト**:
 
@@ -2102,7 +2107,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 - **初期化 `try_init`**: canvasのサイズ確定(ResizeObserver)と地形データ取得(`TerrainStore`)は非同期かつ独立に完了するので、両方から呼び、揃った時点で初期化する(`canvas`が0サイズ・`data`なし・初期化済み/中は何もしない)。
   原点=`OriginState`または`default_origin`、`target_up = sample_heightmap(origin)`。`TerrainRenderer::new`(失敗は`status="地形描画エラー: {e}"`)→**全タイルを`build_whole_tile_mesh`でレベル0のメッシュとして`set_mesh((lat,lon,WHOLE_TILE))`**、`resident[tile]=Whole`、
   `set_hillshade`・`set_ellipsoid_origin`、初回`render`。借用を`drop`してから`status`を空にし、`rebuild_markers/drawings/tracks`・`render_now`
-- **描画・LODの予約**: `render_frame`=`keep_camera_above_ground`(`camera.keep_above_ground(|e,n| ground_at_enu(..).up)`)→`renderer.render`→`update_labels`(**LODは予約しない**。航跡の高頻度更新用)。`render_now`=`render_frame`→`schedule_lod`
+- **描画・LODの予約**: `render_frame`は`FrameRequest`で重複要求をまとめ、`requestAnimationFrame`を1つだけ予約する(**LODは予約しない**。航跡の高頻度更新用)。コールバックは`Weak`で状態を保持し、破棄済みなら描かない。予約失敗時は予約フラグを解除して次回要求で再試行できるようにする。実行時にも予約フラグを解除し、`draw_frame`で`keep_camera_above_ground`(`camera.keep_above_ground(|e,n| ground_at_enu(..).up)`)→`update_models`→`renderer.render`→`update_labels`。フェード継続中は借用を解放して同じ経路で次フレームを予約する。`render_now`は次の入力に衝突補正を反映するため即座に`keep_camera_above_ground`を実行し、`render_frame`→`schedule_lod`を予約する。スクリーンショット保存時だけは`draw_frame`を即時実行し、未反映の入力を含めて保存する。
 - **Effect**(番号はコード上の`Effect N`):
 
 | # | 購読 | 処理 |

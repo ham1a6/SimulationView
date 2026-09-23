@@ -113,13 +113,33 @@ pub(super) fn keep_camera_above_ground(state: &Rc<RefCell<ViewState>>) {
     });
 }
 
-/// 現在の状態で1フレーム描くだけ(LODの更新は予約しない)。
+/// 次の画面更新で最新の状態を描く。同じフレームへの要求は1つに集約する。
 pub(super) fn render_frame(state: &Rc<RefCell<ViewState>>) {
+    {
+        let mut s = state.borrow_mut();
+        if !s.frame_request.request() {
+            return;
+        }
+    }
+    let weak_state = Rc::downgrade(state);
+    if let Err(error) = request_animation_frame_with_handle(move || {
+        if let Some(state) = weak_state.upgrade() {
+            state.borrow_mut().frame_request.clear();
+            draw_frame(&state);
+        }
+    }) {
+        state.borrow_mut().frame_request.clear();
+        log::warn!("[terrain] 描画の予約に失敗しました: {error:?}");
+    }
+}
+
+/// 予約されたフレームを描画する。状態更新・フェードのどちらもこの経路を通る。
+pub(super) fn draw_frame(state: &Rc<RefCell<ViewState>>) {
     keep_camera_above_ground(state);
     // どのトラックを3Dモデルで描くか(カメラからの距離・大きさで決まる)。描画の前に決める。
     update_models(state);
-    let mut s = state.borrow_mut();
-    let s = &mut *s;
+    let mut guard = state.borrow_mut();
+    let s = &mut *guard;
     let mut fading = false;
     if let Some(renderer) = s.renderer.as_mut() {
         let camera = s.camera.to_camera(renderer.aspect_ratio());
@@ -129,19 +149,16 @@ pub(super) fn render_frame(state: &Rc<RefCell<ViewState>>) {
         fading = renderer.is_fading();
     }
     update_labels(s);
-    // 地形のレベル切り替えのクロスフェード中は、時間が進むので次のフレームも描く(1つだけ予約する)。
-    if fading && !s.lod.fade_frame_pending {
-        s.lod.fade_frame_pending = true;
-        let state = state.clone();
-        request_animation_frame(move || {
-            state.borrow_mut().lod.fade_frame_pending = false;
-            render_frame(&state);
-        });
+    // シグナル更新や次フレームの予約より先にRefCellの借用を解放する。
+    drop(guard);
+    if fading {
+        render_frame(state);
     }
 }
 
-/// 1フレーム描き、カメラなどが変わった可能性があるのでLODの更新を予約する。
+/// 描画とLOD更新を予約する。地面との衝突補正は次の入力より先に反映する。
 pub(super) fn render_now(state: &Rc<RefCell<ViewState>>) {
+    keep_camera_above_ground(state);
     render_frame(state);
     schedule_lod(state);
 }

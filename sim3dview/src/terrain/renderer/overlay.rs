@@ -1,7 +1,5 @@
 //! 作図・マーカー・航跡・覆域の頂点バッチ(`DrawVertex`のTriangleList)と、座標の種類ごとのuniform。
 
-use wgpu::util::DeviceExt;
-
 use super::uniforms::{uniform_bind_group, DrawUniform};
 use crate::terrain::vertex::DrawVertex;
 
@@ -29,7 +27,7 @@ impl DrawSpace {
     }
 }
 
-/// 作図の頂点バッファ1本(TriangleList)。空ならバッファを持たない。
+/// 作図の頂点バッファ1本(TriangleList)。容量が足りる間はGPUバッファを再利用する。
 pub(super) struct VertexBatch {
     buffer: Option<wgpu::Buffer>,
     count: u32,
@@ -43,18 +41,37 @@ impl VertexBatch {
         }
     }
 
-    pub(super) fn set(&mut self, device: &wgpu::Device, label: &str, vertices: &[DrawVertex]) {
+    pub(super) fn set(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &str,
+        vertices: &[DrawVertex],
+    ) {
         if vertices.is_empty() {
             *self = Self::empty();
             return;
         }
-        self.buffer = Some(
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some(label),
-                contents: bytemuck::cast_slice(vertices),
-                usage: wgpu::BufferUsages::VERTEX,
-            }),
-        );
+        let bytes = bytemuck::cast_slice(vertices);
+        let required = bytes.len() as u64;
+        if self
+            .buffer
+            .as_ref()
+            .is_none_or(|buffer| buffer.size() < required)
+        {
+            self.buffer = Some(
+                device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(label),
+                    // 少しずつ頂点が増える航跡でも、毎回確保し直さない。
+                    size: required
+                        .next_power_of_two()
+                        .min(device.limits().max_buffer_size),
+                    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                }),
+            );
+        }
+        queue.write_buffer(self.buffer.as_ref().unwrap(), 0, bytes);
         self.count = vertices.len() as u32;
     }
 
