@@ -9,6 +9,10 @@ const output = process.env.SIM3DVIEW_TEST_OUTPUT || path.resolve(__dirname, '../
 app.setPath('userData', path.join(output, `profile-${process.pid}`));
 process.env.SIM3DVIEW_TERRAIN_DIR ||= path.resolve(__dirname, '../../sim_server/assets/terrain');
 const errors = [];
+// オフライン検証ではOS設定を変更せず、テスト用セッションの外部通信を拒否する。
+const offline = process.env.SIM3DVIEW_TEST_OFFLINE === '1';
+const externalRequests = [];
+const localRequests = new Set();
 let passed = false;
 // 自動テストではネイティブのエラーダイアログで待ち続けず失敗を記録する。
 dialog.showErrorBox = (title, message) => { errors.push(`${title}: ${message}`); console.error(title, message); };
@@ -23,6 +27,16 @@ async function until(check) {
 let backendPort;
 let frontendOrigin;
 app.on('browser-window-created', (_event, window) => {
+  if (offline) {
+    window.webContents.session.webRequest.onBeforeRequest((details, callback) => {
+      const url = new URL(details.url);
+      const network = ['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol);
+      const external = network && !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname);
+      if (external) externalRequests.push(details.url);
+      else if (network) localRequests.add(details.url);
+      callback({ cancel: external });
+    });
+  }
   window.webContents.on('console-message', details => {
     if (details.level === 'error') errors.push(details.message);
   });
@@ -79,6 +93,14 @@ app.whenReady().then(async () => {
     }
   }
   assert.deepEqual(errors, [], `描画コンソールのエラー: ${errors.join('\n')}`);
+  if (offline) {
+    assert.deepEqual(externalRequests, [], '外部通信への依存があります。');
+    assert.ok([...localRequests].some(url => url.endsWith('.wasm')), 'WASMの取得を確認できません。');
+    assert.ok([...localRequests].some(url => url.includes('/terrain/base.bin')), '地形の取得を確認できません。');
+    assert.ok([...localRequests].some(url => url.includes('/sim')), 'シミュレータ接続を確認できません。');
+    await fs.writeFile(path.join(output, 'offline-requests.json'), JSON.stringify({ externalRequests, localRequests: [...localRequests] }, null, 2));
+    console.log(`オフライン検証完了: 外部通信${externalRequests.length}件、ローカルURL ${localRequests.size}件`);
+  }
   console.log(`描画確認完了: ${output}`);
   passed = true;
   window.close();

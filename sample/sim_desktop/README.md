@@ -98,6 +98,34 @@ Electronのsandboxは有効のまま使用し、管理者(root)では起動し�
 
 ## 検証
 
+### オフライン運用
+
+ビルド済み配布フォルダー、前処理済み地形、OSの必要なランタイムとGPUドライバーを事前に用意すれば、インターネット接続なしで運用できる。
+JS/WASM・CSS・3Dモデルは配布フォルダー、地形は指定したローカルフォルダーから読み込む。
+通信は同一PC内のHTTP/WebSocket(`127.0.0.1`)を使うため、ローカル通信とサーバー起動は必要。
+地形フォルダーは自動同梱されないので、`metadata.json`・`tile_index.json`・`base.bin`・`tiles/`をまとめて持ち込む。
+
+初回の開発環境構築は別途準備が必要。Rust/WASMターゲット・Cargo依存・Trunkと補助ツール、C++ツールチェーン・サブモジュール・vcpkg依存、Node.js・Electronを接続環境で取得しておく。
+`CARGO_NET_OFFLINE=true`で既存キャッシュによるUIビルドを検証できるが、新しいPCで依存を取得せずビルドできることは意味しない。
+
+```powershell
+$env:SIM3DVIEW_TEST_OFFLINE = '1'
+$env:SIM3DVIEW_TEST_OUTPUT = Join-Path (Get-Location) 'out/offline-smoke'
+npm run test:ui
+Remove-Item Env:SIM3DVIEW_TEST_OFFLINE
+Remove-Item Env:SIM3DVIEW_TEST_OUTPUT
+```
+
+このモードは新規テストプロファイルで、Electronセッションのループバック以外へのHTTP/WebSocket要求を拒否する。
+起動・開始/一時停止・2D/3D切替・再読み込みを検証し、外部要求があれば失敗する。
+取得URL一覧を`offline-requests.json`、画面を`screen-0.png`・`screen-1.png`へ保存する。
+OSのネットワーク切断やファイアウォール変更は行わず、OS全体・Electron内部サービス・C++プロセスの全通信を遮断する試験ではない。
+
+2026-09-23のWindows実機検証では、このモードで2回の操作と再読み込みが成功し、外部要求0件、ローカルURL 438件を確認した。
+依存キャッシュを使ったオフライン指定のRelease UIビルドと、ローカル配信・実C++サーバーの4件のテストも成功した。
+
+### 通常の検証
+
 ```powershell
 npm test
 npm run test:ui
