@@ -7,4 +7,5 @@ pub mod operation_panel;
 pub mod right_panel;
 pub mod status_panel;
 pub mod track_detail;
+pub mod upload_window;
 pub mod vab;

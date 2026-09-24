@@ -23,7 +23,7 @@ APIは[README](../README.md)・[API_REFERENCE](../API_REFERENCE.md)、作業手�
 ### 0.4 技術スタックと責務
 
 Rust・Leptos・wgpu・WASMが表示と状態管理、C++20/GDALが前処理を担当する。
-ライブラリは通信プロトコル・サーバーURL・業務UIを知らない。呼び出し側が原点状態とデータ取得URLを渡す。
+ライブラリはアプリ固有の通信プロトコル・サーバーURL・業務UIを知らない。呼び出し側が原点状態とデータ取得URLを渡す。
 ルートは独立したライブラリcrateで、`sample/` は独立ワークスペース。
 サンプルのビルド・設定・配布手順は[sample/README](../sample/README.md)、設計は[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)へ分離する。
 
@@ -256,7 +256,7 @@ sim_z = Up
 
 ## 6. Rust側詳細設計
 
-ライブラリは呼び出し側からデータ取得URLと原点状態を受け取り、通信プロトコルを持たない。
+ライブラリは呼び出し側からデータ取得URLと原点状態を受け取り、アプリ固有の通信プロトコルを持たない。
 
 ### 6.0 ライブラリ(`sim3dview`)のモジュール構成
 
@@ -295,6 +295,12 @@ sim_z = Up
 一定高度の飛行経路は、地表の測地線の真上を一定のWGS84楕円体高で飛ぶ曲線として測定する。
 一定高度面は楕円体ではないため、楕円体の半径だけを増やさず曲線の弧長を積分する。
 高度面上の最短経路探索や地形追従は対象外。海抜・対地・気圧高度との変換はアプリの責務(9.3.2節)。
+
+### 6.15 ファイル送信
+
+`upload::upload_blob`は呼び出し側からURLとBlobを受け取り、HTTP POSTで送信する。
+地形の状態やWebSocketから独立し、保存場所・命名・認証ヘッダー・応答解釈・UIはアプリが担当する。
+ブラウザのBlobを直接本文にしてRustメモリへの全体コピーを避ける。実装契約は9.16節。
 
 ### 6.1 サンプル設計へ移動
 
@@ -1542,6 +1548,15 @@ uniformは作図の`World`用(`draw_world`。`view_proj`・`light`だけ使う)�
 `renderer`(`model.wgsl`のnaga検証・`DrawUniform`の一致・頂点/インスタンスの属性のオフセットと`@location`)、`models`(登録・置き換え・解除)。実機: 最小サイズでモデルが出て向きが進行方向に合う・切替距離で入れ替わる。
 
 ---
+
+### 9.16 ファイル送信(`upload`)
+
+`upload_blob(url: &str, blob: &web_sys::Blob, headers: &[(&str, &str)]) -> Result<String, String>`はasync。
+`File`はBlobとして渡せる。HTTP POSTの生バイト本文で送り、既定のContent-Typeは
+`application/octet-stream`。追加ヘッダーで上書き可能。multipart形式や元ファイル名は送らない。
+2xx時に応答テキストを返し、非2xx・要求作成・通信・応答読み取りの失敗は日本語のエラーを返す。
+送信上限やタイムアウト、キャンセル、進捗率、再送はAPIには持たせない。
+ブラウザのCORS・Mixed Content・fetch既定の資格情報ポリシーに従う。
 
 ## 10. 再実装ガイド
 

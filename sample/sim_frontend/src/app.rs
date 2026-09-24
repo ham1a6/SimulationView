@@ -21,6 +21,7 @@ use crate::components::map_menu::provide_map_menu;
 use crate::components::menu_bar::MenuBar;
 use crate::components::operation_panel::SimulationStatusPanel;
 use crate::components::right_panel::{BottomStatusPanel, TopStatusPanel};
+use crate::components::upload_window::{UploadWindow, UploadWindowState};
 use crate::components::vab::VabPanel;
 use crate::protocol::ClientCommand;
 use crate::track_bridge::bridge_tracks;
@@ -42,6 +43,7 @@ pub fn App() -> impl IntoView {
     provide_context(CoverageAltitudeDialogState(RwSignal::new(false)));
     // 作図ウインドウ(移動できる非モーダルのウインドウ)の開閉状態(表示メニューの「作図...」から開く)。
     provide_context(DrawingWindowState(RwSignal::new(false)));
+    provide_context(UploadWindowState(RwSignal::new(false)));
     // 地図機能の共有状態。通信・保存キー・モデルの選択はアプリ側で決める。
     let viewer = ViewerState::new(default_terrain_base_url())
         .persist_drawings("sim3dview.user_drawings")
@@ -125,6 +127,7 @@ pub fn App() -> impl IntoView {
             />
             <CoverageAltitudeDialog/>
             <DrawingWindow/>
+            <UploadWindow/>
             <ModelSettingsDialog/>
             <ContextMenu/>
         </div>

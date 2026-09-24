@@ -1,5 +1,7 @@
 #include "ws_server.hpp"
 #include "http_utils.hpp"
+#include "upload_file.hpp"
+#include <memory>
 
 #include <algorithm>
 #include <atomic>
@@ -134,14 +136,15 @@ bool is_safe_path_component(const std::string& name) {
 } // namespace
 
 struct WsServer::Impl {
-    Impl(uint16_t port_, TlsConfig tls_, std::string host_, std::string terrain_dir_)
+    Impl(uint16_t port_, TlsConfig tls_, std::string host_, std::string terrain_dir_, std::string upload_dir_)
         : port(port_), tls(std::move(tls_)), host(std::move(host_)),
-          terrain_dir(std::move(terrain_dir_)), simulation(terrain_dir + "/metadata.json") {}
+          terrain_dir(std::move(terrain_dir_)), upload_dir(std::move(upload_dir_)), simulation(terrain_dir + "/metadata.json") {}
 
     uint16_t port;
     TlsConfig tls;
     std::string host;
     std::string terrain_dir;
+    std::string upload_dir;
     Simulation simulation;
 
     // ClientId -> 送信関数 のマップ。uWSイベントループスレッドからのみ生ポインタ(WebSocket*)を
@@ -178,8 +181,8 @@ struct WsServer::Impl {
     void run_app(AppT app);
 };
 
-WsServer::WsServer(uint16_t port, TlsConfig tls, std::string host, std::string terrain_dir)
-    : impl_(new Impl(port, std::move(tls), std::move(host), std::move(terrain_dir))) {}
+WsServer::WsServer(uint16_t port, TlsConfig tls, std::string host, std::string terrain_dir, std::string upload_dir)
+    : impl_(new Impl(port, std::move(tls), std::move(host), std::move(terrain_dir), std::move(upload_dir))) {}
 
 WsServer::~WsServer() {
     impl_->keep_running = false;
@@ -256,6 +259,53 @@ void WsServer::Impl::run_app(AppT app) {
 
     // 地形データの静的配信(DETAILED_DESIGN.md 5.4節: WebSocketの/simエンドポイントとは独立したHTTPルート)。
     // フロント(trunk serve)とは別オリジンからfetchされるためCORSヘッダーを付与する。
+    // 生バイトを受信する。通常のHTMLフォームからの書き込みは拒否する。
+    app.options("/uploads", [](uWS::HttpResponse<SSL>* res, uWS::HttpRequest*) {
+        res->writeStatus("204 No Content")
+            ->writeHeader("Access-Control-Allow-Origin", "*")
+            ->writeHeader("Access-Control-Allow-Methods", "POST")
+            ->writeHeader("Access-Control-Allow-Headers", "Content-Type")->end();
+    });
+    app.post("/uploads", [impl](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
+        if (req->getHeader("content-type") != "application/octet-stream") {
+            res->writeStatus("415 Unsupported Media Type")
+                ->writeHeader("Access-Control-Allow-Origin", "*")->end();
+            return;
+        }
+        // 切断・上限超過・I/Oエラー時に受信途中のファイルを破棄する。
+        auto pending = std::make_shared<std::unique_ptr<UploadFile>>();
+        try {
+            *pending = std::make_unique<UploadFile>(impl->upload_dir);
+        } catch (const std::exception&) {
+            res->writeStatus("500 Internal Server Error")
+                ->writeHeader("Access-Control-Allow-Origin", "*")->end();
+            return;
+        }
+        res->onAborted([pending]() { pending->reset(); });
+        res->onData([res, pending](std::string_view bytes, bool last) {
+            if (!*pending) return;
+            try {
+                if (!(*pending)->append(bytes)) {
+                    pending->reset();
+                    res->writeStatus("413 Payload Too Large")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")->end();
+                    return;
+                }
+                if (last) {
+                    const auto id = (*pending)->finish();
+                    pending->reset();
+                    res->writeStatus("201 Created")
+                        ->writeHeader("Access-Control-Allow-Origin", "*")
+                        ->writeHeader("Content-Type", "text/plain; charset=utf-8")->end(id);
+                }
+            } catch (const std::exception&) {
+                pending->reset();
+                res->writeStatus("500 Internal Server Error")
+                    ->writeHeader("Access-Control-Allow-Origin", "*")->end();
+            }
+        });
+    });
+
     app.get("/terrain/metadata.json", [impl](uWS::HttpResponse<SSL>* res, uWS::HttpRequest* req) {
         serve_terrain_file(res, req, impl->terrain_dir + "/metadata.json", "application/json");
     });

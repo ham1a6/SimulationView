@@ -13,7 +13,7 @@
 //! 「3Dモデル...」は、航跡を3Dモデル(glTF)で描く方式の設定ウインドウ(`ui::model_settings_dialog`)を開く、
 //! 「作図...」は、図形を作る移動可能なウインドウ(`components/drawing_window.rs`)を開く。
 //! 「作図デモ」は作図(`terrain::drawing`)のデモ図形の表示/消去。
-//! ファイル/ヘルプは現時点では項目未定のプレースホルダ(クリックしても「準備中」の
+//! ファイルはサーバーへの転送、ヘルプは現時点では項目未定のプレースホルダ(クリックしても「準備中」の
 //! ダミー項目が出るだけ)。メニューが開いている間は透明な全画面バックドロップを敷き、
 //! そこをクリックすると閉じる(外側クリックで閉じる一般的なメニューの挙動)。
 
@@ -43,6 +43,8 @@ enum MenuId {
 #[component]
 pub fn MenuBar(show_left_panel: RwSignal<bool>, show_right_panel: RwSignal<bool>) -> impl IntoView {
     let open_menu = RwSignal::new(None::<MenuId>);
+    let upload_window = use_context::<crate::components::upload_window::UploadWindowState>()
+        .expect("UploadWindowState context not found");
     let origin_dialog =
         use_context::<OriginDialogState>().expect("OriginDialogState context not found");
     let origin_pick = use_context::<OriginPickState>().expect("OriginPickState context not found");
@@ -209,7 +211,15 @@ pub fn MenuBar(show_left_panel: RwSignal<bool>, show_right_panel: RwSignal<bool>
                     </div>
                 }
                 .into_any(),
-                _ => view! {
+                MenuId::File => view! {
+                    <div class="menu-dropdown">
+                        <button class="menu-dropdown-item" on:click=move |_| {
+                            open_menu.set(None);
+                            upload_window.0.set(true);
+                        }>"サーバーへファイル転送..."</button>
+                    </div>
+                }.into_any(),
+                MenuId::Help => view! {
                     <div class="menu-dropdown">
                         <span class="menu-dropdown-item menu-dropdown-item--disabled">
                             "(準備中)"

@@ -8,7 +8,7 @@
 namespace {
 
 void print_usage(const char* exe) {
-    std::cerr << "usage: " << exe << " [port] [--host <address>] [--terrain-dir <path>]"
+    std::cerr << "usage: " << exe << " [port] [--host <address>] [--terrain-dir <path>] [--upload-dir <path>]"
               << " [--cert <cert.pem> --key <key.pem>]\n"
               << "  port: 0〜65535。0は空きポートを自動割り当て\n"
               << "  --cert/--key: 両方指定するとHTTPS/WSSで待ち受ける(省略時は平文のHTTP/WS)\n";
@@ -21,6 +21,7 @@ int main(int argc, char** argv) {
     sim3dview::TlsConfig tls;
     std::string host = "0.0.0.0";
     std::string terrain_dir = "assets/terrain";
+    std::string upload_dir = "uploads";
 
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
@@ -28,6 +29,8 @@ int main(int argc, char** argv) {
             (arg == "--cert" ? tls.cert_file : tls.key_file) = argv[++i];
         } else if (arg == "--host" && i + 1 < argc) {
             host = argv[++i];
+        } else if (arg == "--upload-dir" && i + 1 < argc) {
+            upload_dir = argv[++i];
         } else if (arg == "--terrain-dir" && i + 1 < argc) {
             terrain_dir = argv[++i];
         } else if (!arg.empty() && arg[0] != '-') {
@@ -56,7 +59,7 @@ int main(int argc, char** argv) {
               << std::endl;
 
     try {
-        sim3dview::WsServer server(port, std::move(tls), host, terrain_dir);
+        sim3dview::WsServer server(port, std::move(tls), host, terrain_dir, upload_dir);
         server.run();
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;

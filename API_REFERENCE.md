@@ -168,3 +168,7 @@ GLBは単一ファイルの三角形メッシュ・法線・頂点色・基本�
 | 各座標空間の図形 | [drawing_demo.rs](sample/sim_frontend/src/components/drawing_demo.rs) |
 
 データ配信形式とCSSは[README](README.md)、内部変更の検証は[実装ガイドライン](IMPLEMENTATION_GUIDELINES.md)へ。
+
+## ファイル送信
+
+`sim3dview::upload::upload_blob(url, blob, headers)`：ブラウザのFile/Blobを指定URLへHTTP POSTし、成功時は応答テキスト、失敗時はエラー文字列を返すasync API。詳細は設計書9.16節。

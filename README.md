@@ -635,3 +635,15 @@ view! { <ContextMenu/> }
 (C++、地形データ配信+WebSocketサーバーの参照実装)を参照してください。VAB・状況パネル・
 メニューバー・WebSocket/msgpackプロトコルなど、このライブラリに含まれないアプリ固有の
 実装例が一通り揃っています。
+
+## ブラウザからファイルを送信する
+
+`upload::upload_blob`へアプリが決めたURLと`web_sys::File`（またはBlob）を渡す。
+
+```rust,ignore
+let result = sim3dview::upload::upload_blob(&upload_url, &file, &[]).await?;
+```
+
+HTTP POSTの生バイト本文を送り、2xxの応答テキストを返す。multipartではない。
+第3引数で認証などのヘッダーを指定できる。保存場所・上限・ファイル名・UIはアプリ側の責務。
+具体例は`sample/sim_frontend/src/components/upload_window.rs`。

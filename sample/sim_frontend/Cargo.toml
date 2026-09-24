@@ -33,4 +33,7 @@ features = [
     "PointerEvent",
     "MouseEvent",
     "Location",
+    "File",
+    "FileList",
+    "HtmlInputElement",
 ]

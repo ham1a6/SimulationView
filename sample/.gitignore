@@ -12,3 +12,5 @@
 /.npm-cache/
 /certs/
 /map_data/
+
+/sim_server/uploads/

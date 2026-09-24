@@ -344,3 +344,17 @@ C++シミュレータ本体・Web UI(サンプルアプリ)とも実装・動作
 
 リポジトリルートで `python sample/scripts/gen_sample_models.py` を実行する。
 5種類のGLBを `sample/sim_frontend/assets/models/` に生成する。
+
+## ファイル転送のサンプル
+
+「ファイル」→「サーバーへファイル転送...」でファイルを選び、「送信」を押す。
+1ファイル64 MiBまで。送信完了後に表示する`<ID>/data.bin`が保存ルートからの相対パス。
+元ファイル名は保存せず、バイト列をそのまま保存する。同じファイルも再送ごとに別IDになる。
+保存先はサーバーの作業ディレクトリにある`uploads/`（`--upload-dir <path>`で変更可能）。
+受信物は自動実行・HTTP配信されない。サンプルは認証なしの開発用サーバー。
+
+HTTP受信の統合テスト（実サーバーを一時ポートで起動し、専用一時ディレクトリに保存）:
+
+```powershell
+python sample/sim_server/tests/upload_integration.py sample/sim_server/build/Release/sim_server.exe
+```

@@ -30,7 +30,8 @@ class WsServer {
 public:
     explicit WsServer(uint16_t port, TlsConfig tls = {},
                       std::string host = "0.0.0.0",
-                      std::string terrain_dir = "assets/terrain");
+                      std::string terrain_dir = "assets/terrain",
+                      std::string upload_dir = "uploads");
     ~WsServer();
 
     // impl_は所有権を持つ生ポインタでコピー・ムーブ双方が二重解放を招くため禁止する。

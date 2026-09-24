@@ -18,4 +18,5 @@
 
 pub mod terrain;
 pub mod ui;
+pub mod upload;
 pub mod viewer;

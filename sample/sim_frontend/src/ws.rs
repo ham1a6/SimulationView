@@ -371,10 +371,19 @@ pub fn default_ws_url() -> String {
 /// (`README.md`のデータ契約参照)、このサンプルアプリ側でsample/sim_serverの規約
 /// (`/terrain/*`、ポート9001)に基づいて組み立てる。
 pub fn default_terrain_base_url() -> String {
+    format!("{}/terrain", default_http_base_url())
+}
+
+/// ファイルの送信先。サーバー固有の経路はアプリ側が決める。
+pub fn default_upload_url() -> String {
+    format!("{}/uploads", default_http_base_url())
+}
+
+fn default_http_base_url() -> String {
     let (hostname, is_tls) = page_host_and_tls();
     let scheme = if is_tls { "https" } else { "http" };
     let port = server_port();
-    format!("{scheme}://{hostname}:{port}/terrain")
+    format!("{scheme}://{hostname}:{port}")
 }
 
 #[cfg(test)]
