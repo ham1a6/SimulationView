@@ -196,6 +196,30 @@ let (distance_m, bearing_deg) = distance_and_bearing(35.0, 139.0, 35.5, 139.0);
 半径6371kmの球面近似で、楕円体上の厳密な距離ではありません。有限値・緯度-90〜90度を前提とし、
 同一点・対蹠点の方位は使用しないでください。日本語方位名や表示単位の整形はアプリ側で行います。
 
+### 複数地点を通る経路を測定する
+
+`measure_route`で経路計画や航跡分析に使う区間距離・累積距離・初期方位をまとめて取得できます。
+地形データやLeptosのcontextは不要です。
+
+```rust
+use sim3dview::terrain::measurement::measure_route;
+
+let route = measure_route(&[(35.0, 139.0), (35.5, 139.0), (35.5, 139.5)])
+    .expect("有効な緯度経度");
+let total_m = route.total_distance_m;
+for segment in &route.segments {
+    let length_m = segment.distance_m;
+    let distance_from_start_m = segment.cumulative_distance_m;
+    let bearing_deg = segment.initial_bearing_deg; // Option<f64>
+}
+```
+
+緯度[-90,90]・経度[-180,180]の有限値を受け付け、不正な点があると`InvalidRoutePoint.index`
+(0始まり)を返します。空または1点の経路は総距離0で、区間はありません。
+同一点・対蹠点付近(角距離1e-7 rad以内)の方位は`None`です。日付変更線にも対応します。
+閉路にする場合は始点を末尾にも指定してください。距離は半径6371kmの球面近似で、
+高度差や地形に沿った距離は含みません。
+
 ## 原点をサーバーと同期する
 
 `OriginState`(`terrain::origin::OriginState`)はこのライブラリが通信プロトコルを知らずに
