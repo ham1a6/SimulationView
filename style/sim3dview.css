@@ -2,7 +2,7 @@
    floating_panel.rs / origin_dialog.rs / coverage_altitude_dialog.rs)が使うスタイル。
 
    テーマ契約: 以下のCSSカスタムプロパティを呼び出し側(アプリ)の:rootで定義すること
-   (未定義でも動作はするが、配色が付かない)。推奨値はsim3dview/README.md参照。
+   (未定義でも動作はするが、配色が付かない)。推奨値はREADME.md参照。
      --bg-panel  パネル背景色
      --fg        通常の文字色
      --border    枠線色

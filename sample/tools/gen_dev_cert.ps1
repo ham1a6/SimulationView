@@ -1,8 +1,8 @@
-# 開発用の自己署名証明書(HTTPS/WSS用)を certs/ に生成する。
+# 開発用の自己署名証明書(HTTPS/WSS用)を sample/certs/ に生成する。
 # trunk serve(8081)とsim_server(9001)の両方が同じ証明書を使う。
 #
-#   pwsh tools/gen_dev_cert.ps1                 # localhost/127.0.0.1/このPCのホスト名・LAN IPを含める
-#   pwsh tools/gen_dev_cert.ps1 -ExtraHost foo  # 追加のDNS名/IPを含める(複数可)
+#   pwsh sample/tools/gen_dev_cert.ps1                 # localhost/127.0.0.1/このPCのホスト名・LAN IPを含める
+#   pwsh sample/tools/gen_dev_cert.ps1 -ExtraHost foo  # 追加のDNS名/IPを含める(複数可)
 #
 # 出力(certs/はgit管理外): certs/dev-cert.pem(証明書) と certs/dev-key.pem(秘密鍵)。
 # 接続元のIPが変わったら(DHCP等)再実行すること。ブラウザ側の信頼設定はREADME.mdの「HTTPS」節。

@@ -1,6 +1,6 @@
 # Sim3dView 作業ガイド
 
-C++シミュレータ、Rust/Leptos(WASM) Web UI、ALOS DEMベースの3D地形ビューアからなる。
+Rust/Leptos(WASM)向けの3D地形ライブラリと地形前処理CLIを管理する。
 このファイルはCodex向けの短い作業索引とし、仕様を重複して書かない。
 
 ## 最初に読むもの
@@ -8,14 +8,14 @@ C++シミュレータ、Rust/Leptos(WASM) Web UI、ALOS DEMベースの3D地形�
 1. [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) 0節で全体像と確定方針を確認する。
 2. 変更対象の設計を同書1〜7節、実装仕様を9節で確認する。
 3. 再実装や大規模変更では同書10節の依存順と受け入れ基準に従う。
-4. 過去の判断理由や失敗例が必要な場合だけ[docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md)とgit履歴を読む。
+4. 過去の判断理由や失敗例が必要な場合だけ[sample/docs/DEVELOPMENT_HISTORY.md](sample/docs/DEVELOPMENT_HISTORY.md)とgit履歴を読む。
 
 | 用途 | 参照先 |
 |---|---|
 | 設計の唯一の正 | [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) |
-| セットアップ・ビルド・起動・環境問題 | [README.md](README.md) |
-| `sim3dview`の公開API・組み込み方・CSS契約 | [sim3dview/README.md](sim3dview/README.md) |
-| 開発経緯・過去のハマりどころ | [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) |
+| サンプルの作業手順 | [sample/AGENTS.md](sample/AGENTS.md) |
+| `sim3dview`の公開API・組み込み方・CSS契約 | [README.md](README.md) |
+| 開発経緯・過去のハマりどころ | [sample/docs/DEVELOPMENT_HISTORY.md](sample/docs/DEVELOPMENT_HISTORY.md) |
 | ライセンス・著作権表示 | [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md) |
 | C++経験者向け技術解説 | [docs/tech_note.html](docs/tech_note.html) |
 
@@ -32,13 +32,13 @@ C++シミュレータ、Rust/Leptos(WASM) Web UI、ALOS DEMベースの3D地形�
 ## 責務とディレクトリ
 
 ```text
-sim3dview/                 地形、カメラ、描画、覆域、作図、航跡、汎用UIのRust/WASMライブラリ
-sample/sim_server/         C++シミュレーションとWebSocket/HTTP参照サーバー
-sample/sim_frontend/       通信、VAB、状況パネル、メニューなどアプリ固有部分の利用例
-tools/geotiff_preprocess/  C++/GDAL製の原点非依存な地形LOD前処理CLI
-docs/                      統合設計書、開発履歴、技術解説スナップショット
-scripts/                   ライセンス表記・サンプルGLB等の生成スクリプト
-map_data/                  ALOS DSM入力。git管理外。依頼がない限り変更しない
+src/                      地形、カメラ、描画、覆域、作図、航跡、汎用UI
+style/                    ライブラリCSS
+tests/fixtures/           ライブラリ単体の検証データ
+tools/geotiff_preprocess/  原点非依存な地形LOD前処理CLI
+docs/                     ライブラリ設計と技術解説記事
+scripts/                  ライブラリのライセンス生成
+sample/                   独立した利用例。固有の手順はsample/AGENTS.md
 ```
 
 `sim3dview`は通信プロトコルとサーバーURLを知らない。URL構築、WebSocket、プロトコル、原点状態の橋渡しはアプリ側の責務である。詳細は設計書0.4節・6節を参照する。
@@ -46,7 +46,7 @@ map_data/                  ALOS DSM入力。git管理外。依頼がない限り
 ## 変更時に守る設計契約
 
 - 地形前処理は原点非依存。ENU変換はRust/WASMが実行時に行う。
-- 原点の正はC++の`OriginState`で、変更はシミュレーション停止中だけ。カメラの注視点とは別物である。
+- 原点は呼び出し側から受け取る。カメラの注視点とは別物である。
 - 地形は1度タイルLOD、レベル1以上は6×6チャンク。標高サンプリングは表示中チャンクのレベルを使う。
 - 遠方の地表には地球の丸みを含む`ground_at_enu`を使う。`EnuTransform::inverse`は原点近傍用である。
 - 海・欠損はNaN/`NO_DATA`で表し、その三角形は描画しない。水域は`fs_water`がWGS84楕円体との交点を画素ごとに求める。
@@ -62,14 +62,10 @@ map_data/                  ALOS DSM入力。git管理外。依頼がない限り
 
 ```powershell
 cargo check -p sim3dview --target wasm32-unknown-unknown
-cargo check -p sim_frontend --target wasm32-unknown-unknown
 cargo test -p sim3dview
 ```
 
 - `cargo.exe`が信頼されていないマウントポイントのエラーになる場合は、`~/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/cargo.exe`を直接使う。
-- `sim3dview`だけを編集した場合、Trunkはpath依存先を監視しないため`trunk serve`を再起動する。
-- Trunk実行前は`$env:NO_COLOR = "true"`を設定する。開発サーバーは`sample/sim_frontend`で起動する。
-- UI確認はBrowserペインを表示した状態で`http://localhost:8081`を使う。1枚のスクリーンショットだけで判断せず、同じ操作を複数回確認する。
 - セキュリティやファイアウォール設定は変更せず、必要な手順をユーザーへ提示する。
 
 ## 実装上の注意
@@ -77,11 +73,9 @@ cargo test -p sim3dview
 - Leptosの`view!`属性へ演算子を含む式を直接書かず、先に`let`へ束縛する。
 - `Rc`を含む状態はローカルシグナルまたは`StoredValue::new_local`で扱う。公開コールバックは`UnsyncCallback`を使い、`unsafe impl Send/Sync`で回避しない。
 - `Effect`内の`RefCell`借用はシグナル更新前に解放し、同期再実行による`BorrowMutError`を避ける。
-- 同じ詳細度のCSSクラスは後勝ちである。VABの`.vab-button-active`は`.vab-button-dummy`より後ろに置く。
 - シェーダー全文を文書へ複製しない。WGSL変更時はnaga検証とRust/WGSL間のレイアウトテストを行う。
 
 ## 既知の技術的負債
 
 - 地形パイプラインは`cull_mode: None`。有効化前に`mesh.rs::grid_indices`のスカート4辺の巻き順を確認し、効果を計測する。
-- VAB中段・下段はフロントだけのダミーボタンで、C++はカテゴリを知らない。本対応にはプロトコルを含む設計変更が必要である。
 - 極端に浅いカメラ角度では弱い縞模様が残る。完全解消にはLODまたはスーパーサンプリング倍率の再設計が必要である。

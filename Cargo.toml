@@ -1,6 +1,66 @@
+[package]
+name = "sim3dview"
+version = "0.1.0"
+edition = "2021"
+description = "ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し計算・レーダー観測点管理を提供するLeptos(WASM)向けライブラリ。詳細はREADME.md参照。"
+
+include = ["/src/**", "/style/**", "/tests/**", "/docs/DETAILED_DESIGN.md", "/docs/README.md", "/README.md", "/API_REFERENCE.md", "/IMPLEMENTATION_GUIDELINES.md", "/THIRD_PARTY_NOTICE.md", "/Cargo.toml", "/Cargo.lock"]
+
 [workspace]
 resolver = "2"
-members = ["sim3dview", "sample/sim_frontend"]
+exclude = ["sample"]
 
-[profile.release]
-opt-level = "s"
+[dependencies]
+leptos = { version = "0.8", features = ["csr"] }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+gloo-net = "0.7"
+gloo-timers = { version = "0.4", features = ["futures"] }
+log = "0.4"
+wgpu = "30"
+bytemuck = { version = "1", features = ["derive"] }
+glam = "0.33"
+# WGS84楕円体の測地線(カーニー法)。多角形面積用の追加機能は不要。
+geographiclib-rs = { version = "0.2.7", default-features = false }
+earcutr = "0.5.0"
+# 3Dモデル(glTF/GLB)の読み込み。画像のデコード(`import`機能=`image`クレート)は使わない(テクスチャ非対応。`terrain::models`)。
+gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
+
+[dependencies.web-sys]
+version = "0.3"
+features = [
+    "Event",
+    "EventTarget",
+    "PointerEvent",
+    "WheelEvent",
+    "MouseEvent",
+    "HtmlCanvasElement",
+    "ResizeObserver",
+    "ResizeObserverEntry",
+    "DomRectReadOnly",
+    "DomRect",
+    "Element",
+    "Window",
+    "Document",
+    "Node",
+    "HtmlElement",
+    "CssStyleDeclaration",
+    "Storage",
+    "Navigator",
+    "KeyboardEvent",
+    # マップパネルのスクリーンショット(PNG)・画面録画(WebM)。terrain::capture・ui::terrain_view::capture。
+    "Blob",
+    "BlobEvent",
+    "HtmlAnchorElement",
+    "MediaRecorder",
+    "MediaRecorderOptions",
+    "MediaStream",
+    "Url",
+]
+
+[dev-dependencies]
+# WGSLの構文・型の検証と、uniform・頂点のレイアウトがRust側の構造体と一致することの確認(単体テスト専用)。
+naga = { version = "30", features = ["wgsl-in"] }

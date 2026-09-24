@@ -2,10 +2,10 @@
 name = "sim_frontend"
 version = "0.1.0"
 edition = "2021"
-description = "sim3dviewライブラリを使ったサンプルアプリ。VAB・状況パネル・メニュー・sample/sim_server向けWebSocket/msgpackプロトコルなど、アプリ固有の部分を実装する(sim3dview/README.md参照)。"
+description = "sim3dviewライブラリを使ったサンプルアプリ。VAB・状況パネル・メニュー・sample/sim_server向けWebSocket/msgpackプロトコルなど、アプリ固有の部分を実装する(README.md参照)。"
 
 [dependencies]
-sim3dview = { path = "../../sim3dview" }
+sim3dview = { path = "../.." }
 leptos = { version = "0.8", features = ["csr"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"

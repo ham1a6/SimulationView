@@ -1,0 +1,780 @@
+# サンプルアプリ設計書
+
+ライブラリの設計は[ライブラリ設計書](../../docs/DETAILED_DESIGN.md)を参照する。
+旧統合設計書の節番号を保持し、サンプル固有の仕様をここに集める。
+パスは特記しない限りリポジトリルートからの相対パス。
+
+## 0. 構成とビルド境界
+
+`sample/Cargo.toml` は `sim_frontend` の独立ワークスペース。ルートのライブラリを `path = "../.."` で参照する。
+Cargo.lock・target・Trunk設定・ElectronのNode依存と配布出力は `sample/` 内に置く。
+C++サーバー・開発証明書・モデル生成・ライセンス生成もこのディレクトリで管理する。
+ルートの `.gitmodules` はGitの仕様で必要なサブモジュール登録のみ保持する。
+
+
+### 1.1 ファイル構成(1タイルあたり)
+
+`sample/map_data/ALPSMLC30_<TILEID>_*` の形式で、1タイルあたり最大6ファイル。
+
+| サフィックス | 内容 | 本設計での用途 |
+|---|---|---|
+| `_DSM.tif` | 数値表層モデル(標高、GeoTIFF, 3600×3600px) | **使用**(入力ラスタ) |
+| `_MSK.tif` | 品質マスク(海・雲・代替データ補完等のフラグ) | **使用**(画素値3=海の判定のみ。1.4節) |
+| `_STK.tif` | パンクロマチック(白黒)画像 | **不使用**(確定事項。標高グラデーション着色のみ) |
+| `_HDR.txt` | タイルのヘッダ情報(四隅座標・解像度・楕円体等) | 前処理ツールのテスト・検証用の参考情報 |
+| `_LST.txt` | 元シーン(観測パス)のリスト | 使用しない |
+| `_QAI.txt` | 品質指標(SRTM/ASTERとの差分統計等) | 使用しない(1.4節の調査でMASK統計値との突き合わせにだけ使った) |
+
+### 1.2 タイル分布と規模
+
+- タイルID命名: `N<緯度2桁>E<経度3桁>` = タイル**南西角**の整数度。1タイル = 経緯度1°×1°、3600×3600px(1秒角)
+- 現在の範囲は`metadata.json`の`geodetic_bounds`(北緯20〜50°・東経120〜150°)。30×30=900セルのうち、陸のある390枚が存在する
+  (海だけのセルは元データに無いか、前処理が「陸なし」として出力しない。フロントでは存在しないタイルとして扱う)
+- **外接矩形はハードコードではなく、`geotiff_preprocess`が見つかったタイルIDの最小/最大から実行時に決める**(2.3節)。
+  `sample/map_data/`に別の場所のタイルを増減しても、ツールを再実行するだけで追従する(サーバーは起動時に`metadata.json`を読むので、sim_serverの再起動も必要)
+- 解像度: 1秒角(3600px/度)= 南北方向約30m/px、東西方向は緯度のcos分だけ狭い(北緯35°で約25m/px)
+
+### 1.3 標高データの実態
+
+- 標高範囲(全390タイル、単一画素の実測): **-330m 〜 3937m**(`metadata.json`の`elevation_min`/`elevation_max`)
+- 明示的なnodataセンチネル値(-9999等)は検出されなかった。海はDSM上では標高0mで格納されている(1.4節)
+- データ型は符号付き整数(16bit相当)。前処理でf32メートルに変換し、出力はint16に四捨五入する
+- 水面ノイズ由来の大きな負値が一部にあるため、標高の色の正規化では下限を`elevation_min`ではなく**0m固定**にしている(9.4節)
+
+### 3.4 原点の変更タイミングとガード
+
+原点はシミュレーション座標系の定義そのものであり、シミュレーション実行中に変更すると
+C++側・フロント側双方の状態(位置、地形メッシュ)がずれるリスクがある。
+
+- **シミュレーション開始前(停止中)のみ原点変更可能**とし、実行中はUIの原点入力をロックする
+- 原点はサーバー(C++側)が正とする状態であり、UIはサーバーから配信された値を表示・編集する
+- C++側は原点についてUIとは別の内部表現を持たない。サーバーが保持する原点state
+  (`OriginState`として配信される値)を唯一の真実とする
+
+### 3.5 原点入力のバリデーション
+
+- UIの原点入力フォームは、`metadata.json`の`geodetic_bounds`の範囲を入力可能な値の上下限として使い、
+  範囲外の値は**入力欄への入力段階でブロックする**か、送信ボタンを無効化する
+- サーバー側でも同じ範囲チェックを行う(フロントのバリデーションを回避するクライアントに対する防御的
+  チェック)。範囲外の`set_origin`が送られてきた場合は`CommandError`を返す。範囲は`Simulation`の
+  コンストラクタが起動時に`assets/terrain/metadata.json`の`geodetic_bounds`から読む(ハードコードしない。
+  読めなかった場合はチェックを無効にして警告を出す)
+
+### 3.6 原点状態の状態遷移図
+
+```mermaid
+stateDiagram-v2
+    [*] --> Stopped: 起動(origin=default_origin, running=false)
+    Stopped --> Stopped: set_origin(範囲内) → OriginState再配信
+    Stopped --> Running: resume
+    Running --> Running: set_origin(拒否) → CommandError
+    Running --> Stopped: pause
+```
+
+---
+
+## 4. 通信プロトコル詳細
+
+### 4.1 メッセージフレーミング
+
+serdeの`tag`機能をC++側で素朴に再現するのは実装コストが高いため、**先頭1バイトをメッセージタイプ
+識別子、残りをMessagePackボディとする自前フレーミング**を採用する(サーバー→クライアント方向のみ)。
+
+```
+[1 byte: msg_type] [N bytes: MessagePack body]
+```
+
+クライアント→サーバー方向(`ClientCommand`)はメッセージ型が1種類のみのため、プレフィックスバイトを
+付けず、MessagePackボディのみを送信する。
+
+msgpackへのシリアライズは、Rust側(rmp-serde)・C++側(msgpack-cxxの`MSGPACK_DEFINE`)ともに
+**構造体を配列(フィールド宣言順の位置)としてエンコードする**方式を採る(mapではない)。したがって
+両言語の構造体定義は**フィールド宣言順を完全に一致させる必要がある**(片方だけ並び替えるとデータが
+壊れる)。
+
+### 4.2 msg_type 一覧
+
+| 値 | 名前 | 方向 | 送信タイミング |
+|---|---|---|---|
+| 0x01 | SimState | Server→Client | 高頻度(約60Hz) |
+| 0x02 | 予約(旧VabConfig) | — | 使用しない・再利用しない |
+| 0x03 | OriginState | Server→Client | 状態変化時、接続直後にも1回、全クライアントへbroadcast |
+| 0x04 | StatusPanelConfig | Server→Client | 状態変化時、接続直後にも1回 |
+| 0x05 | CommandError | Server→Client | コマンド拒否時。**要求元クライアントのみ**に送信 |
+| 0x06 | AppStatus | Server→Client | 状態変化時(pause/resume)、接続直後にも1回、全クライアントへbroadcast |
+| 0x07 | TrackList | Server→Client | シミュレーション進行中は約20Hz(SimStateの3フレームに1回)、接続直後にも1回。停止中は送らない |
+| (なし) | ClientCommand | Client→Server | ユーザー操作時 |
+
+### 4.3 メッセージ型定義
+
+**SimState**(サーバー→クライアント、高頻度)
+```
+t: f64                      // シミュレーション時刻(秒)。running中のみ進む
+positions: Vec<f32>         // ダミーの単一点位置([x, y, z])。実際の可視化対象は将来拡張
+frame_id: u32               // フレーム番号。running状態に関わらず毎ステップ増加
+status_values: Vec<f64>     // StatusPanelConfig.items と同じ順序・同じ数
+```
+
+VAB設定は通信せず、フロントの`components/vab.rs`で定義する。
+
+**OriginState**(サーバー→クライアント、状態変化時+接続直後)
+```
+lat_deg: f64
+lon_deg: f64
+```
+
+**StatusPanelConfig**(サーバー→クライアント、状態変化時+接続直後)
+```
+items: Vec<StatusItem>
+  StatusItem:
+    id: String
+    label: String
+    unit: String              // 単位。なければ空文字列
+```
+
+**CommandError**(サーバー→クライアント、要求元のみ)
+```
+command_type: String          // 拒否されたClientCommand.type
+message: String                // エラー内容(人間可読)
+```
+
+**AppStatus**(サーバー→クライアント、状態変化時+接続直後。7.7節)
+```
+text: String                   // シミュレータアプリケーション自体の状態文字列
+                                // (例: "シミュレーション実行中" / "一時停止中")
+```
+
+**TrackList**(サーバー→クライアント、進行中は約20Hz+接続直後。6.12節)
+```
+t: f64                         // シミュレーション時刻(秒)
+tracks: Vec<Track>             // 全トラックの最新状態(消えたトラックは次の一覧から抜ける)
+  Track:
+    id: u32                    // 同じ実体には常に同じID(フロントの航跡・ラベルの対応づけ)
+    kind: u8                   // 0=不明 1=固定翼機 2=ヘリ 3=艦船 4=地上車両 5=ミサイル
+    affiliation: u8            // 0=不明 1=友軍 2=敵 3=中立
+    label: String              // 表示名(コールサイン等)
+    lat_deg: f64
+    lon_deg: f64
+    alt_m: f64
+    alt_ref: u8                // 0=alt_mは海抜 1=地表からの高さ(サーバーが地形の高さを持たない車両など)
+    heading_deg: f64           // 進行方向(北から時計回り)
+    speed_mps: f64             // 対地速度
+    pitch_deg: f64             // ピッチ(機首上げが正)。3Dモデル(6.13節)の向きに使う。古いサーバーが送らなければ0
+    roll_deg: f64              // ロール(右翼が下がる向きが正)。同上
+```
+
+**ClientCommand**(クライアント→サーバー)
+```
+type: String                   // "pause" / "resume" / "set_param" / "set_origin"
+reserved: String               // 旧ボタンIDの予約スロット(空文字)、配列位置を維持
+value: f64                     // set_param時のみ使用
+lat_deg: f64                   // set_origin時のみ使用
+lon_deg: f64                   // set_origin時のみ使用
+```
+
+### 4.4 送信頻度
+
+- シミュレーションループ(simスレッド)は約60Hz(16ms間隔)で駆動する
+- `OriginState`/`StatusPanelConfig`は変化があったときのみ送信(毎フレーム送らない)
+- `TrackList`は全トラックの最新状態をまとめて、シミュレーション進行中だけ約20Hzで送る(3フレームに1回)。位置は
+  シミュレーション時刻の関数で、停止中は変わらないので送らない(新規接続には接続直後に1回)。フロントの描画は全体の再描画になるので、
+  60Hzで送らずに表示に十分な頻度に抑えている
+
+### 4.5 WebSocket再接続処理(フロント側)
+
+- 受信フレームの`[msg_type][MessagePack body]`の検証と復号は、DOM・Leptosに依存しない
+  `protocol::decode_frame()`が`ServerMessage`へ変換する。`ws.rs`は復号済みメッセージを対応するシグナルへ反映するだけとする
+- 再接続間隔は**指数バックオフ**(初回1秒、以後2倍ずつ、上限30秒でキャップ)
+- バックオフ間隔に**ジッター(±300ms)**を加える(サーバー再起動時のサンダリングハード回避)
+- **ブラウザタブが非表示の間は再接続の試行を一時停止**する(Page Visibility API)。タブがアクティブに
+  戻ったタイミングで即座に再接続を再開する(バックオフの残り時間を待たない)
+- リトライ回数の上限は設けない(タブが表示されている間は無制限にリトライ)
+- 再接続成功後は、サーバーから`OriginState`/`StatusPanelConfig`が接続直後の仕様により
+  再送されるため、フロント側の表示状態は自然に復旧する
+
+### 4.6 プロトコルのクラス図
+
+```mermaid
+classDiagram
+    class MsgType {
+        <<enumeration>>
+        SimState = 0x01
+        OriginState = 0x03
+        StatusPanelConfig = 0x04
+        CommandError = 0x05
+        AppStatus = 0x06
+        TrackList = 0x07
+    }
+    class SimState {
+        +f64 t
+        +Vec~f32~ positions
+        +u32 frame_id
+        +Vec~f64~ status_values
+    }
+    class OriginState {
+        +f64 lat_deg
+        +f64 lon_deg
+    }
+    class StatusPanelConfig {
+        +Vec~StatusItem~ items
+    }
+    class StatusItem {
+        +String id
+        +String label
+        +String unit
+    }
+    class CommandError {
+        +String command_type
+        +String message
+    }
+    class ClientCommand {
+        +String type
+        +String reserved
+        +f64 value
+        +f64 lat_deg
+        +f64 lon_deg
+    }
+    class AppStatus {
+        +String text
+    }
+    class TrackList {
+        +f64 t
+        +Vec~Track~ tracks
+    }
+    class Track {
+        +u32 id
+        +u8 kind
+        +u8 affiliation
+        +String label
+        +f64 lat_deg
+        +f64 lon_deg
+        +f64 alt_m
+        +u8 alt_ref
+        +f64 heading_deg
+        +f64 speed_mps
+    }
+    StatusPanelConfig "1" *-- "many" StatusItem
+    TrackList "1" *-- "many" Track
+```
+
+### 4.7 シーケンス図: 接続確立
+
+```mermaid
+sequenceDiagram
+    participant C as Client(Rust/WASM)
+    participant WS as WsServer(uWSスレッド)
+    participant Sim as Simulation(simスレッド)
+
+    C->>WS: WebSocket接続 (ws://.../sim)
+    WS->>WS: client_idを採番、clientsマップへ登録
+    WS->>Sim: snapshot_origin()
+    WS-->>C: OriginState (0x03)
+    WS->>Sim: status_panel_config()
+    WS-->>C: StatusPanelConfig (0x04)
+    WS->>Sim: snapshot_app_status()
+    WS-->>C: AppStatus (0x06)
+    WS->>Sim: snapshot_tracks()
+    WS-->>C: TrackList (0x07)
+    loop 約60Hz
+        Sim->>Sim: step(dt)
+        Sim-->>WS: SimulationTickResult
+        WS-->>C: SimState (0x01, Loop::defer経由)
+    end
+```
+
+### 4.8 シーケンス図: set_origin(成功/拒否)
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant WS as WsServer(uWSスレッド)
+    participant Sim as Simulation(simスレッド)
+    participant All as 他の全クライアント
+
+    C->>WS: ClientCommand{type:"set_origin", lat, lon}
+    WS->>Sim: enqueue_command(client_id, cmd)
+    Note over Sim: 次のstep()呼び出し時にキューを消費
+
+    alt シミュレーション実行中(running=true)
+        Sim->>Sim: apply_set_origin() → 拒否
+        Sim-->>WS: OutgoingCommandError
+        WS-->>C: CommandError (0x05, 要求元のみ)
+    else geodetic_bounds範囲外
+        Sim->>Sim: apply_set_origin() → 拒否
+        Sim-->>WS: OutgoingCommandError
+        WS-->>C: CommandError (0x05, 要求元のみ)
+    else 停止中 かつ 範囲内
+        Sim->>Sim: origin_を更新
+        Sim-->>WS: origin_changed = true
+        WS-->>C: OriginState (0x03, broadcast。要求元も含む全クライアントへ)
+        WS-->>All: OriginState (0x03, broadcast)
+    end
+```
+
+### 4.9 シーケンス図: VABボタン押下
+
+```mermaid
+sequenceDiagram
+    participant U as ユーザー
+    participant V as Vabコンポーネント(Rust)
+    participant WS as WsServer
+    participant Sim as Simulation
+
+    U->>V: クリック(有効なボタン)
+    V->>V: 表示定義から操作を選ぶ(ローカル操作はここで完結)
+    V->>V: 開始/一時停止ならClientCommand::resume()/pause()
+    V->>WS: WebSocket送信(msgpack, プレフィックスなし)
+    WS->>Sim: enqueue_command(client_id, cmd)
+    Sim->>Sim: step()内でコマンドを検証・実行
+    Sim-->>WS: 状態更新またはCommandError
+    WS-->>V: 応答・状態通知
+```
+
+---
+
+## 5. C++側詳細設計
+
+### 5.1 スレッドモデル
+
+- **uWSイベントループスレッド**: `WsServer::run()`を呼んだスレッド。HTTP/WebSocketの送受信を担当。
+  `uWS::App`はシングルスレッド前提のため、このスレッド以外から`ws->send()`を直接呼んではならない
+- **simスレッド**: `WsServer::run()`内で`std::thread`として起動。`Simulation::step()`を約60Hz
+  (16ms間隔)で呼び続ける
+- simスレッドからuWSスレッドへ処理を戻す(実際の送信を行わせる)には、必ず`uWS::Loop::defer()`を
+  経由する
+
+```mermaid
+flowchart LR
+    subgraph uWSスレッド
+        A[".messageハンドラ"] -->|enqueue_command| B[(コマンドキュー\nSimulation内)]
+        F["Loop::defer()で受け取ったコールバック"] --> G["ws->send()"]
+    end
+    subgraph simスレッド
+        C["Simulation::step(dt)"] -->|キューを消費| B
+        C --> D["SimulationTickResult"]
+        D -->|Loop::defer経由| F
+    end
+```
+
+### 5.2 コマンド処理フロー
+
+- `.message`ハンドラで受信したコマンドは**直接シミュレーション状態を書き換えず**、
+  `Simulation::enqueue_command()`でスレッドセーフなキュー(`std::deque` + `std::mutex`)に積む
+- simスレッド側で`step()`の**前半**でキューを消費してから、物理状態(`t_`等)を更新する
+- `step()`の戻り値`SimulationTickResult`に、そのステップで発生した`CommandError`と
+  `origin_changed`フラグが入っており、uWSスレッド側がこれを見て適切な送信(broadcast/単一送信)を行う
+
+### 5.3 クラス図
+
+```mermaid
+classDiagram
+    class WsServer {
+        -Impl* impl_
+        +WsServer(port: uint16_t)
+        +~WsServer()
+        +run()
+    }
+    class WsServerImpl {
+        -uint16_t port
+        -Simulation simulation
+        -unordered_map~ClientId,ServerWebSocket*~ clients
+        -mutex clients_mutex
+        -atomic~ClientId~ next_client_id
+        -thread sim_thread
+        -atomic~bool~ keep_running
+        +broadcast(frame)
+        +send_to_client(client_id, frame)
+    }
+    class Simulation {
+        -mutex state_mutex_
+        -OriginState origin_
+        -bool running_
+        -double t_
+        -uint32_t frame_id_
+        -StatusPanelConfig status_panel_config_
+        -mutex queue_mutex_
+        -deque~QueuedCommand~ command_queue_
+        +enqueue_command(client_id, cmd)
+        +step(dt) SimulationTickResult
+        +snapshot_sim_state() SimState
+        +snapshot_origin() OriginState
+        +snapshot_app_status() AppStatus
+        +snapshot_tracks() TrackList
+        +status_panel_config() StatusPanelConfig
+        -apply_queued_commands()
+        -apply_command(cmd, client_id)
+        -apply_set_origin(cmd, client_id)
+    }
+    class QueuedCommand {
+        +ClientId client_id
+        +ClientCommand cmd
+    }
+    class SimulationTickResult {
+        +vector~OutgoingCommandError~ errors
+        +bool origin_changed
+        +bool app_status_changed
+    }
+    class OutgoingCommandError {
+        +ClientId client_id
+        +CommandError error
+    }
+
+    WsServer o-- WsServerImpl
+    WsServerImpl *-- Simulation
+    Simulation ..> QueuedCommand : キューに積む
+    Simulation ..> SimulationTickResult : step()の戻り値
+    SimulationTickResult *-- OutgoingCommandError
+```
+
+### 5.4 HTTP静的配信(地形データ)
+
+`sim_server`は`/sim`(WebSocket)とは別に、以下のHTTP GETルートを持つ:
+
+| パス | Content-Type | 内容 |
+|---|---|---|
+| `GET /terrain/metadata.json` | application/json | `assets/terrain/metadata.json`をそのまま返す |
+| `GET /terrain/tile_index.json` | application/json | `assets/terrain/tile_index.json`をそのまま返す |
+| `GET /terrain/base.bin` | application/octet-stream | `assets/terrain/base.bin`(全タイルの最粗レベルの連結)をそのまま返す |
+| `GET /terrain/tiles/:level/:name` | application/octet-stream | `assets/terrain/tiles/{level}/{name}`(例: `L2/N035E138.bin`)。`level`・`name`は英数字・`_`・`.`のみ許可し、`..`を含むものは400(パストラバーサル対策)。**HTTP Range(単一範囲`bytes=a-b`)に対応**し、大きいファイル(最細レベルで1タイル約26MB)からチャンク1個分だけを206で返せる |
+
+**キャッシュ**: 4つのルートとも、応答に`ETag`(ファイルの大きさ+更新時刻)と`Cache-Control: no-cache`を付ける。ブラウザは保存した
+応答を使う前に毎回`If-None-Match`で確認し、変わっていなければ本体なしの**304**が返る(`*`・`W/`付き・カンマ区切りにも対応)。
+2回目以降の表示で数十MBを取り直さずに済み、`sample/map_data/`を作り直したときはETagが変わるので必ず新しいものになる
+(有効期限(`max-age`)は付けない。古い地形を使い続ける事故を避けるため)。
+
+フロント(trunk serveでホストされる別オリジン)からfetchされるため、全ルートとも
+`Access-Control-Allow-Origin: *`ヘッダーを付与する。想定CWD(カレントディレクトリ)は`sim_server/`
+(`assets/terrain/...`という相対パスでファイルを開くため)。
+
+Range解析、ETag照合、安全なパス要素の判定は`include/http_utils.hpp`の純粋関数へ分離し、
+`ws_server.cpp`のHTTP処理から利用する。シミュレーション本体はCMakeの`simulation_core`静的ライブラリとし、
+サーバー実行ファイルとCTestの双方から同じ実装をリンクする。
+
+CLIの既定は従来どおり`0.0.0.0:9001`、地形は`assets/terrain`。
+`--host`で待受アドレス、`--terrain-dir`で前処理済み地形のルートを指定できる。
+指定した地形ルートはHTTP配信と`Simulation`の原点範囲検証の両方に使う。
+位置引数のポートは0〜65535を受け付け、0ではOSが空きポートを割り当てる。
+待受成功時に標準出力へ`SIM3DVIEW_READY <実ポート>`を改行・flush付きで出し、失敗時は終了コード1で終了する。
+Electronはこの通知を使うため、空きポートの事前探索や既存サーバーへの誤接続は行わない。
+
+### 6.1 コンポーネント構成図
+
+```mermaid
+graph TD
+    App["App (app.rs)<br/>3カラムCSS Gridレイアウト・リサイザー"]
+    App --> SimulationStatusPanel["SimulationStatusPanel<br/>(operation_panel.rs) 接続状態・原点・フレーム・航跡数(表示専用)"]
+    App --> VabPanel["VabPanel<br/>(vab.rs) 先頭行=カテゴリタブ、中段先頭4枠=スクショ/録画/開始/一時停止、残り+下段=フロント側ダミー"]
+    App --> MainPanel["MainPanel<br/>(main_panel.rs) 地形描画canvas(3D/2D, TerrainView)"]
+    App --> TopStatusPanel["TopStatusPanel<br/>TabbedPanel: [各種情報]=StatusPanel / [航跡情報]=TrackDetail"]
+    App --> BottomStatusPanel["BottomStatusPanel<br/>TabbedPanel: [断面図]=CrossSectionView / [見通し範囲]=LosView"]
+    App --> DrawingWindow["DrawingWindow<br/>(drawing_window.rs) 非モーダルFloatingPanel+DrawingEditor(7.7節)"]
+    App --> ContextMenu["ContextMenu<br/>右クリックメニュー本体(項目はmap_menu.rsが決める。7.7節)"]
+
+    App -.provide_context.-> WsSignals["WsSignals<br/>(接続状態・受信データのシグナル群)"]
+    App -.provide_context.-> TerrainStore["TerrainStore<br/>(地形データを全パネルで共有)"]
+    App -.provide_context.-> RadarMarkersState["RadarMarkersState<br/>(観測点一覧・選択状態、全パネル共有)"]
+    App -.provide_context.-> DrawToolState["DrawingState / DrawToolState<br/>(作図の一覧・図形の対話作成。6.11節)"]
+    App -.provide_context.-> TracksState["TracksState<br/>(航跡の一覧・選択・表示設定。6.12節)"]
+    App -.provide_context.-> MenuStates["ContextMenuState / MapMenuState<br/>(右クリックメニューの状態と、地図の項目を作る関数)"]
+    App -.propとして渡す.-> WsConnection["WsConnection<br/>(Rc<RefCell<...>>、Send/Sync境界回避のためcontext不使用)"]
+
+    MainPanel --> Loader["terrain::fetch / terrain::loader<br/>metadata.json・base.bin・タイル取得"]
+    MainPanel --> Mesh["terrain::mesh<br/>ENU変換・頂点/インデックス生成"]
+    MainPanel --> Renderer["terrain::renderer::TerrainRenderer<br/>wgpu Device/Queue/Pipeline(地形・水域)+draw系パイプライン(観測点ピン/2D覆域/作図/航跡)"]
+    MainPanel --> Camera["terrain::camera::OrbitCamera<br/>view_proj行列・screen_to_ray"]
+    MainPanel --> Pick["terrain::pick::pick_lat_lon<br/>クリック→レイキャストで緯度経度取得(右クリックメニュー・作図・原点指定)"]
+    MainPanel --> Markers["terrain::markers::build_marker_geometry<br/>観測点・覆域の3D頂点生成"]
+    BottomStatusPanel --> Los["terrain::los::compute_los<br/>全方位角の見通し限界距離"]
+    TerrainStore -.共有データ.-> MainPanel
+    TerrainStore -.共有データ.-> BottomStatusPanel
+    RadarMarkersState -.共有データ.-> MainPanel
+    RadarMarkersState -.共有データ.-> BottomStatusPanel
+```
+
+### 6.2 WebSocket接続管理のクラス図(サンプルアプリ側)
+
+```mermaid
+classDiagram
+    class WsSignals {
+        +RwSignal~ConnectionStatus~ status
+        +RwSignal~Option~OriginState~~ origin
+        +RwSignal~Option~StatusPanelConfig~~ status_panel_config
+        +RwSignal~Option~SimState~~ last_sim_state
+        +RwSignal~Option~CommandError~~ last_command_error
+        +RwSignal~Option~AppStatus~~ app_status
+        +RwSignal~Option~TrackList~~ track_list
+    }
+    class WsConnection {
+        -WsSignals signals
+        -Rc~RefCell~Inner~~ inner
+        +connect_new(url, signals) WsConnection
+        +send_command(cmd)
+        -open_socket()
+        -handle_message(event)
+        -schedule_reconnect()
+        -setup_visibility_listener()
+    }
+    class Inner {
+        +String url
+        +Option~WebSocket~ socket
+        +u32 reconnect_attempt
+        +bool tab_visible
+        +Option~Timeout~ reconnect_timeout
+    }
+    class ConnectionStatus {
+        <<enumeration>>
+        Connecting
+        Connected
+        Reconnecting(attempt: u32)
+        PausedHidden
+    }
+
+    WsConnection o-- WsSignals
+    WsConnection o-- Inner
+    WsSignals --> ConnectionStatus
+```
+
+`WsConnection`は`Rc<RefCell<Inner>>`を内部に持ちSend/Syncではないため、Leptos 0.8の`provide_context`(Send+Sync境界を要求する)には乗せられない。
+そのため`WsSignals`はcontext経由、`WsConnection`は`WsHandle`(`StoredValue::new_local`で包んだ`Copy`のハンドル。`Send`+`Sync`を満たす)に包み、
+コンポーネントのpropとして明示的に渡す設計とした(以前は`unsafe impl Send/Sync`を付与していたが、ハンドル化して`unsafe`を無くした)。
+
+### 6.3 再接続状態遷移図
+
+```mermaid
+stateDiagram-v2
+    [*] --> Connecting
+    Connecting --> Connected: onopen
+    Connecting --> Reconnecting: onclose/onerror (タブ表示中)
+    Connected --> Reconnecting: onclose/onerror (タブ表示中)
+    Connected --> PausedHidden: タブが非表示になる
+    Reconnecting --> Connected: 再接続成功(onopen)
+    Reconnecting --> Reconnecting: 再接続失敗(指数バックオフ+ジッターで再試行)
+    Reconnecting --> PausedHidden: タブが非表示になる(保留中のタイマーを破棄)
+    PausedHidden --> Reconnecting: タブが表示に戻る(即座に再接続を試行)
+```
+
+### 7.1 レイアウト
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ ファイル  設定  表示  ヘルプ                    ← メニューバー    │
+├───────────────────────┬───────────────────┬───────────────────┤
+│ シミュレーション          │                   │ トップステータスパネル │
+│ ステータスパネル(上)      │                   │  [各種情報][航跡情報]  │
+├───────────────────────┤     メインパネル     ├───────────────────┤
+│ VABパネル(下)            │    (3D地形)        │ ボトムステータスパネル │
+│                         │                   │ [断面図][見通し範囲]  │
+└───────────────────────┴───────────────────┴───────────────────┘
+```
+
+画面最上部にメニューバー(`components/menu_bar.rs`)を固定高さで配置し、その下に
+既存の3カラムレイアウト(`.app-shell`)を残り高さいっぱいで敷く(`.app-root`が
+`display:flex; flex-direction:column`で両者を縦に並べる)。
+
+パネル名は全て位置ベースの汎用名で統一している(シミュレーションステータスパネル/VABパネル/
+メインパネル/トップステータスパネル/ボトムステータスパネル)。表示内容そのものを指す旧称
+(「操作パネル」「VAB」「地図」「各種情報パネル」「側面図パネル」)は、トップ/ボトムステータス
+パネルではタブラベルとして残るのみで、パネル自体の名前としては使わない。
+
+**画面上にはパネル名(見出し・ラベル)を表示しない**(後から「表示名を消してほしい」との要望を受けて
+全て削除した)。上記の名前は設計書・コード上の呼び名としてだけ残る。`TabbedPanel`の`title`は
+省略可能(省略/空文字なら見出しを出さずタブバーだけ)で、サンプルは指定しない。
+
+- 外側のCSS Gridは左固定パネルと可変区画の2列。可変区画は`SplitPane`でメインパネル・リサイザー・右パネルに分割する
+- 左パネルは`display:grid; grid-template-rows: 1fr auto;`で上下2分割
+  (シミュレーションステータスパネル/VABパネル)。VABパネル側は`auto`で内容の高さに
+  ぴったり合わせ、余った分はシミュレーションステータスパネル側(`1fr`)が吸収する
+  (固定`1fr 1fr`だと、VABパネルの実寸と半分の高さがずれた際に一方に余白/スクロールが
+  生じるため)
+- 右パネルは`grid-template-rows: 1fr 1fr;`で上下2分割(トップ/ボトムステータスパネル、
+  こちらは両方とも内容量の変動が小さいため固定分割のままでよい)。両パネルとも
+  `TabbedPanel`(7.6節)で実装しており、現状は1タブのみだが後から同じ枠に別タブを追加できる
+- 左パネル幅は`--panel-width`(CSS変数、既定320px)で固定
+- 地図・右パネルの初期比率と最小幅はsampleが指定する。`SplitPane`が実測幅を基にドラッグ量を比率へ変換し、両側の最小幅を維持する(9.14節)
+
+### 7.2 レスポンシブ方式
+
+- 「表示」メニューの「左ステータスパネル」「右ステータスパネル」で左右の列を個別に表示・非表示へ切り替える。初期状態は両方表示し、表示中はメニューに✓を付ける。設定はページ内だけで保持し、再読み込みで初期状態へ戻る。
+- 左の対象はシミュレーションステータスパネルとVAB、右の対象はトップ・ボトムステータスパネル。非表示の列と右側の仕切りの幅は地図へ割り当て、両側非表示なら地図だけにする。
+- パネルは非表示中もマウントを維持し、VABのページ・タブの選択・分割比率を再表示時に保持する。地図の再生成は行わず、既存のResizeObserverで描画サイズを追従させる。
+
+- 3カラムの横並びレイアウトは崩さない(縦積みへの再レイアウトは行わない)
+- 画面幅が狭くなった場合は、`minmax()`の`fr`部分により中央・右パネルの幅が比例的に縮小する
+- `minmax()`の下限を下回る場合は、外側コンテナ(`.app-shell`)に`overflow-x: auto`を設定してあるため
+  横スクロールで対応する
+- 各パネル内(`.panel-section`)は`overflow-y: auto`で縦スクロールに対応する
+
+### 7.4 VAB仕様
+
+VABの配置・ラベル・有効/無効・選択表示・クリック時の処理は、すべて
+`sample/sim_frontend/src/components/vab.rs`が決定する。サーバーはVAB設定やボタンID、
+カテゴリ、ページを持たず、業務コマンドを検証・実行して状態通知または拒否応答を返す。
+未対応コマンドは要求元に`CommandError`を返す。状況パネルの設定配信は7.5節のまま。
+
+- 先頭行は`CATEGORIES`に定義したB1〜B4の4カテゴリ。空ラベルはDOMを生成せず、
+  `grid-row`/`grid-column`で位置を維持する。未接続でも表示・選択できる。
+- 中段は4行×4列を1ページとし、`mid_pages: Signal<[usize; 4]>`でB1〜B4それぞれのページ数を指定する。
+  既定値とサンプル設定は`[1, 2, 2, 2]`(B1は単一ページ、B2〜B4は2ページ)。0は1扱い。
+  ページ送り「◀ 現在ページ/総ページ数 ▶」は常に表示する。1ページなら「◀ 1/1 ▶」で左右とも無効、
+  複数ページなら先頭で左、末尾で右を無効にする。
+  全体のインデックスは`行 * (ページ数 * 4) + ページ * 4 + 列`。
+- 下段は4個固定。中段のダミーラベルは`{カテゴリ}-{n}`、下段は`{カテゴリ}A{n}`。
+  カテゴリ・ページ・ダミーボタンの操作はローカル状態だけを更新し、通信しない。
+- 中段の絶対インデックス0/1はスクリーンショット・録画、2/3は開始・一時停止。
+  どのカテゴリでも1ページ目の先頭行に配置する。キャプチャは`CaptureState`へ要求し、
+  開始・一時停止だけが`resume`/`pause`コマンドを送る。成功時の状態は既存の`AppStatus`等で受け取る。
+  「開始」はシングルクリックで開始・再開、ダブルクリックで一時停止する。
+  ダブルクリック時は通常のクリックによる`resume`が先に送られ、最後の`dblclick`で`pause`を送る。
+  クリックの判別待ちは行わない。「一時停止」は従来どおりシングルクリックで`pause`を送る。
+- 先頭行は`selected_category`、ダミーの中段・下段は`selected_mid`/`selected_bottom`で
+  選択色を決める。カテゴリ押下時はページを0、ダミー選択を`None`へ戻す。
+  録画表示は`CaptureState.is_recording`に従う。
+- ボタンは列幅に従う正方形とし、グリッド列は`minmax(0, 1fr)`、ラベルは絶対配置で寸法計算から除外する。
+  `VabLabel`が枠と文字を`ResizeObserver`で監視し、`min(1, 枠幅/文字幅, 枠高/文字高)`で等比縮小する(文字寸法は整数丸めによる欠けを防ぐ1pxの余裕込み)。
+  改行は保持し、自動折返しは行わない。長い文字列でもボタンや隣接要素の位置は変わらず、全文はtitleでも確認できる。
+  初回計測までは文字を隠し、破棄時に監視を解除する。
+- `.vab-button-active`は同じ詳細度の`.vab-button-dummy`よりCSSで後ろに定義する。
+
+旧`VabConfig`と`vab_press`は廃止した。0x02は予約番号として再利用しない。
+`ClientCommand`は既存コマンドの配列位置を維持するため第2要素を空文字の`reserved`として残す。
+フロントとサーバーは合わせて更新する。新しい機能もフロントの表示定義から業務コマンドへ
+対応付け、サーバーに画面の配置やボタンIDを持ち込まない。
+
+### 7.5 状況パネル仕様
+
+- 表示項目(ラベル・単位・並び順)は`StatusPanelConfig`によりC++側が動的に決定する
+- フロント側は表示項目をハードコードせず、`items`の定義通りに`SimState.status_values`を
+  並べて表示する
+- v1では数値項目のみを対象とする
+
+### 7.7 メニューバー・フローティングパネル(原点設定/覆域高度設定)・右クリックメニュー
+
+画面最上部のメニューバー(`components/menu_bar.rs`)は「ファイル」「設定」「表示」
+「ヘルプ」の4項目。「表示」配下には、地形の陰影のON/OFFを切り替える「陰影表示」(ONのとき項目の頭に✓、
+6.8節)、カメラの中心点を原点へ戻す「中心点を原点に戻す」、航跡表示(6.12節)の「航跡ラベル」「航跡(軌跡)」「高度線」の
+ON/OFF(`TracksState`の各`show_*`。ONのとき✓)、作図(6.11節)のデモ図形を出し入れする「作図デモ」(`components/drawing_demo.rs`。
+消すときは自分が追加した図形のIDだけを消すので、ユーザーが作った図形は残る)がある。図形を自分で作る操作は、「作図...」(移動できる非モーダルのウインドウ。6.11節「図形の対話作成」)。
+「設定」配下に2つのフローティングパネルを開く項目がある:
+
+- 「原点設定...」: 原点入力フォーム(緯度・経度・`設定`ボタン、DETAILED_DESIGN.md
+  3.5節のバリデーション込み)を`ui/origin_dialog.rs`(ライブラリ)として画面中央に表示する。
+  フォーム自体の中身は実装当初シミュレーションステータスパネルに直接埋め込まれて
+  いたものをそのまま移設したもので、ロジックに変更はない。サーバーへ`set_origin`
+  コマンドを送るため`WsConnection`を必要とする
+- 「覆域高度設定...」: メインパネルの2D表示モードで使う覆域表示の対象海抜高度
+  (`terrain::markers::RadarMarkersState::coverage_altitude_m`、6.9節)を編集する
+  `ui/coverage_altitude_dialog.rs`(ライブラリ)を画面中央に表示する。当初はメインパネル
+  右上のインライン入力欄(2Dモード時のみ表示)だったが、「高度はメニューから
+  フローティングウインドウで入力できるようにして」との要望を受けてこちらへ移設した。
+  サーバーへは何も送らないフロント側だけのローカル表示設定のため`WsConnection`は
+  不要で、`origin_dialog.rs`と見た目(`.origin-dialog*`のCSSクラスを共用)は同じだが
+  実装ははるかに単純(バリデーションも送信ボタンもない、数値入力欄1つだけ)
+
+```mermaid
+stateDiagram-v2
+    [*] --> 閉: 初期状態
+    閉 --> 開: 設定→(原点設定/覆域高度設定)...をクリック
+    開 --> 閉: ✕ / 背景クリック
+```
+
+- 開閉状態はそれぞれ`ui::origin_dialog::OriginDialogState`/`ui::coverage_altitude_dialog::CoverageAltitudeDialogState`
+  (どちらも`RwSignal<bool>`の単純なラップ)を`provide_context`で共有し、
+  `MenuBar`(トリガー)・各ダイアログ本体(表示)の双方が`use_context`で参照する
+- メニューのドロップダウン・フローティングパネルとも、背景の透明な`.menu-backdrop`/
+  半透明の`.origin-dialog-backdrop`をクリックすると閉じる(パネル本体のクリックは
+  `ev.stop_propagation()`でバックドロップまで伝播させない)
+- **`FloatingPanel`の種類**(`ui/floating_panel.rs`、ライブラリの汎用部品。上の2つはどちらも既定のモーダル):
+  - `modal`(既定`true`): 半透明バックドロップ(`.floating-panel-backdrop`)が画面を覆い、中央にパネルを出す。背景クリックか✕で閉じる。
+  - `modal=false`(**ウインドウ**): バックドロップなし。画面全体を覆う透明な層(`.floating-window-layer`、`pointer-events: none`)の上に、ウインドウ
+    (`.floating-panel--window`、`pointer-events: auto`)だけがクリックを受けるので、背後(地図など)を操作したまま出しておける。✕でだけ閉じる。
+    位置は`initial_position`(画面左上からの(x, y)、既定(80, 60))で決め、パネルが大きいときは本体(`.floating-panel-body`)がスクロールする。
+  - `draggable`(既定`false`、モーダルにも使える): タイトルバー(✕以外)のポインタ操作で動かす。位置は`left`/`top`(初期位置。モーダルは中央)に対する
+    `transform: translate`の移動量で持ち、ドラッグ開始時のパネルの矩形から「右端が80px以上・左端が(画面幅-80px)以下・上端が0以上・上端が(画面高さ-40px)以下」
+    になる範囲へ移動量を制限する(タイトルバーを画面外へ出してしまい、つかみ直せなくなるのを防ぐ)。動かした位置は、閉じて開き直しても保つ(中身を作り直さないため)。
+    ウインドウのリサイズ・最小化・複数ウインドウの重なり順・位置の永続化は未実装。
+  - サンプルの「作図...」(`components/drawing_window.rs`。`DrawingWindowState`の開閉状態をメニューから立てる)は`modal=false`+`draggable`で、
+    作図エディタ(6.11節)を地図の上に浮かせる。
+- **右クリックメニュー**(`ui/context_menu.rs`、ライブラリの汎用部品。`FloatingPanel`と同じく、本体だけをライブラリが持ち、中身は使う側が決める):
+  - アプリは`ContextMenuState`を`provide_context`し、`<ContextMenu/>`を1つだけ置く。出したい所から`ContextMenuState::show(x, y, items)`(client座標)を呼ぶ。
+    項目`MenuItem`は、操作(`action`。`enabled`で無効にもできる)・サブメニュー(`submenu`。入れ子可)・見出し(`label`。押せない)・区切り線(`separator`)。
+  - 画面全体を覆う透明な背景(`.context-menu-backdrop`、z-index 30)の上にメニューを描く。メニュー外の左/右クリック(そのクリックは背後へ通さない)・Esc・項目の選択で閉じ、
+    項目は**先に閉じてから**`on_select`を呼ぶ(呼んだ先で別のメニューを出せる)。画面の右端・下端にはみ出すときは、描画後に測って収まる位置へずらす
+    (それまでは`visibility: hidden`で、指定位置から一瞬ずれて見えるのを防ぐ)。サブメニューは項目にカーソルを乗せる/押すと右へ開き、右に収まらなければ左へ開く(`.flip`)。
+    `copy_to_clipboard(text)`(`navigator.clipboard`。https/localhostのみ)も付けてある。
+  - **地図の右クリック**: `TerrainView`が`MapMenuState(UnsyncCallback<MapMenuTarget, Vec<MenuItem>>)`と`ContextMenuState`の**両方**を`use_context`できれば、
+    右クリックで`MapMenuTarget { position: 地表の(緯度, 経度)(範囲外・空ならNone), track: 右クリックした航跡のシンボル }`を求め、コールバックが返した項目でメニューを出す
+    (どちらもNoneなら出さない。シンボルを右クリックしたらそのトラックを先に選択する)。どちらかが無ければ従来どおり、その地点にレーダー観測点を追加する。
+    図形の作成中は、メニューではなく「置いた点を1つ戻す」(6.11節)を優先する。
+  - **サンプルの項目**(`components/map_menu.rs`。ライブラリの各`State`を呼ぶだけ): 航跡=見出し(名前・種別・所属)/中心点をこの航跡へ/選択を解除。地表=緯度経度の見出し/
+    ここにレーダー観測点を追加/ここを原点に設定(`OriginPickState::on_pick`。シミュレーション停止中のみサーバーが受理)/ここを中心点にする(`RecenterRequestState::request_at`。
+    カメラの中心点だけを移し、原点は変えない。高さはその地点の地表)/ここに図形を作成 ▶(図形の種類。`DrawToolState::start_at`でその地点を1点目にして開始)/緯度経度をコピー。
+  - **作図ウインドウの図形一覧**(`ui/drawing_editor.rs`): 行の右クリックで、名前を変更(選択して名前欄へフォーカス)/複製(`DrawToolState::duplicate`。東北へ大きさの半分ずらして選択)/
+    表示・非表示/削除。`ContextMenuState`が無ければ何も出ない。
+  - 未実装: 矢印キーでの項目移動・ショートカット表示・チェック付き項目。
+- 「ファイル」「表示」「ヘルプ」は現時点では項目未定のため、クリックすると
+  「(準備中)」のプレースホルダのみ表示する(実装の骨組みだけ用意し、後から
+  項目を追加できるようにしてある)
+- 実装上の注意: メニュー項目のクリックハンドラで`WsConnection`(非`Copy`)を
+  ムーブするクロージャ(`on_submit`)を、開閉のたびに何度も呼ばれる`Fn`/`FnMut`
+  クロージャの外側で1回だけ作ると「2回目以降の呼び出しでムーブ済みエラー」に
+  なる(Leptosの`{move || ...}`は再実行される前提のため`FnMut`である必要がある)。
+  `origin_dialog.rs`では、開閉のたびに実行される内側のクロージャの中で
+  `conn.clone()`してから`on_submit`を作ることで回避している(`coverage_altitude_dialog.rs`
+  は`WsConnection`を持たずRwSignalのみで完結するため、この問題自体が発生しない)
+- 覆域高度の変更をメインパネルの3D描画へ反映する経路: `coverage_altitude_dialog.rs`は
+  `coverage_altitude_m`シグナルを更新するだけで、実際のジオメトリ再構築・再描画は
+  `ui/terrain_view/mod.rs`のEffect(レーダー観測点の一覧・選択状態を購読していた
+  ものに`coverage_altitude_m`も加えた)が担う。ダイアログ側とメインパネル側が
+  別コンポーネントであっても、共有シグナル経由のリアクティブな購読だけで完結し、
+  互いを直接呼び出す必要がない
+
+### 7.8 シミュレーションステータスパネルの状態表示(AppStatus)
+
+シミュレーションステータスパネルの状態表示は、バッジなどの装飾を付けず、C++側から配信された
+`AppStatus.text`を**そのまま文字列として表示する**だけ。取得できない場合(WebSocketが
+`ConnectionStatus::Connected`でない、または接続済みでもまだ`AppStatus`を受け取っていない)は、
+詳細を出し分けず一律「接続中」とだけ表示する(`ConnectionStatus`ごとの色分け・文言の出し分けはしない)。
+
+左パネルのシミュレーションステータスパネルには、原点・フレームの下に**「航跡数」**(最新の`TrackList`のトラック数。6.12節)がある。
+「開始」「一時停止」ボタン(それぞれ`resume`/`pause`コマンドを送る)は、当初このパネルにあったが、VABパネル(7.4節の「例外」)に
+統合したため撤去した(重複していたため要望により撤去。以前は`resume`を送る部品がフロントに無く、`running_`が`false`のまま
+経過時間が0で止まっていた)。実行中は原点を変更できない(3.4節。拒否は`CommandError`)。
+
+`AppStatus.text`の実体はC++側`Simulation::running_`(pause/resumeコマンドで変化)に
+連動しており、`OriginState`の`origin_changed`と同じパターンで
+`SimulationTickResult::app_status_changed`フラグを介して、値が変化した時と
+接続直後にのみ配信する(毎フレームは送らない)。
+
+---
+
+### 7.9 Electronデスクトップ起動
+
+`sample/sim_desktop`はWindows/Linux x64用の起動アプリ。`sim3dview`の責務とブラウザ起動手順は変えない。
+Electronメインプロセスが`sim_server[.exe] 0 --host 127.0.0.1 --terrain-dir <resources/terrain>`を起動し、
+15秒以内の準備完了通知を待って、ビルド済みUIを別のループバック空きポートで配信する。
+UI出力先は`sample/sim_desktop/out/frontend`とし、Trunk開発サーバーの出力と分ける。
+
+表示URLに`?sim_port=<実ポート>`を渡す。`sample/sim_frontend/src/ws.rs`はこの値をHTTP/WS双方に使う。
+指定なし・数字以外・0・65535超過は従来の9001番へ戻す。ホスト・TLSは従来どおりページから決める。
+ポート選択はアプリ側だけの責務で、ライブラリへElectronやサーバー情報を持ち込まない。
+ブラウザ版とデスクトップ版はそれぞれ独立したシミュレーションを持ち、地形だけを共有する。
+
+配布版は `resources/terrain` の同梱地形を固定で使う。フォルダー選択・保存設定は持たない。
+開発時の既定は `sample/sim_server/assets/terrain`。`SIM3DVIEW_TERRAIN_DIR` は開発時の読み込み先と配布生成時のコピー元を指定する。
+サーバー実行ファイルは`SIM3DVIEW_SERVER_EXE`でも指定できる。
+通常終了時は自分が起動した子プロセスだけを停止し、C++の異常終了・描画プロセス停止は通知してアプリを閉じる。
+デスクトップアプリ自体の強制終了やOSクラッシュ時の子プロセス回収は保証しない。
+
+ウィンドウはNode統合を無効、contextIsolationとsandboxを有効にし、Node/IPCをUIへ公開しない。
+外部オリジンへの遷移・新規ウィンドウを拒否する。UI配信はHostと実パスを検査し、公開ルート外のファイルを返さない。
+UIビルドはNode.jsからTrunkを起動し、PowerShellに依存しない。
+開発時のサーバーはWindowsでは`build/Debug/sim_server.exe`、Linuxでは単一構成の`build/sim_server`。
+配布生成は実行中のOS向けに行い、WindowsはRelease、LinuxはCMakeで指定した構成を使う。
+配布フォルダーにはElectron実行環境、UI、C++実行ファイル、ライセンスを含める。
+Windowsではサーバーと同じフォルダーのDLLもコピーする。Linuxでは実行権限を付け、
+システム共有ライブラリは配布先OSで導入する。同じディストリビューション・アーキテクチャを配布の基準にする。
+LinuxのC++ビルドはシステムのOpenSSL・zlib・GDALを利用し、スレッド依存はCMakeの`Threads::Threads`で指定する。
+GDALはConfig形式を優先し、見つからなければCMakeのFindGDALへフォールバックする。
+配布生成前に地形の必須ファイルを検査し、全タイルを `resources/terrain` へコピーする。
+コピーに失敗した場合は配布生成を失敗させる。GeoTIFF入力は同梱しない。
+地形の出典表示を含む `sample/THIRD_PARTY_NOTICE.md` を配布物にコピーする。

@@ -1,7 +1,7 @@
 //! 地形メッシュを描画する再利用可能なcanvasコンポーネント。地形データ本体は`TerrainStore`
 //! context(1回だけフェッチ)、原点は`terrain::origin::OriginState` context、レーダー観測点は
 //! `terrain::markers::RadarMarkersState` contextから読む(呼び出し側が`provide_context`する。
-//! `sim3dview/README.md`参照)。自由視点カメラはドラッグで回転、ホイールでズーム、
+//! `README.md`参照)。自由視点カメラはドラッグで回転、ホイールでズーム、
 //! 3DモードではShift+ドラッグで注視点(中心点)を平行移動できる(シミュレーション原点
 //! [`crate::terrain::origin::OriginState`]は変更しない)。`terrain::recenter::RecenterRequestState`
 //! contextの通知(表示メニューの「中心点を原点に戻す」ボタン)で中心点を原点へ戻す。

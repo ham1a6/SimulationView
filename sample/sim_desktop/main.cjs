@@ -1,9 +1,9 @@
 'use strict';
 
 const { app, BrowserWindow, dialog, Menu } = require('electron');
-const fs = require('node:fs/promises');
 const path = require('node:path');
-const { DesktopRuntime, validateTerrain } = require('./runtime.cjs');
+const { DesktopRuntime } = require('./runtime.cjs');
+const { terrainDirectory } = require('./terrain.cjs');
 const { platformLayout, developmentServer } = require('./platform.cjs');
 app.setName('Sim3dView');
 
@@ -12,33 +12,6 @@ let window;
 let quitting = false;
 let stopped = false;
 let failed = false;
-const settingsPath = () => path.join(app.getPath('userData'), 'desktop-settings.json');
-
-async function chooseTerrain() {
-  const result = await dialog.showOpenDialog({
-    title: '前処理済み地形フォルダーを選択', properties: ['openDirectory'],
-    message: 'metadata.json、tile_index.json、base.bin、tilesが入ったフォルダーを選択してください。',
-  });
-  if (result.canceled) return null;
-  const directory = result.filePaths[0];
-  await validateTerrain(directory);
-  await fs.mkdir(app.getPath('userData'), { recursive: true });
-  await fs.writeFile(settingsPath(), JSON.stringify({ terrainDir: directory }, null, 2));
-  return directory;
-}
-
-async function terrainDirectory() {
-  if (process.env.SIM3DVIEW_TERRAIN_DIR) return path.resolve(process.env.SIM3DVIEW_TERRAIN_DIR);
-  let saved;
-  try { saved = JSON.parse(await fs.readFile(settingsPath(), 'utf8')).terrainDir; }
-  catch (error) { if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error; }
-  const candidate = saved || (app.isPackaged
-    ? path.join(path.dirname(process.execPath), 'terrain')
-    : path.resolve(__dirname, '../sim_server/assets/terrain'));
-  try { await validateTerrain(candidate); return candidate; }
-  catch { return chooseTerrain(); }
-}
-
 function fail(error) {
   if (quitting || failed) return;
   failed = true;
@@ -48,7 +21,7 @@ function fail(error) {
 }
 
 async function start() {
-  const terrainDir = await terrainDirectory();
+  const terrainDir = terrainDirectory({ isPackaged: app.isPackaged, resourcesPath: process.resourcesPath });
   if (!terrainDir || quitting) { app.quit(); return; }
   const serverExe = process.env.SIM3DVIEW_SERVER_EXE || (app.isPackaged
     ? path.join(process.resourcesPath, 'server', platformLayout().server)
@@ -75,11 +48,7 @@ async function start() {
   window.webContents.on('render-process-gone', (_event, details) => fail(new Error(`描画プロセスが終了しました: ${details.reason}`)));
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: 'ファイル', submenu: [
-      { label: '地形フォルダーを変更…', enabled: !process.env.SIM3DVIEW_TERRAIN_DIR, click: async () => {
-        try { if (await chooseTerrain()) { app.relaunch(); app.quit(); } }
-        catch (error) { dialog.showErrorBox('地形フォルダーを変更できません', error.message); }
-      } },
-      { type: 'separator' }, { label: '終了', click: () => app.quit() },
+      { label: '終了', click: () => app.quit() },
     ] },
     { label: '表示', submenu: [
       { label: '再読み込み', role: 'reload' }, { label: '全画面表示', role: 'togglefullscreen' },

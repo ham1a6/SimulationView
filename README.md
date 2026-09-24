@@ -1,360 +1,637 @@
-# Sim3dView
+# sim3dview
 
-ALOS全球数値地表モデル(DEM)による3D地形ビューア・レーダー覆域/見通し計算ライブラリ
-「`sim3dview`」と、それを使ったサンプルアプリ(C++シミュレータ本体 + Rust製Web UI)。
+## ドキュメントの入口
 
-## 本リポジトリの構成
-
-```
-sim3dview/        ライブラリ本体(Rust、Leptos/WASM向け)。3D地形描画・カメラ・
-                   レーダー覆域/見通し計算・レーダー観測点管理・汎用UI部品を提供する。
-                   使い方はsim3dview/README.md参照。VAB・状況パネル・メニュー・通信
-                   プロトコルは含まない(呼び出し側が実装する)。
-sample/            「これはサンプルです」という位置づけのディレクトリ。
-  sim_frontend/      sim3dviewライブラリを使ったサンプルアプリ(Rust)。VAB・状況パネル・
-                     メニュー・WebSocket/msgpackプロトコルなど、アプリ固有の部分を実装する。
-  sim_server/        C++シミュレータ本体 + WebSocket/HTTPサーバー(sample/sim_frontendの
-                     通信相手の参照実装)。
-tools/
-  geotiff_preprocess/ GeoTIFF前処理ツール(ライブラリの一部。C++/GDAL)。ALOS DSM→1度タイルごとの
-                     多段解像度グリッド+metadata.json。sim_serverとは独立したCMakeプロジェクト。
-docs/              統合設計書(概要・詳細・実装仕様・再実装ガイド)と開発履歴。索引はdocs/README.md。
-scripts/           補助スクリプト(ライセンス表記の生成)。
-map_data/          入力: ALOS DSM GeoTIFFタイル(容量が大きいためgit管理外。各自で配置する)
-```
-
-- `sim3dview`ライブラリだけを自分のアプリに組み込みたい場合は
-  **[sim3dview/README.md](sim3dview/README.md)** を参照してください。
-- 公開APIの検索は[APIリファレンス](sim3dview/API_REFERENCE.md)、機能追加・修正の進め方は[実装ガイドライン](sim3dview/IMPLEMENTATION_GUIDELINES.md)を参照してください。
-- このリポジトリを丸ごと動かして完成品(C++シミュレータ + Web UI)を試したい場合は、
-  以下のセットアップ手順に従ってください。
-
-詳しい設計は[Sim3dView設計書](docs/DETAILED_DESIGN.md)(Mermaid図つき。9節が実装仕様、10節が再実装ガイド)へ。開発環境固有の既知の問題は
-本書の「既知の環境問題・トラブルシューティング」、実装の経緯・ハマりどころは [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) を参照。
-
----
-
-## 動作環境
-
-Windows + Visual Studio 2022、およびLinux x64向けのビルド・起動に対応する。
-Linuxの手順は下の「Linuxでのセットアップ」を参照。GPU描画は利用する実機で確認する。
-Ubuntu 24.04コンテナでC++サーバー・地形前処理のビルドと単体テストを確認済み。
-Linux実機でのElectronウィンドウ・GPU描画は未確認。
-
-| 種別 | 必須 | 備考 |
-|---|---|---|
-| OS | Windows 10/11 または Linux x64 | 以下の表・既存手順はWindows向け |
-| Visual Studio 2022(Community可) | ✅ | 「C++によるデスクトップ開発」ワークロードを入れること。**CMake・vcpkgが同梱**されており、別途インストール不要 |
-| Git | ✅ | サブモジュール取得に使用 |
-| Rust ツールチェーン | ✅ | 未導入なら下記手順でセットアップする |
-| PowerShell | ✅ | 本READMEのコマンド例はPowerShell(pwsh)想定 |
-
----
-
-## Linuxでのセットアップ
-
-Ubuntu 24.04 x64を基準に、リポジトリルートから実行する。
-Rust/Cargoはrustupで導入済みであること。Windowsと同じ作業ツリーを共有する場合も、
-CMakeの`build`ディレクトリはOSごとに別のチェックアウトで生成する。
-
-```bash
-sudo apt-get update
-sudo apt-get install -y build-essential cmake ninja-build pkg-config git curl libssl-dev zlib1g-dev libgdal-dev
-git submodule update --init sample/sim_server/third_party/uWebSockets sample/sim_server/third_party/msgpack-cxx
-git -C sample/sim_server/third_party/uWebSockets submodule update --init uSockets libdeflate
-rustup target add wasm32-unknown-unknown
-cargo install trunk --locked
-
-cmake -S sample/sim_server -B sample/sim_server/build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build sample/sim_server/build --parallel
-ctest --test-dir sample/sim_server/build --output-on-failure
-cmake -S tools/geotiff_preprocess -B tools/geotiff_preprocess/build -G Ninja -DCMAKE_BUILD_TYPE=Release
-cmake --build tools/geotiff_preprocess/build --parallel
-ctest --test-dir tools/geotiff_preprocess/build --output-on-failure
-```
-
-ALOSの入力GeoTIFFを`map_data/`へ配置して前処理する。既に前処理済みなら省略できる。
-
-```bash
-./tools/geotiff_preprocess/build/geotiff_preprocess map_data sample/sim_server/assets/terrain
-./sample/sim_server/build/sim_server 9001 --host 127.0.0.1 --terrain-dir sample/sim_server/assets/terrain
-```
-
-別ターミナルでUIを起動し、WebGPU対応ブラウザで`http://localhost:8081`を開く。
-
-```bash
-cd sample/sim_frontend
-NO_COLOR=true trunk serve
-```
-
-専用ウィンドウで起動する場合は[デスクトップ版のLinux手順](sample/sim_desktop/README.md#linuxでの起動と配布)を使う。
-LAN公開時はサーバーの`--host`を公開先に合わせ、HTTPS/WSS用の証明書を`--cert`/`--key`へ指定する。
-Linuxでも地形・通信・描画の仕様は共通で、vcpkgやPowerShellは不要。
-`.github/workflows/linux.yml`でC++テスト、Rust/WASM検証、実サーバー通信、UI・配布生成を実行する。
-GPU描画・ウィンドウ操作の検証はCIの対象外。
-
-## Windowsでのセットアップ手順(初回、ゼロから)
-
-### 1. リポジトリの取得
-
-```powershell
-git clone <このリポジトリのURL> Sim3dView
-cd Sim3dView
-git submodule update --init sample/sim_server/third_party/uWebSockets sample/sim_server/third_party/msgpack-cxx
-git -C sample/sim_server/third_party/uWebSockets submodule update --init uSockets libdeflate
-```
-
-サブモジュールは以下の2つ(`sample/sim_server/third_party/`配下):
-
-- `uWebSockets`(uSockets含む) — WebSocket/HTTPサーバー
-- `msgpack-cxx`(msgpack-cの`cpp_master`ブランチ) — MessagePackシリアライズ(ヘッダオンリー)
-
-> **`git submodule update --init --recursive`は使わないこと**: `uWebSockets`は`fuzzing/*`・
-> `h1spec`(テスト用、不要)を、その子の`uSockets`はさらに`boringssl`・`lsquic`(TLS/QUIC用、
-> 本プロジェクトはTLS/QUICを使わないため不要)をネストサブモジュールとして持っており、
-> 素直に`--recursive`すると合計1GB近い不要なリポジトリを取得してしまう。上記のように
-> **必要な範囲だけを個別に`--init`する**のが正しい手順(`uSockets`の`boringssl`/`lsquic`は
-> 一切initしない=まったく取得しない)。
-
-### 2. Rustツールチェーンの導入(未導入の場合のみ)
-
-`rustc`/`cargo`があるか確認:
-
-```powershell
-cargo --version
-```
-
-無ければwingetで導入:
-
-```powershell
-winget install --id Rustlang.Rustup -e --silent --accept-package-agreements --accept-source-agreements
-```
-
-インストール後、新しいターミナルを開くか`$env:PATH`に`%USERPROFILE%\.cargo\bin`を通す。続けて
-WASMターゲットと、Rustの開発用ビルドツール`trunk`を入れる:
-
-```powershell
-rustup target add wasm32-unknown-unknown
-cargo install trunk --locked
-```
-
-(`cargo install trunk`は初回のみ数分かかる。以後は再利用される)
-
-このリポジトリはCargoワークスペース(ルートの`Cargo.toml`、メンバーは`sim3dview`・
-`sample/sim_frontend`)になっているため、`cargo check -p sim3dview`のようにリポジトリ
-ルートからどちらのcrateも操作できる。
-
-```powershell
-cargo fmt --check                                             # Rustコードの整形確認
-cargo clippy --workspace --all-targets -- -D warnings         # ワークスペース全体の静的検査
-cargo check -p sim3dview --target wasm32-unknown-unknown      # ライブラリ単体のコンパイル確認
-cargo check -p sim_frontend --target wasm32-unknown-unknown   # サンプルアプリの統合コンパイル確認
-cargo test --workspace                                         # 両crateの単体テスト(ネイティブで動く。ブラウザ不要)
-```
-
-単体テストは、合成した地形(`TerrainData::synthetic`)で標高サンプリング・LOD計画・カメラ(反転Z)・見通し計算・
-視錐台カリングなどを検証し、WGSLシェーダーの構文とuniform/頂点のレイアウトも`naga`で確認する
-(描画そのもの(GPU)は含まないので、画面の確認は下の「動作確認のポイント」の手順で行う)。
-
-### 3. C++側のビルド(sim_server と 前処理ツール)
-
-Visual Studio 2022同梱のCMake・vcpkgを使う。パスは環境によって多少変わるので、自分の環境の
-Visual Studioインストール先に合わせて読み替えること。
-
-```powershell
-$cmake = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe"
-$ctest = "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\ctest.exe"
-$toolchain = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\vcpkg\scripts\buildsystems\vcpkg.cmake"
-
-& $cmake -S sample/sim_server -B sample/sim_server/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="$toolchain"
-& $cmake --build sample/sim_server/build --config Debug
-& $ctest --test-dir sample/sim_server/build -C Debug --output-on-failure
-
-# 地形データ前処理ツール(sim3dviewライブラリの一部。GDAL依存。sim_serverとは別のCMakeプロジェクト)
-& $cmake -S tools/geotiff_preprocess -B tools/geotiff_preprocess/build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="$toolchain"
-& $cmake --build tools/geotiff_preprocess/build --config Debug
-& $ctest --test-dir tools/geotiff_preprocess/build -C Debug --output-on-failure
-```
-
-CTestは、シミュレーションの状態遷移、HTTP Range・ETag・安全なパス要素の判定、前処理の
-タイル名・外接矩形・チャンク分割という、外部I/Oに依存しない中核ロジックを検証する。
-
-初回のconfigure時にvcpkgが依存を自動ビルドする(sim_serverは`libuv`/`openssl`/`zlib`=`sample/sim_server/vcpkg.json`、
-前処理ツールは`gdal`=`tools/geotiff_preprocess/vcpkg.json`)。sim_serverの`openssl`はHTTPS/WSS用。**GDALのフルビルドだけで15分前後かかる**
-(2回目以降はバイナリキャッシュが効いて数秒〜数十秒)。
-
-ビルドが成功すると以下が生成される(出力先が2箇所に分かれる点に注意):
-
-- `sample/sim_server/build/Debug/sim_server.exe` — シミュレーション本体+WebSocket/HTTPサーバー
-- `tools/geotiff_preprocess/build/Debug/geotiff_preprocess.exe` — 地形データ前処理ツール
-
-### 4. 地形データの生成(初回のみ・1回だけ実行)
-
-`sim_server.exe`はHTTPで`/terrain/`以下の地形データ(`metadata.json`・`tile_index.json`・`base.bin`・
-`tiles/L*/*.bin`)を配信するが、これらのファイルは**リポジトリに含まれておらず**、初回起動前に
-前処理ツールで生成する必要がある。
-**リポジトリのルートディレクトリから**実行すること(`map_data/`と`sample/sim_server/assets/terrain/`を
-相対パスで参照するため):
-
-```powershell
-tools\geotiff_preprocess\build\Debug\geotiff_preprocess.exe
-```
-
-`map_data/`内のGeoTIFFタイルを自動検出し、**1度タイルごとに複数の解像度レベル**(約1.85km / 620m /
-185m / 62m / 31m。最細は元データの30m)の標高グリッドを`sample/sim_server/assets/terrain/`へ書き出す
-(`metadata.json`・`tile_index.json`・`base.bin`・`tiles/L1〜L4/*.bin`。レベル1以上は1度タイルを6x6の
-チャンクに分けて連結した形式)。タイルを1枚ずつ並列に処理するので、メモリは数百MB/スレッド程度で、
-390タイル(DSM約10GB)で数分〜十数分かかる(Release構成の実行を推奨)。出力は約12GB(`tiles/`が
-ほぼ全部)で、`.gitignore`済み。対象範囲(外接矩形)はハードコードではなく、実際に見つかったタイルの
-緯度経度から毎回自動計算されるため、`map_data/`に別の場所のタイルを追加/削除してもコード変更は不要
-(ただし`sim_server`は起動時に`metadata.json`を読むので再起動が必要)。
-フロントは全タイルの最粗レベルだけを起動時に取得し、カメラに近いチャンクだけ細かいレベルをその都度
-取得して描画する(地形LOD。docs/DETAILED_DESIGN.md 6.10節)。
-成功すると以下のようなログが出る:
-
-```
-[geotiff_preprocess] found 390 tile(s), bounds: lat 20..50, lon 120..150
-[geotiff_preprocess] (1/390) N020E121
-...
-[geotiff_preprocess] wrote 390 tile(s) with 5 level(s) to sample/sim_server/assets/terrain
-[geotiff_preprocess] elevation range: -330 .. 3937
-```
-
-存在しないタイル・各タイル内のNODATA画素・マスクファイル(`*_MSK.tif`、同梱)が海と示す画素は
-「データなし」として出力され、Web UI側ではその部分の三角形を描画しない(背景の黒のまま見える。
-標高0mとは区別される)。
-
----
-
-## アプリの起動方法
-
-従来のブラウザ版に加え、WindowsではElectronデスクトップ版も使える。
-デスクトップ版は`sample/sim_desktop`で`npm ci`、`npm run build:ui`、`npm start`を実行すると、
-C++サーバーと専用ウィンドウが一緒に起動する(C++のDebugビルドと前処理済み地形、Node.js 22.12以降が必要)。
-配布用exeの生成や地形フォルダー指定は[デスクトップ版README](sample/sim_desktop/README.md)を参照。
-以下のブラウザ版の手順も従来どおり使え、デスクトップ版と同時起動できる(シミュレーション状態は別々)。
-
-ビルドとデータ生成が済んだら、**2つのプロセスを同時に起動**する(別々のターミナルで)。
-
-### ターミナル1: C++側(sim_server)を起動
-
-```powershell
-cd sample/sim_server
-.\build\Debug\sim_server.exe
-```
-
-既定でポート9001をWebSocket(`/sim`)とHTTP(`/terrain/*`)の両方で待ち受ける。
-`sample/sim_server/`ディレクトリから起動すること(`assets/terrain/...`を相対パスで開くため)。
-
-> **Windowsの「アプリケーション制御ポリシー」に注意**: 環境によっては、`Start-Process`経由での
-> exe起動がブロックされることがある。その場合は上記のように `.\build\Debug\sim_server.exe` を
-> 直接呼び出す(`&`や`.\`で直接実行する)形にすれば問題ない。
-
-### ターミナル2: Rust側(sim_frontend、sim3dviewライブラリを使うサンプルアプリ)の開発サーバーを起動
-
-```powershell
-cd sample/sim_frontend
-$env:NO_COLOR = "true"   # 下記「既知の環境問題」参照。設定していないとtrunkがエラー終了する
-trunk serve
-```
-
-ポート番号(8081)・待受アドレス(`0.0.0.0`、LAN上の別端末からもアクセスできるように全
-インターフェースで待ち受ける)は`sample/sim_frontend/Trunk.toml`に設定済みなので、コマンドラインでの
-指定は不要。初回はコンパイルに数十秒〜数分かかる(2回目以降は差分ビルドで数秒)。
-`既定の8080番ポートはDocker Desktop/WSLが使用していることが多い`ため、本プロジェクトでは
-8081番を使う運用にしている(競合する場合は空いている別のポート番号に変更してよい)。
-
-### ブラウザで開く
-
-```
-http://localhost:8081
-```
-
-`sample/sim_frontend`は起動時に `ws://<ページのホスト名>:9001/sim` へ自動接続する。**sim_server.exeを
-先に起動してから**ブラウザを開くこと(先にブラウザを開いても、自動再接続機能により後からsim_serverを
-起動すれば数秒以内につながる)。
-
-### HTTPS/WSSで開く(任意。LANの別端末からWebGPUを使うときなど)
-
-`http://localhost`以外(`http://192.168.x.x:8081`等)は**セキュアコンテキストではない**ため、ブラウザは
-WebGPUなど一部の機能を無効にする。LAN越しに使うにはHTTPSで開く。開発用の自己署名証明書を使う:
-
-```powershell
-pwsh tools/gen_dev_cert.ps1                       # certs/dev-cert.pem と dev-key.pem を生成(git管理外)
-
-# ターミナル1: sim_serverを--cert/--keyつきで起動(ws→wss、http→httpsになる)
-cd sample/sim_server
-./build/Debug/sim_server.exe --cert ../../certs/dev-cert.pem --key ../../certs/dev-key.pem
-
-# ターミナル2: trunkもTLSで起動
-cd sample/sim_frontend
-$env:NO_COLOR = "true"
-trunk serve --tls-cert-path ../../certs/dev-cert.pem --tls-key-path ../../certs/dev-key.pem
-```
-
-`https://<このPCのIP>:8081`で開く。`sample/sim_frontend`はページのスキームに合わせて`wss://`・`https://`で
-sim_server(9001)へ接続する(HTTPSページから平文の`ws://`・`http://`へはMixed Contentで繋がらないため、
-**sim_serverも必ずTLSで起動する**)。`--cert/--key`を付けなければ従来どおり平文のHTTP/WS。
-
-証明書は自己署名なので、ブラウザに信頼させる必要がある。次のいずれか:
-
-- **推奨**: 接続する端末で`certs/dev-cert.pem`を「信頼されたルート証明機関」に登録する
-  (Windows: `certutil -addstore -user Root certs\dev-cert.pem`、他OSは各OSの手順)。以後、警告なしで
-  8081・9001の両方に繋がる。
-- 登録しない場合は、警告画面を8081(ページ)と**9001(`https://<IP>:9001/terrain/metadata.json`を一度開く)**
-  の両方で「詳細設定→続行」しておく(後者を忘れるとWebSocket/地形取得だけ黙って失敗する)。
-
-証明書のSANには生成時のホスト名・IPだけが入る。PCのIPが変わったら`tools/gen_dev_cert.ps1`を再実行する
-(`-ExtraHost`で追加のDNS名/IPも指定可)。
-
----
-
-## 動作確認のポイント
-
-正しく起動できていれば、ブラウザで以下が確認できる:
-
-- 左上のステータスが「接続済み」になる
-- 「原点」に緯度経度(既定値: 35.355556, 138.859722)が表示される
-- 左下のVABでカテゴリ、ページ切り替え、スクリーンショット、画面録画、シミュレーションの開始・一時停止を操作できる
-- 中央の地図パネルに3D地形が表示され、原点(富士山付近)のまわりに、デモの航跡(航空機・ヘリ・艦船・車両など7つのシンボルとラベル)が止まって見える
-- VAB中段1ページ目の「開始」を押すとシミュレーションが動き出し(状態が「シミュレーション実行中」になる)、右上の「各種情報」の経過時間・高度・速度が変化し、航跡のシンボルが動いて軌跡が伸びる(VABの「一時停止」で止まる。実行中は原点を変更できない)
-- 地図上の航跡のシンボルをクリックすると、シンボルに白い輪が付き、右上のパネルが「航跡情報」タブへ切り替わって詳細(種別・所属・位置・高度・針路・速度・原点からの距離)が出る。何もない所をクリックすると選択が外れる
-- 地図を右クリックすると、その地点(や航跡のシンボル)に対するメニューが出る(レーダー観測点の追加・原点の設定・中心点の移動・図形の作成・緯度経度のコピー等)。「ここにレーダー観測点を追加」で観測点のピンと覆域(3Dは半透明のドーム、2D表示は塗り+輪郭線)が出る。「表示」メニューで、航跡のラベル・軌跡・高度線の表示切り替えや「作図デモ」ができる
-
----
-
-## 既知の環境問題・トラブルシューティング
-
-| 症状 | 原因・対処 |
+| 目的 | 文書 |
 |---|---|
-| `trunk`実行時に`--no-color`関連のエラーで即終了する | 環境変数`NO_COLOR=1`がセットされているとtrunkの引数パーサ(`true`/`false`を期待)と衝突する。`$env:NO_COLOR = "true"`に設定してから実行する |
-| `trunk serve`が`address already in use`(os error 10048)で失敗する | 既定の8080番ポートはDocker Desktop/WSLが使用していることがある。`sample/sim_frontend/Trunk.toml`で8081番に変更済み |
-| `trunk serve`の起動ログが`server listening at:`の後、一部アドレス(`kubernetes.docker.internal`等)を数十秒おきに追加表示し続けて実際には繋がらない | 起動時のネットワークインターフェース・ホスト名列挙処理がDocker関連の仮想ネットワーク環境でハングすることがある。`Trunk.toml`で`disable_address_lookup = true`にして回避済み |
-| `sim_server.exe`が起動しない/すぐ終了する | 別プロセスが既に9001番ポートを使っていないか確認(`netstat -ano \| findstr 9001`)。前のsim_serverプロセスが残っていないか確認する |
-| vcpkgの`gdal`インストールが`libxml2`のビルドで失敗する | 本プロジェクトでは`tools/geotiff_preprocess/vcpkg.json`で`gdal`を`"default-features": false`にすることで、不要な`libxml2`(GML/KML用、Windowsで既知のIconv関連ビルド失敗がある)を回避済み。設定を変更していなければ発生しない |
-| `geotiff_preprocess.exe`を実行しても`map_data`が見つからない | リポジトリの**ルートディレクトリ**から実行しているか確認する(既定のパスは`map_data`/`sample/sim_server/assets/terrain`という相対パス) |
-| GDALのビルドがとても遅い | 初回のみ発生(15分前後)。2回目以降はvcpkgのバイナリキャッシュが効くため数秒で終わる |
-| `sim3dview`ライブラリ側だけを編集したのに、`trunk serve`が再ビルドせず古い表示のまま | Trunkはpath依存先(`sim3dview`)のソース変更を自動ではwatchしない。`trunk serve`を再起動する(サンプルアプリ側のファイルも一緒に変更していれば自動検知される) |
-| `cargo`が「信頼されていないマウントポイントが含まれているため、パスをスキャンできません」で起動しない | `~/.cargo/bin/cargo.exe`がシンボリックリンクのため、環境によっては起動できない。`~/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/cargo.exe`を直接実行する |
-| 他端末からLAN経由でアクセスすると「接続中」のまま地図も出ない(このマシンのlocalhostでは正常) | Windows Firewallの受信許可ルールが`sim_server.exe`の旧パスを指したままの可能性が高い(exeを移動・再作成した後に起きる)。管理者権限のPowerShellで`Get-NetFirewallRule -DisplayName "sim_server.exe" \| Set-NetFirewallApplicationFilter -Program "<sim_server.exeの現在のフルパス>"`を実行してルールのパスを更新する。localhostはループバック通信のためFirewallの影響を受けず、この不一致に気付きにくい |
-| HTTPSで開くとページは出るが「未接続」のまま/地形が出ない | 9001番(sim_server)側の証明書が未信頼。`https://<IP>:9001/terrain/metadata.json`を開いて警告を許可するか、証明書をルート証明機関に登録する。sim_serverを`--cert/--key`なしで起動している場合も、HTTPSページからは`ws://`に繋がらない |
-| 開発中のBrowserペイン(Claude Codeの組み込みブラウザ)から`http://192.168.x.x:8081`(プライベートIP)へ接続すると`ERR_BLOCKED_BY_CLIENT` | ペイン側の制限でネットワーク疎通とは無関係。実疎通は`Test-NetConnection -ComputerName <IP> -Port 8081`/`-Port 9001`で確認する。ペインでの動作確認は`http://localhost:8081`で行う |
-| ブラウザペインを非表示のままページを開くと、canvasが300×150のまま引き伸ばされて地形が歪む/欠ける | 非表示タブではResizeObserverが発火しないことがある(タブが可視になった時点で`TerrainView`が取り直す実装済み)。動作確認は実際にペインを表示した状態で行う |
+| 組み込み・機能別の使用例・CSS | 本README |
+| 公開APIの検索・contextと更新方法 | [APIリファレンス](API_REFERENCE.md) |
+| 機能追加・修正時の責務、実装ルール、検証 | [実装ガイドライン](IMPLEMENTATION_GUIDELINES.md) |
+| 設計理由・アルゴリズム・データ形式 | [統合設計書](docs/DETAILED_DESIGN.md) |
 
----
+型・メソッドの完全なシグネチャは`cargo doc -p sim3dview --no-deps --target wasm32-unknown-unknown --open`で参照できます。
 
-## プロジェクトの現在の状態
+ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し(Line of Sight)計算・レーダー観測点
+管理を提供する、[Leptos](https://leptos.dev/)(WASM/CSR)向けのRustライブラリです。
 
-C++シミュレータ本体・Web UI(サンプルアプリ)とも実装・動作確認済み。`sim3dview`ライブラリへの
-分離(VAB・状況パネル・メニュー・通信プロトコルをアプリ固有部分として`sample/sim_frontend`側に
-残し、3D地形描画・レーダー覆域計算・汎用UI部品をライブラリ化)も完了している。
+**このライブラリに含まれないもの**: VAB(操作ボタン)・状況パネル・メニューバーのような
+アプリ固有のUI、および特定のバックエンドと通信するためのプロトコル(WebSocket/msgpack等)は
+含みません。それらは呼び出し側(あなたのアプリ)がRust等で実装します。実際にこのライブラリを
+組み込んだ最小構成のサンプルアプリ(C++サーバー込み)は、リポジトリの`sample/`ディレクトリに
+あります。ビルド・起動手順は[sample/README.md](sample/README.md)を参照してください。
 
-## ドキュメント一覧
+## 配置と検証
 
-- [README.md](README.md) — 本書。セットアップ・起動手順
-- [sim3dview/README.md](sim3dview/README.md) — `sim3dview`ライブラリの使い方(開発者向け)
-- [docs/README.md](docs/README.md) — ドキュメントの索引・読み順・保守ルール
-- [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) — 統合設計書(全体像、設計方針、詳細設計、実装仕様、再実装ガイド、Mermaid図)
-- [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) — 実装の経緯・ハマりどころの記録(機能ごとの「要望→原因→修正→確認」)
-- [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md) — 利用しているサードパーティ(Rustクレート・C++ライブラリ・ALOS地形データ)の一覧・著作権表示・ライセンス。依存を変えたら`python scripts/gen_third_party_notice.py`で再生成する
-- [CLAUDE.md](CLAUDE.md) — AIエージェント向けの作業方針・要点(短い索引)
+ライブラリのcrateはこのリポジトリのルートにあります。`src/` がRust実装、`style/` がCSS、
+`tests/fixtures/` が単体テスト用データ、`docs/` が設計書です。
+地形ファイルを生成する[前処理CLI](tools/geotiff_preprocess/README.md)も提供します。
+
+```powershell
+cargo check --target wasm32-unknown-unknown --locked
+cargo test --locked
+```
+
+`sample/` は独立したワークスペースです。サンプルの依存やビルドはライブラリ単体の検証には不要です。
+
+## 提供するもの
+
+- `terrain`モジュール: 地形データ取得・座標変換・カメラ・wgpu描画・見通し/覆域計算・
+  レーダー観測点の状態管理・作図(図形・線。絶対座標固定/カメラ固定。UIから作る図形の対話作成を含む)・
+  航跡表示(航空機等の現在位置とシンボル)
+- `ui`モジュール: 上記を使ったLeptosコンポーネント一式(3D/2D地形描画canvas、見通し範囲タブ、断面図タブ、
+  タブ付きパネル、汎用フローティングパネル(モーダル/動かせるウインドウ)、原点設定・覆域高度設定ダイアログ、
+  作図エディタ、右クリックメニュー)と、Pointer Events用の純粋なドラッグ状態管理
+- `style/sim3dview.css`: 上記コンポーネントのスタイル
+
+公開しているのは、アプリが使う`terrain::{camera, capture, draw_tool, drawing, hillshade, markers, models, origin, origin_pick, recenter, store, tracks}`と
+`terrain::measurement`の距離・方位計算、`viewer::ViewerState`と`ui`の各部品です。それ以外の`terrain`のモジュール(ENU座標変換・LOD・描画・見通し計算など)はライブラリの内部(`pub(crate)`)です。
+モジュール構成は[DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) 6.0節を参照してください。
+
+> このライブラリを**1から再実装したい**(仕様どおりに作り直す・別環境へ移植する)場合は、
+> [Sim3dView設計書](docs/DETAILED_DESIGN.md)の9節(実装仕様)と10節(再実装ガイド)を参照してください。
+
+## 依存関係への追加
+
+モノレポ内(このリポジトリの`sample/sim_frontend`のように)ならpath依存で:
+
+```toml
+[dependencies]
+sim3dview = { path = "../.." }
+```
+
+別リポジトリから使う場合はgit依存で:
+
+```toml
+[dependencies]
+sim3dview = { git = "https://example.com/your-fork/Sim3dView.git" }
+```
+
+呼び出し側のCargo.tomlにも`leptos = { version = "0.8", features = ["csr"] }`が必要です
+(Leptosコンポーネントを`view!{}`マクロで使うため)。
+
+## サーバーに必要なもの(データ契約)
+
+このライブラリはHTTPで配信される地形データを前提とします。地形は**1度x1度のタイル単位で、タイルごとに
+複数の解像度レベル**を持ちます(地形LOD。全タイルを6x6のチャンクに分けて常駐し(最も粗くても約620m/セル。
+起動直後だけタイル全体1枚の粗いメッシュ)、カメラに近いチャンクほど細かいレベル(最細は元データの30m)を
+取得して描画します。`terrain::lod`・[DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) 6.10節)。呼び出し側が用意するサーバーは、任意のベースURL
+(例: `http://localhost:9001/terrain`)の下に以下を返す必要があります(`terrain::fetch`・`terrain::loader`のソースのコメント参照。内部モジュールなので`pub(crate)`)。
+
+- `{base_url}/metadata.json`(`Content-Type: application/json`):
+
+  ```json
+  {
+    "tile_levels": [60, 180, 600, 1800, 3600],
+    "chunks_per_tile": 6,
+    "elevation_min": -330.0,
+    "elevation_max": 3937.0,
+    "geodetic_bounds": { "min_lat": 20.0, "max_lat": 50.0, "min_lon": 120.0, "max_lon": 150.0 },
+    "ellipsoid": { "a_m": 6378137.0, "inv_f": 298.257222101 },
+    "has_texture": false,
+    "default_origin": { "lat_deg": 35.355556, "lon_deg": 138.859722 }
+  }
+  ```
+
+  `tile_levels`はレベルごとの1度タイル1辺のセル数(先頭がレベル0=最粗)。レベル1以上は
+  `chunks_per_tile`で割り切れること。
+
+- `{base_url}/tile_index.json`: 存在するタイルの一覧
+  `{"tiles": [{"lat": 35, "lon": 138, "elevation_min": 0, "elevation_max": 3776}, ...]}`
+  (`lat`/`lon`はタイル南西角の整数度。陸のないタイルは含めない)。
+- `{base_url}/base.bin`(`application/octet-stream`): レベル0(タイル全体で1枚)を全タイル分、
+  `tile_index.json`の順に連結したもの。
+- `{base_url}/tiles/L{k}/N035E138.bin`(k=1以上): レベルkのタイル別ファイル。1度タイルを
+  `chunks_per_tile`x`chunks_per_tile`のチャンクに分け、チャンク(行(南→北)*分割数+列(西→東)の順)ごとの
+  グリッドを**固定サイズのレコード**として連結したもの。大きいファイル(最細で約26MB)は、フロントが
+  **HTTP Range**(`bytes=a-b`、単一範囲)でチャンク1個分だけ取得するので、サーバーはRangeに対応してください
+  (未対応でも全体を返せば動きますが、毎回全体を転送することになります)。
+
+各グリッドは`(N+1)x(N+1)`ノード(`N`は一辺のセル数。レベル0はタイル全体、レベル1以上はチャンク)の
+int16(標高メートル)、リトルエンディアン、row-major、**行は南→北・列は西→東**。データなし(海)は
+`-32768`。隣のチャンクとは縁のノードを共有します。
+
+このリポジトリの`tools/geotiff_preprocess`(C++ + GDAL)は、ALOS DSM GeoTIFFタイルからこれらを
+生成する前処理ツールで、ライブラリの一部として提供しています。同じ形式さえ満たせば
+サーバーの実装言語・データソースは問いません。
+
+## 最小構成の使用例
+
+```rust
+use leptos::prelude::*;
+use sim3dview::terrain::markers::RadarMarkersState;
+use sim3dview::terrain::origin::OriginState;
+use sim3dview::terrain::store::TerrainStore;
+use sim3dview::ui::terrain_view::TerrainView;
+use sim3dview::terrain::camera::CameraPreset;
+
+#[component]
+pub fn App() -> impl IntoView {
+    // 地形データ(1回だけフェッチして全パネルで共有)。
+    provide_context(TerrainStore::new("http://localhost:9001/terrain"));
+    // 現在の原点。あなたのアプリが自分のプロトコルから受け取った値をここへ反映する
+    // (下記「原点をサーバーと同期する」参照)。未設定ならmetadata.jsonのdefault_originを使う。
+    let origin_state = OriginState(RwSignal::new(None));
+    provide_context(origin_state);
+    // レーダー観測点(見通し範囲)の一覧・選択・覆域高度。
+    provide_context(RadarMarkersState::new());
+
+    view! { <TerrainView preset=CameraPreset::Overview/> }
+}
+```
+
+`index.html`(Trunk使用時)で、このライブラリのCSSを追加で読み込みます(相対パスは
+あなたのアプリのCargo.tomlからの相対位置に合わせて調整してください)。
+
+```html
+<link data-trunk rel="css" href="../../style/sim3dview.css" />
+<link data-trunk rel="css" href="style/app.css" /> <!-- あなたのアプリ独自のCSS -->
+```
+
+Trunkがこの相対パス参照に対応していない構成(例: gitサブモジュール越しの参照や、別ホストの
+crates.io公開クレートとして使う場合)では、`style/sim3dview.css`を自分のスタイル
+ディレクトリへコピーするか、自前のCSSから`@import`してください。
+
+### テーマ(CSSカスタムプロパティ)
+
+`sim3dview.css`は以下のCSSカスタムプロパティを参照します。あなたのアプリの`:root`で
+定義してください(未定義でも動作しますが配色が付きません)。
+
+| 変数 | 用途 | 参考値 |
+|---|---|---|
+| `--bg-panel` | パネル背景色 | `#181818` |
+| `--fg` | 通常の文字色 | `#eee` |
+| `--border` | 枠線色 | `#3a3a3a` |
+| `--accent` | 強調色(選択中・フォーカス等) | `#9cf` |
+
+## 状態をまとめて初期化する
+
+機能を組み合わせる場合は`ViewerState`で状態の生成とcontext登録をまとめられます。
+Leptosコンポーネント内で、子ビューを生成する前に1回呼んでください。
+従来の個別登録も利用できます。同じOwnerで同じ状態を二重登録しないでください。
+
+```rust
+use sim3dview::viewer::ViewerState;
+
+let viewer = ViewerState::new("http://localhost:9001/terrain")
+    .persist_drawings("my_app.drawings") // 任意。省略すると保存・復元しない
+    .provide();
+
+// 受信データはアプリが既存の公開ハンドルへ反映する。
+// viewer.origin.0.set(Some(origin));
+// viewer.tracks.set(tracks);
+// viewer.models.set_source(kind, source);
+```
+
+生成するのは地形ストア・原点・観測点・中心点移動・陰影・キャプチャ・作図・作図ツール・航跡・モデルの
+10個の状態です。`new`自体は通信を開始しません。保存キーはアプリが選び、`persist_drawings`は生成直後に1回だけ呼びます。
+原点クリックのコールバック、メニュー項目、ダイアログの開閉と配置はアプリ側で設定します。
+
+## パネルを左右に分割する
+
+```rust
+use sim3dview::ui::split_pane::SplitPane;
+
+let initial_fraction = 2.0 / 3.0;
+view! {
+    <SplitPane
+        initial_fraction=initial_fraction
+        min_first=320.0
+        min_second=260.0
+        first=move || view! { <div>"地図など"</div> }
+        second=move || view! { <div>"情報パネルなど"</div> }
+    />
+}
+```
+
+`first`と`second`は常時マウントされる左右のビューです。高さは親の100%を使うため親の高さを確保してください。
+`second_visible`には`Signal<bool>`を指定できます(省略時は常に表示)。`false`では右区画と仕切りを隠し、左区画だけで全幅を使います。内容と分割比率は保持し、最小幅は`min_first`だけになります。
+最小幅は正の有限値(CSS px、既定各160)、左側の初期比率は有限値(既定0.5、0.001〜0.999へ制限)です。
+狭い画面では最小幅の合計+6pxを維持するため、親で`overflow-x: auto`を指定します。
+`.sim3d-split-pane`・`.sim3d-split-content`・`.sim3d-split-handle`のCSSはライブラリに含まれます。
+
+## 距離と方位を計算する
+
+```rust
+use sim3dview::terrain::measurement::distance_and_bearing;
+let (distance_m, bearing_deg) = distance_and_bearing(35.0, 139.0, 35.5, 139.0);
+```
+
+引数は度単位の緯度経度、戻り値はWGS84楕円体上の最短測地距離(m)と北から時計回りの初期方位(0以上360未満の度)です。
+`geographiclib-rs`によるカーニー法を使い、対蹠点付近も計算できます。有限値・緯度-90〜90度を前提とします。
+同一点や複数の最短測地線がある場合の方位はGeographicLibの規約値で、一意ではありません。
+日本語方位名や表示単位の整形はアプリ側で行います。従来の球面近似から変更したため、計算結果は変わります。
+
+### 複数地点を通る経路を測定する
+
+`measure_route`で経路計画や航跡分析に使う区間距離・累積距離・初期方位をまとめて取得できます。
+地形データやLeptosのcontextは不要です。
+
+```rust
+use sim3dview::terrain::measurement::measure_route;
+
+let route = measure_route(&[(35.0, 139.0), (35.5, 139.0), (35.5, 139.5)])
+    .expect("有効な緯度経度");
+let total_m = route.total_distance_m;
+for segment in &route.segments {
+    let length_m = segment.distance_m;
+    let distance_from_start_m = segment.cumulative_distance_m;
+    let bearing_deg = segment.initial_bearing_deg; // Option<f64>
+}
+```
+
+緯度[-90,90]・経度[-180,180]の有限値を受け付け、不正な点があると`InvalidRoutePoint.index`
+(0始まり)を返します。空または1点の経路は総距離0で、区間はありません。
+補助球上の弧長が0・πから1e-7 rad以内では、保守的に方位を`None`にします(距離は計算します)。日付変更線にも対応します。
+閉路にする場合は始点を末尾にも指定してください。距離はカーニー法によるWGS84楕円体上の測地距離で、
+高度差や地形に沿った距離は含みません。
+
+### 一定高度を飛行する経路を測定する
+
+```rust
+use sim3dview::terrain::measurement::{measure_route, measure_route_at_height};
+
+let points = [(35.0, 139.0), (35.5, 139.0), (35.5, 139.5)];
+let surface = measure_route(&points).expect("有効な経路");
+let flight = measure_route_at_height(&points, 10_000.0).expect("有効な経路と楕円体高");
+let extra_distance_m = flight.total_distance_m - surface.total_distance_m;
+```
+
+地表のカーニー法による経路の真上を、地球の丸みに沿って一定高度で飛ぶ曲線の長さを数値積分します。
+区間距離・累積距離・総距離・初期方位は飛行経路の値になり、高度0では`measure_route`と一致します。
+高度面上の最短経路を再探索する機能や、2点間の空間直線距離の計算ではありません。
+
+高度は**WGS84楕円体高(m)**で、対応範囲は0〜1,000,000mの有限値です。
+海抜高度・対地高度・気圧高度を直接渡さないでください。海抜高度はジオイド高を加えて楕円体高に
+変換しますが、ジオイド高が地点ごとに変わるため、一定海抜高度の経路とは厳密には一致しません。
+既存の`Altitude::Msl`も別の高度基準です。地形・障害物との衝突や上昇下降は計算しません。
+不正な高度は`FlightMeasurementError::InvalidHeight`、不正な座標は`InvalidPoint`を返します。
+
+## 原点をサーバーと同期する
+
+`OriginState`(`terrain::origin::OriginState`)はこのライブラリが通信プロトコルを知らずに
+済むよう、`RwSignal<Option<terrain::origin::Origin>>`を包んだだけの薄い型です。あなたのアプリが
+自分のプロトコルから受け取った緯度経度を、Effectでこのシグナルへミラーしてください
+(`sample/sim_frontend/src/app.rs`に実例があります):
+
+```rust
+Effect::new(move |_| {
+    if let Some(o) = my_protocol_signals.origin.get() {
+        origin_state.0.set(Some(sim3dview::terrain::origin::Origin { lat_deg: o.lat_deg, lon_deg: o.lon_deg }));
+    }
+});
+```
+
+`ui::origin_dialog::OriginDialog`(原点入力フォームのフローティングパネル)を使う場合、
+「設定」ボタンが押されたときの送信方法もあなたのアプリに委ねられています
+(`on_submit: UnsyncCallback<(f64, f64)>`。`Send`不要なので、`Rc`などを持つ接続をそのまま捕捉できる)。
+入力値の範囲チェックには、`TerrainView`が使うのと同じ`TerrainStore`(context)の地形データの範囲を使います。
+
+```rust
+use sim3dview::ui::origin_dialog::{OriginDialog, OriginDialogState};
+
+provide_context(OriginDialogState(RwSignal::new(false))); // 開閉状態
+
+view! {
+    <OriginDialog
+        on_submit=UnsyncCallback::new(move |(lat, lon)| {
+            // ここであなたのプロトコルで実際に送信する。
+        })
+    />
+}
+```
+
+地図を直接クリックして原点を決めたい場合は、`terrain::origin_pick::OriginPickState`を
+`provide_context`し、メニュー等から`active`を`true`にします(未提供なら機能なし)。
+`TerrainView`は次の左クリック(ドラッグではない単発クリック)の緯度経度を`on_pick`へ渡し、
+`active`を自動で`false`に戻します。送信方法はここでもあなたのアプリに委ねられています。
+
+```rust
+use sim3dview::terrain::origin_pick::OriginPickState;
+
+let pick = OriginPickState::new(UnsyncCallback::new(move |(lat, lon)| {
+    // ここであなたのプロトコルで原点変更を送信する。
+}));
+provide_context(pick);
+// メニュー項目などから: pick.active.set(true);
+```
+
+## レーダー観測点(見通し範囲・覆域)
+
+`terrain::markers::RadarMarkersState`が観測点一覧・選択状態・(2D表示モード時の)覆域高度を
+保持します。`ui::terrain_view::TerrainView`は自身のcanvas上の右クリックで観測点を追加し(右クリックメニューを使う場合は、
+その項目として追加します。下の「右クリックメニュー」参照)、
+`ui::los_view::LosView`はその一覧の選択・編集・削除UIと、選択中観測点の2D極座標見通し図を
+提供します。
+
+```rust
+use sim3dview::ui::los_view::LosView;
+
+view! { <LosView/> } // RadarMarkersState・TerrainStore contextが必要
+```
+
+`ui::coverage_altitude_dialog::CoverageAltitudeDialog`は、`TerrainView`の2D表示モードで
+選択中観測点の探知可能領域を表示する対象の海抜高度を編集するフローティングパネルです
+(`RadarMarkersState`のみ参照、通信は一切行いません)。
+
+**複数の覆域の同時表示**: 覆域(3Dドーム・2D領域)は、既定では選択中の観測点だけです。`RadarMarkersState::show_all_coverage`を`true`にすると
+(`LosView`の「すべての観測点の覆域を同時に表示」チェックボックスと同じ)、**すべての観測点の覆域を同時に**出します。観測点ごとに色が違います(`coverage_colors(id)`)。
+
+**断面図の中心**: `ui::cross_section_view::CrossSectionView`は、画面内のコンボボックスで選んだ航跡(`TracksState`を`provide_context`していれば、その一覧から選べます。
+地図上のシンボルクリックで変わる`TracksState::selected`とは独立したローカルな選択です)の位置を中心に、方位角の直線に沿った断面を出します。何も選んでいなければ基準位置
+(`OriginState`)が中心です。片側の長さを選べ、「進行方向」ボタンで方位角を選んだ航跡の進行方向に合わせられます。
+
+## スクリーンショット・画面録画
+
+`terrain::capture::CaptureState`を`provide_context`すると、`TerrainView`が自身のcanvasの
+スクリーンショット(PNG)保存・画面録画(WebM)を行えるようになります(未提供でも動作しますが、
+その場合は何もできません)。ボタンをどこに置くかはこのライブラリの関知しないアプリ固有のUIなので、
+呼び出し側が置いてください(`sample/sim_frontend`ではVABパネルに置いています)。
+
+```rust
+use sim3dview::terrain::capture::CaptureState;
+
+provide_context(CaptureState::new());
+```
+
+```rust
+let capture = use_context::<CaptureState>().expect("CaptureState context not found");
+
+view! {
+    <button on:click=move |_| capture.request_screenshot()>"スクリーンショット"</button>
+    <button on:click=move |_| capture.toggle_recording()>
+        {move || if capture.is_recording.get() { "録画停止" } else { "録画開始" }}
+    </button>
+}
+```
+
+- `request_screenshot()`: canvasの現在の内容を`sim3dview_YYYYMMDD_HHMMSS.png`としてダウンロードします。
+- `toggle_recording()`: 呼ぶたびに録画の開始/停止を切り替えます。停止すると
+  `sim3dview_YYYYMMDD_HHMMSS.webm`としてダウンロードされます(`is_recording`で実際に録画中かどうかを
+  見られます。ブラウザがMediaRecorder等に未対応で開始に失敗した場合は自動的にfalseへ戻ります)。
+- サーバーへは何も送らない、完全にブラウザ内で完結する機能です(`HTMLCanvasElement.captureStream`+
+  `MediaRecorder`)。3D地形・図形・航跡シンボルはcanvas上の描画のためどちらにも写りますが、
+  航跡ラベル等のHTML要素の重ね合わせ(`ui::terrain_view`のDOMオーバーレイ)は対象外です。
+
+## 作図(図形・線)
+
+`terrain::drawing::DrawingState`を`provide_context`し、`add`/`update`/`remove`/`clear`で図形を出し入れします
+(`TerrainView`が一覧の変化に追従して描き直します。未提供なら作図なしで動作します)。
+
+- **図形**(`Shape`): 2D=`Circle`・`Rect`(回転可)・`Polygon`(凹も可)・`Sector`(扇形)、3D=`Sphere`・`Cuboid`・`Cylinder`・`Cone`、
+  線=`Polyline`。回転角・方位は時計回りで0度が上(北)。
+- **見た目**(`Style`): `fill`(塗り)・`stroke`(輪郭線・線の色)・`stroke_width_px`(太さ、画面のピクセル)。色は`Color`(RGBA、
+  アルファ<1で半透明)。`None`にすると塗りなし/枠なし。3D図形の`stroke`は稜線(ワイヤーフレーム)。
+- **位置の置き方**(`Position`): 絶対座標に固定するか、カメラに固定するかを、図形を置く座標の種類で選びます
+  (1つの図形の中では同じ種類にそろえる)。
+
+| 種類 | 座標 | 動き | 置ける図形 |
+|---|---|---|---|
+| `Position::world(lat, lon, altitude)` | 緯度経度+高度 | 絶対座標に固定。地形と一緒に動き、山の陰に隠れる | すべて |
+| `Position::view(right, up, forward)` | カメラからの相対(m) | カメラに追従。遠近法つきで地形の手前に浮かぶ | すべて |
+| `Position::screen(corner, x, y)` | 画面の角からのpx | 画面に固定(HUD)。地形の手前に追加順で重なる | 2D図形・線 |
+
+- 高度(`Altitude`): `Msl(h)`は海抜で、2D図形は**その高さの水平な面**。`AboveGround(o)`は地表からで、2D図形・線は**地形の起伏に沿って
+  貼り付く**(3D図形は真下の地表を基準に置くだけ)。
+- 大きさの単位は`world`/`view`ではメートル、`screen`ではピクセル。3D図形の位置は、球は中心・それ以外は底面の中心。
+
+```rust
+use sim3dview::terrain::drawing::*;
+
+let drawings = DrawingState::new();
+provide_context(drawings);
+
+// 地形に貼り付く半透明の緑の円(輪郭線つき)
+drawings.add(
+    Shape::Circle { center: Position::world(35.36, 138.73, Altitude::AboveGround(0.0)), radius: 5_000.0 },
+    Style::fill_and_stroke(Color::rgba(0.2, 0.9, 0.3, 0.35), Color::rgb(0.6, 1.0, 0.6), 3.0),
+);
+// 地表から200mの高さで地形に沿う折れ線(太さ4px)
+drawings.add(
+    Shape::Polyline { points: vec![
+        Position::world(35.0, 138.0, Altitude::AboveGround(200.0)),
+        Position::world(35.4, 138.7, Altitude::AboveGround(200.0)),
+    ] },
+    Style::stroked(Color::rgb(1.0, 0.6, 0.1), 4.0),
+);
+// 画面の左上(20,20)から160x80の半透明の枠(カメラを動かしても動かない)
+let id = drawings.add(
+    Shape::Rect { center: Position::screen(Corner::TopLeft, 100.0, 60.0), width: 160.0, height: 80.0, rotation_deg: 0.0 },
+    Style::fill_and_stroke(Color::rgba(0.0, 0.0, 0.0, 0.5), Color::WHITE, 2.0),
+);
+// 後から書き換え・削除
+drawings.update(id, |d| d.style.fill = Some(Color::rgba(1.0, 0.0, 0.0, 0.5)));
+drawings.remove(id);
+```
+
+### UIから図形を作る(図形の対話作成)
+
+ユーザーが地図をクリックして図形を作り、数値で編集できるようにするには、`terrain::draw_tool::DrawToolState`を`provide_context`し、
+`ui::drawing_editor::DrawingEditor`をどこかに置きます(`DrawingState`が先に必要。`TerrainView`が地図のクリックを受けます)。
+円・矩形・多角形・扇形・折れ線・球・直方体・円柱・円錐を、ツールを選んで地図をクリックして置きます(点の置き方は画面に案内が出ます。
+多角形・折れ線はダブルクリック/Enterで確定、右クリック/Backspaceで1つ戻す、Escで終了)。作った図形は一覧から選ぶと地図上で黄色く縁取られ、
+位置・大きさ・高度・色などを数値で編集できます。
+
+```rust
+use sim3dview::terrain::draw_tool::DrawToolState;
+use sim3dview::terrain::drawing::DrawingState;
+use sim3dview::ui::drawing_editor::DrawingEditor;
+
+let drawings = DrawingState::new();
+provide_context(drawings);
+// persist(key)を付けると、作った図形をlocalStorageへ保存して次回の起動時に復元する(付けなければ保存しない)。
+provide_context(DrawToolState::new(drawings).persist("my_app.user_drawings"));
+
+view! { <DrawingEditor/> } // 地図(TerrainView)をクリックできるよう、モーダルではなくパネルやタブの中に置く
+```
+
+このエディタで作った図形だけが一覧・保存の対象です(アプリが`drawings.add`で足した図形は別扱いで、`DrawToolState`の操作では消えません)。
+
+`sample/sim_frontend`の「表示」→「作図デモ」(`components/drawing_demo.rs`)に、全種類の図形を絶対座標・視点空間・画面座標で
+置く実例があります(表示メニューの「作図...」で開く移動可能なウインドウが、上の対話作成の実例です)。
+
+## 航跡(航空機・艦船・車両等の現在位置とシンボル)
+
+シミュレーションなどから受け取った位置を、向きつきのシンボル・ラベル・航跡(軌跡)・高度線で表示します。
+`terrain::tracks::TracksState`を`provide_context`し、**受信のたびに全トラックの最新状態を`set`する**だけです
+(通信プロトコルはこのライブラリの外。前回に無いIDは新規、今回に無いIDは航跡ごと消えます)。`TerrainView`が一覧の変化に追従して
+描き直します(未提供なら航跡表示なしで動作します)。
+
+- **`Track`**: `id`(同じ実体は常に同じID)・`kind`(`SymbolKind`: 固定翼機・ヘリ・艦船・地上車両・ミサイル・不明)・
+  `affiliation`(`Affiliation`: 友軍=青・敵=赤・中立=緑・不明=黄)・`label`・緯度経度・`altitude`(`Altitude::Msl`=海抜 /
+  `AboveGround`=地表から。地形の高さを持たないサーバーの車両などは後者)・`heading_deg`(北から時計回り)・`speed_mps`・
+  `pitch_deg`(機首上げが正)・`roll_deg`(右翼が下がるのが正。3Dモデルの向きだけに使う。使わなければ0)。
+- **シンボル**は画面サイズ固定で、進行方向が画面上の実際の向きを指すよう回ります(3Dでカメラを回しても、2Dの地図でも)。
+- **ラベル**は名前+「高度 速度」。**航跡**は過去の位置の折れ線、**高度線**は地表へ下ろす細い線(3Dのみ)。
+  `TracksState`の`show_labels`/`show_trails`/`show_altitude_lines`(`RwSignal<bool>`、既定ON)で切り替えます。
+- ラベルは`TerrainView`が重ねるHTML要素です(`sim3dview.css`の`.track-label`)。
+- **クリックで選択**: 地図上のシンボルをクリックすると`TracksState::selected`にそのIDが入り、シンボルに白い輪が付きます(何もない所をクリックすると解除)。
+  詳細の表示はアプリ側で、`tracks.selected_track()`(最新の`Track`。位置の更新にも追従)を読んで作ります。`tracks.select(Some(id))`で
+  コードから選択もできます。`TabbedPanel`に`active`(`RwSignal<usize>`)を渡すと、選択されたら詳細のタブへ切り替える、ということもできます。
+
+```rust
+use sim3dview::terrain::drawing::Altitude;
+use sim3dview::terrain::tracks::{Affiliation, SymbolKind, Track, TracksState};
+
+let tracks = TracksState::new();
+provide_context(tracks);
+
+// 自分のシミュレーション結果(や受信したメッセージ)から、毎回「全トラックの最新状態」を作って渡す。
+tracks.set(vec![
+    Track {
+        id: 1,
+        kind: SymbolKind::Aircraft,
+        affiliation: Affiliation::Friendly,
+        label: "AC101".into(),
+        lat_deg: 35.5,
+        lon_deg: 138.9,
+        altitude: Altitude::Msl(4000.0),
+        heading_deg: 90.0,
+        speed_mps: 200.0,
+        pitch_deg: 0.0,
+        roll_deg: 0.0,
+    },
+    Track {
+        id: 2,
+        kind: SymbolKind::Vehicle,
+        affiliation: Affiliation::Neutral,
+        label: "TRK1".into(),
+        lat_deg: 35.3,
+        lon_deg: 139.0,
+        altitude: Altitude::AboveGround(0.0), // 地形の高さは不要(ライブラリが地表に置く)
+        heading_deg: 180.0,
+        speed_mps: 15.0,
+        pitch_deg: 0.0,
+        roll_deg: 0.0,
+    },
+]);
+```
+
+```rust
+// 選択された航跡の詳細を出す(sample/sim_frontend/src/components/track_detail.rs が実例)
+move || match tracks.selected_track() {
+    None => view! { <p>"シンボルをクリックしてください"</p> }.into_any(),
+    Some(t) => view! { <p>{t.label} " " {t.kind.label()} " " {t.affiliation.label()}</p> }.into_any(),
+}
+```
+
+通信データから`Track`への変換例は[sampleのtrack_bridge.rs](sample/sim_frontend/src/track_bridge.rs)を参照してください。
+
+## 3Dモデル(glTF)で航跡を描く(任意)
+
+航跡のシンボルの代わりに、glTF 2.0のGLBを3Dモデルとして地図に置けます。UnityやBlenderなどで作ったモデルを、**GLB形式で書き出して**使います
+(FBX・.prefabは対応しないので、Blenderなどでglbへ変換してください)。`terrain::models::ModelsState`を`provide_context`し、**種別ごとに使うモデルのURLを登録する**だけです
+(登録しない種別・読み込み中・読み込みに失敗したものは、今までどおりシンボルで描きます。`ModelsState`を提供しなければモデルなしで動作します)。
+
+- **表示方式**(`ModelsState::mode`。`ui::model_settings_dialog::ModelSettingsDialog`で利用者が切り替えられます):
+  - `SwitchToSymbol`(既定): カメラからの距離が`switch_distance_m`(既定1,500m)以内はモデル(実寸)、それより遠いとシンボル。
+  - `MinScreenSize`: 常にモデル。画面での大きさが`min_screen_px`(既定32px)に満たないモデルは、その大きさになるよう実寸より大きくします。
+  - `Off`: シンボルのみ。
+- **向き**: `Track`のヘディング・ピッチ・ロールで決まります(地球の丸みで傾く「上」にも沿います)。
+- **モデルの作り方**: 単位はメートル(cmなどなら`ModelSource::scale`で直す)、glTFの規約(+Y上・+Z前)。原点は基準点(航空機・ヘリは中心、艦船は水線、車両は接地面が便利)。
+  前が+Zからずれていれば`ModelSource::yaw_offset_deg`で直します。
+- **対応する内容**: 三角形メッシュの形・法線・頂点色・マテリアルの基本色。**テクスチャ・アニメーション・スキン・外部ファイル参照は対応しません**(GLBの1ファイルにしてください)。
+- モデルで描いているトラックも、航跡(軌跡)・高度線・ラベル・選択は今までどおりです。
+
+```rust
+use sim3dview::terrain::models::{ModelSource, ModelsState};
+use sim3dview::terrain::tracks::SymbolKind;
+use sim3dview::ui::model_settings_dialog::{ModelSettingsDialog, ModelSettingsDialogState};
+
+let models = ModelsState::new();
+models.set_source(SymbolKind::Aircraft, ModelSource::new("models/aircraft.glb")); // URLはページからの相対でも絶対でもよい
+models.set_source(SymbolKind::Ship, ModelSource { scale: 0.01, ..ModelSource::new("models/ship_cm.glb") }); // cm単位のモデル
+provide_context(models);
+
+// 表示方式・距離を利用者が変えるウインドウ(任意。メニューから`ModelSettingsDialogState.0.set(true)`で開く)
+provide_context(ModelSettingsDialogState(RwSignal::new(false)));
+// ...ビューの中に <ModelSettingsDialog/> を置く
+```
+
+利用例とデモモデルの生成方法は[sample/README.md](sample/README.md)を参照してください。
+
+設計は[DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) 6.13節。カメラの地表からの最小距離は`terrain::camera::MIN_EYE_CLEARANCE_M`を参照してください。
+
+## 右クリックメニュー
+
+`ui::context_menu::ContextMenu`は、項目を使う側が決める汎用の右クリックメニューです(`FloatingPanel`と同じ考え方)。`ContextMenuState`を`provide_context`し、
+`<ContextMenu/>`をどこかに1つ置きます。地図の右クリックにつなぐには、さらに`ui::context_menu::MapMenuState`に「右クリックした場所から項目を作る関数」を渡して
+`provide_context`します。`TerrainView`は右クリックで`MapMenuTarget { position: 地表の(緯度, 経度), track: 航跡のシンボル }`を求め、関数が返した項目でメニューを出します
+(両方のcontextが無ければ、従来どおり右クリックでレーダー観測点を追加します)。
+
+```rust
+use sim3dview::ui::context_menu::{ContextMenu, ContextMenuState, MenuItem};
+use sim3dview::ui::util::copy_to_clipboard;
+use sim3dview::ui::context_menu::MapMenuState;
+
+provide_context(ContextMenuState::new());
+provide_context(MapMenuState::new(move |target| {
+    let mut items = Vec::new();
+    if let Some((lat, lon)) = target.position {
+        items.push(MenuItem::label(format!("緯度 {lat:.5}°  経度 {lon:.5}°"))); // 押せない見出し
+        items.push(MenuItem::action("ここにレーダー観測点を追加", move || {
+            radar_markers.add(lat, lon);
+        }));
+        items.push(MenuItem::action("ここを中心点にする", move || recenter.request_at(lat, lon)));
+        items.push(MenuItem::separator());
+        items.push(MenuItem::submenu("ここに図形を作成", vec![
+            MenuItem::action("円", move || draw_tool.start_at(ToolKind::Circle, lat, lon)),
+            MenuItem::action("矩形", move || draw_tool.start_at(ToolKind::Rect, lat, lon)),
+        ]));
+        items.push(MenuItem::action("緯度経度をコピー", move || copy_to_clipboard(&format!("{lat:.6}, {lon:.6}"))));
+    }
+    items // 空ならメニューは出ない
+}));
+
+view! { <ContextMenu/> }
+```
+
+- 項目: `MenuItem::action`(押せる。`.enabled(false)`か`MenuItem::disabled`で無効に)・`submenu`(入れ子可)・`label`(押せない見出し)・`separator`。
+  項目を選ぶとメニューを閉じてからコールバックを呼びます。メニューの外のクリック・右クリック・Escでも閉じ、画面の端では収まるようにずれます。
+- 中心点の移動は`RecenterRequestState::request_at(lat, lon)`(`request()`は原点へ戻す)、図形の作成の開始は`DrawToolState::start_at(kind, lat, lon)`(その地点を1点目にして開始)。
+- 作図ウインドウ(`DrawingEditor`)の図形一覧の行も、`ContextMenuState`があれば右クリックメニュー(名前変更・複製・表示切替・削除)が出ます。
+- `sample/sim_frontend/src/components/map_menu.rs`に、航跡のシンボルと地表の両方に対する項目の実例があります。
+
+## 汎用UI部品の再利用
+
+- `ui::pointer_drag::DragTracker`: 同時に1本のpointerを追跡し、直前位置からの差分と開始位置からの
+  合計移動量を返す純粋な状態管理です。`set_pointer_capture`/`release_pointer_capture`などのDOM操作と、
+  移動量を何へ反映するかは呼び出し側が担当します。
+- `ui::tabbed_panel::{TabbedPanel, tab}`: タブ付きパネル。VAB設定など、独自タブを持つ
+  パネルを作る際にも使えます。
+- `ui::floating_panel::FloatingPanel`: フローティングウインドウ。`OriginDialog`/`CoverageAltitudeDialog`が内部で
+  使っています。独自のフローティングウインドウ(VAB設定パネルなど)を同じ見た目で作りたい場合に使ってください。
+  既定は、半透明バックドロップが画面を覆う**モーダル**(中央に出て、背景クリックか✕で閉じる)です。
+
+  | プロパティ | 既定 | 意味 |
+  |---|---|---|
+  | `modal` | `true` | `false`にするとバックドロップなしの**ウインドウ**になり、背後(地図など)を操作したまま出しておける(✕でだけ閉じる) |
+  | `draggable` | `false` | `true`でタイトルバーのドラッグで動かせる。タイトルバーの一部(横80px・縦40px)が必ず画面内に残る範囲に制限され、動かした位置は閉じて開き直しても保たれる |
+  | `initial_position` | `(80, 60)` | ウインドウ(`modal=false`)の初期位置(画面左上からの`(x, y)`、px)。モーダルは常に中央 |
+
+  ```rust
+  use sim3dview::ui::floating_panel::FloatingPanel;
+
+  let open = RwSignal::new(false);
+  view! {
+      <FloatingPanel open=open title="独自設定">
+          <p>"ここに好きな内容を置ける。"</p>
+      </FloatingPanel>
+  }
+  ```
+
+  地図を操作しながら使う、動かせるウインドウにする例(サンプルの作図ウインドウ。`sample/sim_frontend/src/components/drawing_window.rs`):
+
+  ```rust
+  view! {
+      <FloatingPanel open=open title="作図" modal=false draggable=true initial_position=(360.0, 60.0)>
+          <DrawingEditor/>
+      </FloatingPanel>
+  }
+  ```
+
+## フルの実装例
+
+`sample/sim_frontend`(Rust、このライブラリを実際に使うアプリ)と`sample/sim_server`
+(C++、地形データ配信+WebSocketサーバーの参照実装)を参照してください。VAB・状況パネル・
+メニューバー・WebSocket/msgpackプロトコルなど、このライブラリに含まれないアプリ固有の
+実装例が一通り揃っています。

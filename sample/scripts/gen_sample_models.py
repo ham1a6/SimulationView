@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """サンプル用の3Dモデル(glTF 2.0のGLB)を生成する。標準ライブラリだけで動く。
 
-    python scripts/gen_sample_models.py
+    python sample/scripts/gen_sample_models.py
 
 `sample/sim_frontend/assets/models/`に、種別ごとの簡易な低ポリゴンモデルを書き出す
 (aircraft / helicopter / ship / vehicle / missile)。sim3dviewライブラリの3Dモデル表示(`terrain::models`、
@@ -16,7 +16,7 @@ import math
 import os
 import struct
 
-OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'sample', 'sim_frontend', 'assets', 'models')
+OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'sim_frontend', 'assets', 'models')
 
 
 def sub(a, b):

@@ -1,6 +1,6 @@
 # サードパーティ・ソフトウェア等の表示(THIRD_PARTY_NOTICE)
 
-Sim3dView(`sim3dview`ライブラリ・`tools/geotiff_preprocess`)が、利用・同梱・リンクしているサードパーティのソフトウェアとデータの一覧、その著作権表示とライセンス条件です。
+Sim3dView(`sim3dview`ライブラリ・`sample/sim_frontend`・`sample/sim_server`・`tools/geotiff_preprocess`)が、利用・同梱・リンクしているサードパーティのソフトウェアとデータの一覧、その著作権表示とライセンス条件です。
 
 > **この文書について**: 依存関係とライセンスの情報を機械的に集めた**参考資料**で、法的な助言ではありません。製品として配布する前に、最新の依存関係(`Cargo.lock`・`vcpkg.json`)で再生成し、必要に応じて法務の確認を受けてください。本プロジェクト自身のライセンスは、このファイルの対象外です(リポジトリにLICENSEファイルはまだありません)。
 
@@ -9,39 +9,65 @@ Sim3dView(`sim3dview`ライブラリ・`tools/geotiff_preprocess`)が、利用�
 
 ## 目次
 
+1. [地形データ: ALOS World 3D-30m (AW3D30)](#1-地形データ-alos-world-3d-30m-aw3d30)
 2. [ブラウザに配布されるもの(Rustクレート)](#2-ブラウザに配布されるものrustクレート)
+3. [サーバー(`sim_server`)に含まれるもの(C++)](#3-サーバーsim_serverに含まれるものc)
 4. [前処理ツール(`geotiff_preprocess`)が使うもの](#4-前処理ツールgeotiff_preprocessが使うもの)
 5. [著作権表示(Rustクレートごと)](#5-著作権表示rustクレートごと)
 6. [ライセンス全文](#6-ライセンス全文)
 7. [この文書に含めないもの・更新方法](#7-この文書に含めないもの更新方法)
 
+## 1. 地形データ: ALOS World 3D-30m (AW3D30)
+
+`sample/map_data/`の標高データ(`ALPSMLC30_*`。リポジトリには含まれず、ローカルに置く入力データ)と、それを`geotiff_preprocess`で変換した`assets/terrain/`の地形タイル(`metadata.json`・`base.bin`・`tiles/`)は、JAXA(宇宙航空研究開発機構)の**ALOS World 3D-30m(AW3D30)** から作られた二次的なデータです。
+
+| 項目 | 内容 |
+|---|---|
+| データ名 | ALOS World 3D - 30m (AW3D30)(ファイル名の接頭辞は`ALPSMLC30`) |
+| 提供元 | JAXA / EORC(地球観測研究センター)。データの取得元は<https://www.eorc.jaxa.jp/ALOS/en/dataset/aw3d30/aw3d30_e.htm> |
+| 利用条件 | JAXAの利用条件(<https://earth.jaxa.jp/en/data/policy/>)に従う |
+| クレジット | **JAXAがデータの提供元であることを明示する**こと。この条件のもとでの例示は「Credit: XXXX (JAXA)」の形 |
+| 商用利用 | 利用条件のページでは、商用利用の場合は**事前にJAXAへ通知が必要**とされている(AW3D30のデータ提供ページは「無償で、商用・非商用を問わず利用できる」と書いており、表現が一致していない) |
+| 再配布・二次的データ | 利用条件に従って可能。二次的なデータを配布するときは、JAXAとその他の関与した組織の両方をクレジットする |
+| 保証 | JAXAは、データの利用またはその品質による結果に責任を負わない |
+| 問い合わせ | earth@ml.jaxa.jp(JAXAの利用条件ページに記載) |
+
+**推奨するクレジット表記の例**(アプリの「ヘルプ」や画面の隅などに置く):
+
+```text
+Elevation data: ALOS World 3D - 30m (AW3D30), provided by the Japan Aerospace Exploration Agency (JAXA).
+標高データ: ALOS World 3D - 30m (AW3D30)(提供: 宇宙航空研究開発機構 JAXA)。地形タイルは、このデータをSim3dViewの前処理ツールで変換したものです。
+```
+
+> **要確認**: 上の内容は2026年9月時点でJAXAのWebページに書かれていた条件の要約です。**商用で配布・提供する場合は、JAXAの現行の利用条件を直接確認し、必要ならJAXAへ事前に通知してください**(特に、事前通知の要否と、地形タイルを配布物・サービスに含めることの扱い)。
+
 ## 2. ブラウザに配布されるもの(Rustクレート)
 
-`sim3dview`をWebAssemblyにビルドしたときに、実行時にリンクされるクレートです(`Cargo.lock`から`wasm32-unknown-unknown`向けに解決した**190個**。単体テスト専用の依存(`naga`)、ビルド時だけ動くもの(proc-macro・ビルドスクリプトの依存)、開発用ツール(`trunk`・`wasm-bindgen`のCLI)は含めない)。
+`sim3dview`と`sample/sim_frontend`をWebAssemblyにビルドしたときに、実行時にリンクされるクレートです(`Cargo.lock`から`wasm32-unknown-unknown`向けに解決した**194個**。単体テスト専用の依存(`naga`)、ビルド時だけ動くもの(proc-macro・ビルドスクリプトの依存)、開発用ツール(`trunk`・`wasm-bindgen`のCLI)は含めない)。
 
 ライセンスが「A OR B」の形のクレートは、AとBのどちらの条件でも利用できる二重ライセンスです。
 
 **ライセンスの内訳**:
 
 - 99個: `MIT OR Apache-2.0`
-- 37個: `MIT`
+- 39個: `MIT`
 - 15個: `Unicode-3.0`
 - 13個: `Apache-2.0 OR MIT`
+- 5個: `MIT/Apache-2.0`
 - 5個: `Zlib`
-- 4個: `MIT/Apache-2.0`
 - 4個: `Unlicense OR MIT`
 - 2個: `Apache-2.0`
+- 2個: `Apache-2.0/MIT`
 - 2個: `MIT OR Apache-2.0 OR Zlib`
 - 2個: `Unlicense/MIT`
 - 1個: `(MIT OR Apache-2.0) AND Unicode-3.0`
-- 1個: `Apache-2.0/MIT`
 - 1個: `BSD-2-Clause OR Apache-2.0 OR MIT`
 - 1個: `BSL-1.0`
 - 1個: `CC0-1.0`
 - 1個: `ISC`
 - 1個: `Zlib OR Apache-2.0 OR MIT`
 
-主要なクレートの役割: `leptos`(UIフレームワーク)、`wgpu`(WebGPU描画)、`glam`(ベクトル・行列)、`earcutr`(多角形の三角形分割)、`serde`/`serde_json`(シリアライズ)、`gloo-net`/`gloo-timers`/`web-sys`/`wasm-bindgen`/`js-sys`(ブラウザAPI)、`bytemuck`(GPUバッファへのコピー)。
+主要なクレートの役割: `leptos`(UIフレームワーク)、`wgpu`(WebGPU描画)、`glam`(ベクトル・行列)、`earcutr`(多角形の三角形分割)、`serde`/`serde_json`/`rmp-serde`(シリアライズ)、`gloo-net`/`gloo-timers`/`web-sys`/`wasm-bindgen`/`js-sys`(ブラウザAPI)、`bytemuck`(GPUバッファへのコピー)。
 
 | クレート | 版 | ライセンス | 配布元 |
 |---|---|---|---|
@@ -68,6 +94,8 @@ Sim3dView(`sim3dview`ライブラリ・`tools/geotiff_preprocess`)が、利用�
 | codespan-reporting | 0.13.1 | Apache-2.0 | <https://github.com/brendanzab/codespan> |
 | collection_literals | 1.0.3 | MIT | <https://github.com/staedoix/collection_literals> |
 | config | 0.15.25 | MIT OR Apache-2.0 | <https://github.com/rust-cli/config-rs> |
+| console_error_panic_hook | 0.1.7 | Apache-2.0/MIT | <https://github.com/rustwasm/console_error_panic_hook> |
+| console_log | 1.1.0 | MIT/Apache-2.0 | <https://github.com/iamcodemaker/console_log> |
 | const-str | 1.1.0 | MIT | <https://github.com/Nugine/const-str> |
 | const_format | 0.2.36 | Zlib | <https://github.com/rodrimati1992/const_format_crates/> |
 | const_str_slice_concat | 0.1.0 | MIT | <https://github.com/leptos-rs/leptos> |
@@ -171,6 +199,8 @@ Sim3dView(`sim3dview`ライブラリ・`tools/geotiff_preprocess`)が、利用�
 | regex | 1.13.1 | MIT OR Apache-2.0 | <https://github.com/rust-lang/regex> |
 | regex-automata | 0.4.18 | MIT OR Apache-2.0 | <https://github.com/rust-lang/regex> |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 | <https://github.com/rust-lang/regex> |
+| rmp | 0.8.15 | MIT | <https://github.com/3Hren/msgpack-rust> |
+| rmp-serde | 1.3.1 | MIT | <https://github.com/3Hren/msgpack-rust> |
 | rstml | 0.12.1 | MIT | <https://github.com/rs-tml/rstml> |
 | rustc-hash | 1.1.0 | Apache-2.0/MIT | <https://github.com/rust-lang-nursery/rustc-hash> |
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT | <https://github.com/rust-lang/rustc-hash> |
@@ -237,6 +267,54 @@ Sim3dView(`sim3dview`ライブラリ・`tools/geotiff_preprocess`)が、利用�
 | zmij | 1.0.23 | MIT | <https://github.com/dtolnay/zmij> |
 
 WebAssemblyにはRustの標準ライブラリ(`std`・`core`・`alloc`、`compiler_builtins`など。`MIT OR Apache-2.0`)のコードも含まれます。配布元: <https://github.com/rust-lang/rust>
+
+## 3. サーバー(`sim_server`)に含まれるもの(C++)
+
+`sample/sim_server`をビルドした`sim_server.exe`に、ソースの取り込み(サブモジュール)またはvcpkgのライブラリとしてリンクされます。
+
+| ライブラリ | 版 | ライセンス | 配布元・ライセンスファイル |
+|---|---|---|---|
+| uWebSockets | v20.80.0系(サブモジュール) | Apache-2.0 | <https://github.com/uNetworking/uWebSockets> (`sample/sim_server/third_party/uWebSockets/LICENSE`) |
+| uSockets | v0.8.8系(uWebSocketsに同梱) | Apache-2.0 | <https://github.com/uNetworking/uSockets> (`.../uWebSockets/uSockets/LICENSE`) |
+| msgpack-c(C++版、msgpack-cxx) | cpp-9.0.0(サブモジュール) | BSL-1.0(Boost Software License 1.0)。著作権表示: Copyright (C) 2008-2015 FURUHASHI Sadayuki | <https://github.com/msgpack/msgpack-c> (`.../msgpack-cxx/LICENSE_1_0.txt`・`COPYING`・`NOTICE`) |
+| libuv | 1.52.1(vcpkg) | MIT | <https://github.com/libuv/libuv> |
+| OpenSSL | 3.6.4(vcpkg) | Apache-2.0 | <https://www.openssl.org/> (TLS用。ビルドには常に必要) |
+| zlib | 1.3.2(vcpkg) | Zlib | <https://zlib.net/> |
+
+- msgpack-cxxは、Boost PredefとBoost Preprocessor(いずれもBoost Software License 1.0)を同梱しています(`msgpack-cxx/NOTICE`)。
+- uSocketsのソースには、BoringSSL・lsquicのディレクトリがありますが、`sample/sim_server/CMakeLists.txt`はこれらをビルドに使いません(TLSはvcpkgのOpenSSL)。
+- サーバー本体(`sample/sim_server/src`・`include`)はこのプロジェクトのコードです。
+- 配布物にサブモジュールのソースを含める場合は、各サブモジュールの`LICENSE`ファイルを一緒に配布してください。
+
+### 3.1 msgpack-cxxのライセンス全文(Boost Software License 1.0)
+
+```text
+Boost Software License - Version 1.0 - August 17th, 2003
+
+Permission is hereby granted, free of charge, to any person or organization
+obtaining a copy of the software and accompanying documentation covered by
+this license (the "Software") to use, reproduce, display, distribute,
+execute, and transmit the Software, and to prepare derivative works of the
+Software, and to permit third-parties to whom the Software is furnished to
+do so, all subject to the following:
+
+The copyright notices in the Software and this entire statement, including
+the above license grant, this restriction and the following disclaimer,
+must be included in all copies of the Software, in whole or in part, and
+all derivative works of the Software, unless such copies or derivative
+works are solely in the form of machine-executable object code generated by
+a source language processor.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT
+SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE
+FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
+uWebSockets・uSockets・OpenSSLのApache-2.0、libuvのMIT、zlibのZlibライセンスの全文は、[6. ライセンス全文](#6-ライセンス全文)にあります(libuvは`Copyright (c) 2015-present libuv project contributors.`、zlibは`(C) 1995-2026 Jean-loup Gailly and Mark Adler`)。uWebSockets・uSocketsのソースには、著作権者名の記載も`NOTICE`ファイルもありません(`LICENSE`はApache-2.0の全文のみ)。配布するときは、上流のリポジトリの表示を確認してください。
 
 ## 4. 前処理ツール(`geotiff_preprocess`)が使うもの
 
@@ -379,6 +457,16 @@ GDALの推移的な依存はvcpkgの版によって変わります。配布す�
 `MIT OR Apache-2.0`
 
 - Copyright (c) Individual contributors
+
+### console_error_panic_hook 0.1.7
+`Apache-2.0/MIT`
+
+- Copyright (c) 2018 Nick Fitzgerald
+
+### console_log 1.1.0
+`MIT/Apache-2.0`
+
+- Copyright (c) 2018 Matthew Nicholson
 
 ### const-str 1.1.0
 `MIT`
@@ -916,6 +1004,16 @@ GDALの推移的な依存はvcpkgの版によって変わります。配布す�
 
 - Copyright (c) 2014 The Rust Project Developers
 
+### rmp 0.8.15
+`MIT`
+
+- Copyright (c) 2017 Evgeny Safronov
+
+### rmp-serde 1.3.1
+`MIT`
+
+- Copyright (c) 2017 Evgeny Safronov
+
 ### rstml 0.12.1
 `MIT`
 
@@ -1249,7 +1347,7 @@ GDALの推移的な依存はvcpkgの版によって変わります。配布す�
 
 ## 6. ライセンス全文
 
-上の各項目で使われているライセンスの全文です。MITライセンスは、著作権者ごとに`Copyright (c) <year> <copyright holders>`の部分だけが異なるので、雛形を1つだけ載せ、実際の著作権表示は[5.](#5-著作権表示rustクレートごと)(Rustクレート)の記載を参照してください。
+上の各項目で使われているライセンスの全文です。MITライセンスは、著作権者ごとに`Copyright (c) <year> <copyright holders>`の部分だけが異なるので、雛形を1つだけ載せ、実際の著作権表示は[5.](#5-著作権表示rustクレートごと)(Rustクレート)と、[3.](#3-サーバーsim_serverに含まれるものc)のC++ライブラリの記載を参照してください。
 
 ### MIT
 
@@ -1612,6 +1710,34 @@ TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
 ```
 
+### BSL-1.0
+
+```text
+Boost Software License - Version 1.0 - August 17th, 2003
+
+Permission is hereby granted, free of charge, to any person or organization
+obtaining a copy of the software and accompanying documentation covered by
+this license (the "Software") to use, reproduce, display, distribute,
+execute, and transmit the Software, and to prepare derivative works of the
+Software, and to permit third-parties to whom the Software is furnished to
+do so, all subject to the following:
+
+The copyright notices in the Software and this entire statement, including
+the above license grant, this restriction and the following disclaimer,
+must be included in all copies of the Software, in whole or in part, and
+all derivative works of the Software, unless such copies or derivative
+works are solely in the form of machine-executable object code generated by
+a source language processor.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT
+SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE
+FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+```
+
 ### CC0-1.0
 
 (`base16`クレート同梱のファイルから)
@@ -1771,6 +1897,13 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ```
 
+### Electronデスクトップ版の追加依存
+
+`sample/sim_desktop`はElectron 44.4.4(MIT)を使用します。配布元: <https://github.com/electron/electron>。
+Electronに同梱されるChromium・Node.js等のライセンス/著作権表示は、配布フォルダーの`LICENSE`と`LICENSES.chromium.html`を参照してください。`package.cjs`はElectronの配布ファイルをそのままコピーし、これらの表示を保持します。
+
+npmの取得・展開用依存は開発時だけ使用し、アプリの`node_modules`は配布しません。ブラウザ版にはElectronは含まれません。
+
 ## 7. この文書に含めないもの・更新方法
 
 **含めないもの**
@@ -1783,6 +1916,6 @@ For more information, please refer to <http://unlicense.org/>
 **更新方法**(依存を追加・更新したときに再実行する)
 ```powershell
 # リポジトリのルートで実行する(cargo metadataは、スクリプトが自分で実行する)
-python scripts/gen_third_party_notice.py
+python sample/scripts/gen_third_party_notice.py
 ```
-前処理CLIの依存は `tools/geotiff_preprocess/vcpkg.json` を参照して更新してください。
+C++側(3.・4.)の版とライセンスは、`sample/sim_server/vcpkg.json`・`tools/geotiff_preprocess/vcpkg.json`とサブモジュールの版(`git submodule status`)を見て、手で更新してください。

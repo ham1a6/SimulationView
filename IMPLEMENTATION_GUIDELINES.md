@@ -2,7 +2,7 @@
 
 ライブラリへの機能追加・修正と、アプリへの組み込みを行う開発者向けの作業指針。
 公開APIの入口は[APIリファレンス](API_REFERENCE.md)、導入手順・CSSは[README](README.md)を参照する。
-仕様を決めるときは[設計書](../docs/DETAILED_DESIGN.md)0節、変更対象の1〜7節、対応する9節を読む。
+仕様を決めるときは[設計書](docs/DETAILED_DESIGN.md)0節、変更対象の1〜7節、対応する9節を読む。
 大規模変更・再実装は10節の依存順と受け入れ基準に従う。
 
 ## 責務に沿って変更箇所を選ぶ
@@ -15,8 +15,8 @@
 | メッシュ・LOD計画・GPU描画 | `src/terrain/{mesh,lod,renderer}` | 6.4〜6.10、9.4、9.7、9.9 |
 | DOMイベント・状態と描画の接続 | `src/ui/terrain_view/` | 9.13 |
 | 汎用パネル・ダイアログ・入力部品 | `src/ui/`と`style/sim3dview.css` | 7.6〜7.7、9.14 |
-| URL構築・通信・受信データ変換・業務UI | `sample/sim_frontend/` | 4、6.2〜6.3、7 |
-| 地形ファイル生成 | `../tools/geotiff_preprocess/` | 2、9.1、9.5 |
+| URL構築・通信・受信データ変換・業務UI | 利用アプリ | [サンプル設計](sample/docs/DETAILED_DESIGN.md) |
+| 地形ファイル生成 | `tools/geotiff_preprocess/` | 2、9.1、9.5 |
 
 ライブラリはアプリが指定したURLから地形やモデルを取得するが、特定サーバーのURL構築や通信プロトコルを持たない。
 VAB・状況パネル・業務メニューをライブラリへ移さない。
@@ -86,7 +86,7 @@ GPU生成には地形データと有効なcanvasサイズの両方が必要な�
 
 定数・バイト配置・アルゴリズムはコードと設計書9節で確認し、この文書へ複製しない。
 シェーダー全文も文書へ転記しない。地形のカリング有効化など既知の技術的負債に触れる場合は、
-[AGENTS.md](../AGENTS.md)の注意点と既存の受け入れ基準を先に確認する。
+[AGENTS.md](AGENTS.md)の注意点と既存の受け入れ基準を先に確認する。
 
 ## 検証と完了条件
 
@@ -95,7 +95,7 @@ GPU生成には地形データと有効なcanvasサイズの両方が必要な�
 | 変更範囲 | 必要な確認 |
 |---|---|
 | API文書・rustdoc | 下記`cargo doc`、相対リンクと型名、サンプルとの一致 |
-| ライブラリのRust実装 | 両crateのWASM checkと`cargo test -p sim3dview` |
+| ライブラリのRust実装 | ライブラリのWASM checkと`cargo test -p sim3dview` |
 | 公開API・context | 上記に加え、状態共有・任意contextなし・サンプルの利用箇所 |
 | WGSL・GPU構造体 | `cargo test -p sim3dview`内のnaga検証とRust/WGSLレイアウトテスト |
 | カメラ・描画・対話UI・CSS | 関連する単体テストとブラウザでの反復操作 |
@@ -103,7 +103,6 @@ GPU生成には地形データと有効なcanvasサイズの両方が必要な�
 ```powershell
 cargo doc -p sim3dview --no-deps --target wasm32-unknown-unknown
 cargo check -p sim3dview --target wasm32-unknown-unknown
-cargo check -p sim_frontend --target wasm32-unknown-unknown
 cargo test -p sim3dview
 ```
 
@@ -117,12 +116,10 @@ cargo test --workspace
 
 `cargo.exe`が信頼されていないマウントポイントのエラーになる場合は、
 `~/.rustup/toolchains/stable-x86_64-pc-windows-msvc/bin/cargo.exe`を直接使用する。
-セットアップの詳細は[ルートREADME](../README.md)を参照する。
+セットアップの詳細は[サンプルREADME](sample/README.md)を参照する。
 
-ブラウザ確認では`$env:NO_COLOR = "true"`を設定して`sample/sim_frontend`でTrunkを起動する。
-ライブラリだけを編集した場合もTrunkを再起動する。Browserペインを表示して`http://localhost:8081`を使い、
-同じ操作を複数回確認する。変更に応じて2D/3D切替、パン・ズーム、原点変更、地形境界、
-作図の開始・取消・再開、航跡の選択・消滅、タブ再表示を確認する。
+利用アプリでの結合検証は[sample/AGENTS.md](sample/AGENTS.md)を参照する。
+変更に応じて2D/3D切替、パン・ズーム、原点変更、地形境界、作図の作成・取消、航跡選択、タブ再表示を確認する。
 セキュリティやファイアウォール設定は変更しない。
 
 完了時は変更理由、検証結果、未確認の範囲を記録する。既存の未コミット変更は依頼に必要な範囲以外で触らない。

@@ -1,8 +1,8 @@
 # GeoTIFF前処理ツール(単発実行CLI)。sim3dviewライブラリが読む地形データ
 # (heightmap.bin/metadata.json)を、ALOS DSM GeoTIFFタイルから生成する。
 #
-# sample/sim_server(常駐サーバー)とは独立したCMakeプロジェクトにしてあり、GDAL依存は
-# このツールに限定される(サーバー側はGDALをリンクしない)。ビルド手順はREADME.md参照。
+# 独立したCMakeプロジェクト。GDAL依存はこのツールに限定する。
+# ビルド手順はこのディレクトリのREADME.md参照。
 cmake_minimum_required(VERSION 3.20)
 project(geotiff_preprocess CXX)
 

@@ -298,10 +298,10 @@ pub(crate) mod tests {
         }
     }
 
-    /// サンプルアプリのモデル(`scripts/gen_sample_models.py`が生成する)が読めて、実寸の大きさで、
+    /// 固定の回帰検証用モデルが読めて、実寸の大きさで、
     /// 三角形の向きが頂点の法線と合っている(裏返っていない)こと。
     #[test]
-    fn sample_models_import_with_real_sizes_and_consistent_winding() {
+    fn fixture_models_import_with_real_sizes_and_consistent_winding() {
         // (ファイル, 前後y方向の長さの範囲m)
         let expected = [
             ("aircraft", 14.0..16.0),
@@ -310,14 +310,10 @@ pub(crate) mod tests {
             ("vehicle", 8.0..10.0),
             ("missile", 4.5..5.5),
         ];
-        let dir = concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../sample/sim_frontend/assets/models/"
-        );
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/models/");
         for (name, length_range) in expected {
-            let bytes = std::fs::read(format!("{dir}{name}.glb")).unwrap_or_else(|e| {
-                panic!("{name}.glbを読めません(python scripts/gen_sample_models.pyで生成): {e}")
-            });
+            let bytes = std::fs::read(format!("{dir}{name}.glb"))
+                .unwrap_or_else(|e| panic!("{name}.glbを読めません: {e}"));
             let mesh = import_glb(&bytes).unwrap_or_else(|e| panic!("{name}: {e}"));
             let ys = mesh.vertices.iter().map(|v| v.position[1]);
             let length = ys.clone().fold(f32::MIN, f32::max) - ys.fold(f32::MAX, f32::min);

@@ -1,9 +1,9 @@
 /* Sim3dView 3カラムレイアウト。DESIGN.md 6.1節。
    地形描画・見通し範囲・タブパネル・フローティングパネルのスタイルはsim3dviewライブラリ側
-   (sim3dview/style/sim3dview.css、index.htmlで併せて読み込む)にある。ここにあるのは
+   (style/sim3dview.css、index.htmlで併せて読み込む)にある。ここにあるのは
    このサンプルアプリ固有の画面(全体レイアウト・VAB・メニューバー・状況パネル)のみ。
    `--bg-panel`/`--fg`/`--border`/`--accent`はsim3dviewライブラリのCSSも参照する
-   テーマ契約(sim3dview/README.md参照)。 */
+   テーマ契約(README.md参照)。 */
 
 :root {
     /* シミュレーションステータスパネル・VABパネルの高さの比率がおよそ1:1になる幅

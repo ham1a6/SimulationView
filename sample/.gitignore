@@ -1,0 +1,14 @@
+/target/
+/sim_server/build/
+/sim_server/third_party/vcpkg_installed/
+/sim_server/vcpkg-configuration.json
+/sim_server/assets/terrain/*.bin
+/sim_server/assets/terrain/*.json
+/sim_server/assets/terrain/*.png
+/sim_server/assets/terrain/tiles/
+/sim_frontend/dist/
+/sim_desktop/node_modules/
+/sim_desktop/out/
+/.npm-cache/
+/certs/
+/map_data/

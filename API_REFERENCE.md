@@ -2,7 +2,7 @@
 
 アプリから利用する公開APIの入口、状態の更新方法、組み込み時の前提をまとめる。
 使用例とCSS契約は[README](README.md)、変更時の作業ルールは[実装ガイドライン](IMPLEMENTATION_GUIDELINES.md)を参照する。
-設計判断とアルゴリズムの正は[設計書](../docs/DETAILED_DESIGN.md)に置く。
+設計判断とアルゴリズムの正は[設計書](docs/DETAILED_DESIGN.md)に置く。
 
 ## 型・メソッドの詳細を調べる
 
@@ -162,9 +162,9 @@ GLBは単一ファイルの三角形メッシュ・法線・頂点色・基本�
 
 | 目的 | 実装例 |
 |---|---|
-| 状態登録と画面構成 | [sample/sim_frontend/src/app.rs](../sample/sim_frontend/src/app.rs) |
-| 通信データから航跡への変換 | [track_bridge.rs](../sample/sim_frontend/src/track_bridge.rs) |
-| 地図の右クリックメニュー | [map_menu.rs](../sample/sim_frontend/src/components/map_menu.rs) |
-| 各座標空間の図形 | [drawing_demo.rs](../sample/sim_frontend/src/components/drawing_demo.rs) |
+| 状態登録と画面構成 | [sample/sim_frontend/src/app.rs](sample/sim_frontend/src/app.rs) |
+| 通信データから航跡への変換 | [track_bridge.rs](sample/sim_frontend/src/track_bridge.rs) |
+| 地図の右クリックメニュー | [map_menu.rs](sample/sim_frontend/src/components/map_menu.rs) |
+| 各座標空間の図形 | [drawing_demo.rs](sample/sim_frontend/src/components/drawing_demo.rs) |
 
 データ配信形式とCSSは[README](README.md)、内部変更の検証は[実装ガイドライン](IMPLEMENTATION_GUIDELINES.md)へ。

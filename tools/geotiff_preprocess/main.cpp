@@ -624,7 +624,7 @@ void write_metadata_json(const fs::path& path, float elevation_min, float elevat
 
 int main(int argc, char** argv) {
     std::string map_data_dir = "map_data";
-    std::string output_dir = "sample/sim_server/assets/terrain";
+    std::string output_dir = "terrain";
     if (argc > 1) {
         map_data_dir = argv[1];
     }

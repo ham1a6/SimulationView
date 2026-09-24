@@ -1,6 +1,6 @@
 """THIRD_PARTY_NOTICE.md を、Cargo.lock(cargo metadata)とC++側のライセンスファイルから生成する。
 
-使い方(リポジトリのルートで): python scripts/gen_third_party_notice.py
+使い方(リポジトリのルートで): python sample/scripts/gen_third_party_notice.py
 C++側(vcpkg・サブモジュール)の版とライセンスは、下の文面を手で更新する。
 """
 import glob
@@ -23,7 +23,7 @@ meta = subprocess.run(
 m = json.loads(meta.decode('utf-8'))
 pk = {p['id']: p for p in m['packages']}
 nodes = {n['id']: n for n in m['resolve']['nodes']}
-roots = [i for i, p in pk.items() if p['name'] == 'sim3dview']
+roots = [i for i, p in pk.items() if p['name'] in ('sim3dview', 'sim_frontend')]
 seen, stack = set(), list(roots)
 while stack:
     i = stack.pop()
@@ -40,7 +40,7 @@ def is_pm(p):
 
 
 crates = sorted(
-    (pk[i] for i in seen if pk[i]['name'] != 'sim3dview' and not is_pm(pk[i])),
+    (pk[i] for i in seen if pk[i]['name'] not in ('sim3dview', 'sim_frontend') and not is_pm(pk[i])),
     key=lambda p: (p['name'], p['version']),
 )
 
@@ -106,6 +106,9 @@ for p in crates:
         for k, fn in MARKERS.items():
             if k not in texts and fn(t):
                 texts[k] = (p['name'], t.strip('\n'))
+# Boost Software License 1.0 は msgpack-cxx のものを使う
+bsl = read(REPO + 'sim_server/third_party/msgpack-cxx/LICENSE_1_0.txt').strip('\n')
+
 MIT_TEXT = '''MIT License
 
 Copyright (c) <year> <copyright holders>
@@ -138,7 +141,7 @@ def md_escape(s):
 
 
 w('# サードパーティ・ソフトウェア等の表示(THIRD_PARTY_NOTICE)\n')
-w('Sim3dView(`sim3dview`ライブラリ・`tools/geotiff_preprocess`)が、'
+w('Sim3dView(`sim3dview`ライブラリ・`sample/sim_frontend`・`sample/sim_server`・`tools/geotiff_preprocess`)が、'
   '利用・同梱・リンクしているサードパーティのソフトウェアとデータの一覧、その著作権表示とライセンス条件です。\n')
 w('> **この文書について**: 依存関係とライセンスの情報を機械的に集めた**参考資料**で、法的な助言ではありません。'
   '製品として配布する前に、最新の依存関係(`Cargo.lock`・`vcpkg.json`)で再生成し、必要に応じて法務の確認を受けてください。'
@@ -147,15 +150,40 @@ w(f'- 生成日: {date.today().isoformat()}(`Cargo.lock`の内容とvcpkg・サ�
 w('- 再生成の手順は末尾の「この文書の更新方法」を参照\n')
 
 w('## 目次\n')
+w('1. [地形データ: ALOS World 3D-30m (AW3D30)](#1-地形データ-alos-world-3d-30m-aw3d30)')
 w('2. [ブラウザに配布されるもの(Rustクレート)](#2-ブラウザに配布されるものrustクレート)')
+w('3. [サーバー(`sim_server`)に含まれるもの(C++)](#3-サーバーsim_serverに含まれるものc)')
 w('4. [前処理ツール(`geotiff_preprocess`)が使うもの](#4-前処理ツールgeotiff_preprocessが使うもの)')
 w('5. [著作権表示(Rustクレートごと)](#5-著作権表示rustクレートごと)')
 w('6. [ライセンス全文](#6-ライセンス全文)')
 w('7. [この文書に含めないもの・更新方法](#7-この文書に含めないもの更新方法)\n')
 
+# ---- 1. データ
+w('## 1. 地形データ: ALOS World 3D-30m (AW3D30)\n')
+w('`sample/map_data/`の標高データ(`ALPSMLC30_*`。リポジトリには含まれず、ローカルに置く入力データ)と、それを`geotiff_preprocess`で変換した'
+  '`assets/terrain/`の地形タイル(`metadata.json`・`base.bin`・`tiles/`)は、JAXA(宇宙航空研究開発機構)の'
+  '**ALOS World 3D-30m(AW3D30)** から作られた二次的なデータです。\n')
+w('| 項目 | 内容 |')
+w('|---|---|')
+w('| データ名 | ALOS World 3D - 30m (AW3D30)(ファイル名の接頭辞は`ALPSMLC30`) |')
+w('| 提供元 | JAXA / EORC(地球観測研究センター)。データの取得元は<https://www.eorc.jaxa.jp/ALOS/en/dataset/aw3d30/aw3d30_e.htm> |')
+w('| 利用条件 | JAXAの利用条件(<https://earth.jaxa.jp/en/data/policy/>)に従う |')
+w('| クレジット | **JAXAがデータの提供元であることを明示する**こと。この条件のもとでの例示は「Credit: XXXX (JAXA)」の形 |')
+w('| 商用利用 | 利用条件のページでは、商用利用の場合は**事前にJAXAへ通知が必要**とされている(AW3D30のデータ提供ページは「無償で、商用・非商用を問わず利用できる」と書いており、表現が一致していない) |')
+w('| 再配布・二次的データ | 利用条件に従って可能。二次的なデータを配布するときは、JAXAとその他の関与した組織の両方をクレジットする |')
+w('| 保証 | JAXAは、データの利用またはその品質による結果に責任を負わない |')
+w('| 問い合わせ | earth@ml.jaxa.jp(JAXAの利用条件ページに記載) |\n')
+w('**推奨するクレジット表記の例**(アプリの「ヘルプ」や画面の隅などに置く):\n')
+w('```text')
+w('Elevation data: ALOS World 3D - 30m (AW3D30), provided by the Japan Aerospace Exploration Agency (JAXA).')
+w('標高データ: ALOS World 3D - 30m (AW3D30)(提供: 宇宙航空研究開発機構 JAXA)。地形タイルは、このデータをSim3dViewの前処理ツールで変換したものです。')
+w('```\n')
+w('> **要確認**: 上の内容は2026年9月時点でJAXAのWebページに書かれていた条件の要約です。**商用で配布・提供する場合は、'
+  'JAXAの現行の利用条件を直接確認し、必要ならJAXAへ事前に通知してください**(特に、事前通知の要否と、地形タイルを配布物・サービスに含めることの扱い)。\n')
+
 # ---- 2. Rustクレート
 w('## 2. ブラウザに配布されるもの(Rustクレート)\n')
-w('`sim3dview`をWebAssemblyにビルドしたときに、実行時にリンクされるクレートです'
+w('`sim3dview`と`sample/sim_frontend`をWebAssemblyにビルドしたときに、実行時にリンクされるクレートです'
   f'(`Cargo.lock`から`wasm32-unknown-unknown`向けに解決した**{len(crates)}個**。単体テスト専用の依存(`naga`)、ビルド時だけ動くもの'
   '(proc-macro・ビルドスクリプトの依存)、開発用ツール(`trunk`・`wasm-bindgen`のCLI)は含めない)。\n')
 w('ライセンスが「A OR B」の形のクレートは、AとBのどちらの条件でも利用できる二重ライセンスです。\n')
@@ -166,7 +194,7 @@ w('**ライセンスの内訳**:\n')
 for k, v in sorted(c.items(), key=lambda kv: (-kv[1], kv[0])):
     w(f'- {v}個: `{k}`')
 w('')
-w('主要なクレートの役割: `leptos`(UIフレームワーク)、`wgpu`(WebGPU描画)、`glam`(ベクトル・行列)、`earcutr`(多角形の三角形分割)、`serde`/`serde_json`(シリアライズ)、'
+w('主要なクレートの役割: `leptos`(UIフレームワーク)、`wgpu`(WebGPU描画)、`glam`(ベクトル・行列)、`earcutr`(多角形の三角形分割)、`serde`/`serde_json`/`rmp-serde`(シリアライズ)、'
   '`gloo-net`/`gloo-timers`/`web-sys`/`wasm-bindgen`/`js-sys`(ブラウザAPI)、`bytemuck`(GPUバッファへのコピー)。\n')
 w('| クレート | 版 | ライセンス | 配布元 |')
 w('|---|---|---|---|')
@@ -176,6 +204,29 @@ for p in crates:
 w('')
 w('WebAssemblyにはRustの標準ライブラリ(`std`・`core`・`alloc`、`compiler_builtins`など。`MIT OR Apache-2.0`)のコードも含まれます。'
   '配布元: <https://github.com/rust-lang/rust>\n')
+
+# ---- 3. サーバー
+w('## 3. サーバー(`sim_server`)に含まれるもの(C++)\n')
+w('`sample/sim_server`をビルドした`sim_server.exe`に、ソースの取り込み(サブモジュール)またはvcpkgのライブラリとしてリンクされます。\n')
+w('| ライブラリ | 版 | ライセンス | 配布元・ライセンスファイル |')
+w('|---|---|---|---|')
+w('| uWebSockets | v20.80.0系(サブモジュール) | Apache-2.0 | <https://github.com/uNetworking/uWebSockets> (`sample/sim_server/third_party/uWebSockets/LICENSE`) |')
+w('| uSockets | v0.8.8系(uWebSocketsに同梱) | Apache-2.0 | <https://github.com/uNetworking/uSockets> (`.../uWebSockets/uSockets/LICENSE`) |')
+w('| msgpack-c(C++版、msgpack-cxx) | cpp-9.0.0(サブモジュール) | BSL-1.0(Boost Software License 1.0)。著作権表示: Copyright (C) 2008-2015 FURUHASHI Sadayuki | <https://github.com/msgpack/msgpack-c> (`.../msgpack-cxx/LICENSE_1_0.txt`・`COPYING`・`NOTICE`) |')
+w('| libuv | 1.52.1(vcpkg) | MIT | <https://github.com/libuv/libuv> |')
+w('| OpenSSL | 3.6.4(vcpkg) | Apache-2.0 | <https://www.openssl.org/> (TLS用。ビルドには常に必要) |')
+w('| zlib | 1.3.2(vcpkg) | Zlib | <https://zlib.net/> |\n')
+w('- msgpack-cxxは、Boost PredefとBoost Preprocessor(いずれもBoost Software License 1.0)を同梱しています(`msgpack-cxx/NOTICE`)。')
+w('- uSocketsのソースには、BoringSSL・lsquicのディレクトリがありますが、`sample/sim_server/CMakeLists.txt`はこれらをビルドに使いません(TLSはvcpkgのOpenSSL)。')
+w('- サーバー本体(`sample/sim_server/src`・`include`)はこのプロジェクトのコードです。')
+w('- 配布物にサブモジュールのソースを含める場合は、各サブモジュールの`LICENSE`ファイルを一緒に配布してください。\n')
+w('### 3.1 msgpack-cxxのライセンス全文(Boost Software License 1.0)\n')
+w('```text')
+w(bsl)
+w('```\n')
+w('uWebSockets・uSockets・OpenSSLのApache-2.0、libuvのMIT、zlibのZlibライセンスの全文は、[6. ライセンス全文](#6-ライセンス全文)にあります'
+  '(libuvは`Copyright (c) 2015-present libuv project contributors.`、zlibは`(C) 1995-2026 Jean-loup Gailly and Mark Adler`)。'
+  'uWebSockets・uSocketsのソースには、著作権者名の記載も`NOTICE`ファイルもありません(`LICENSE`はApache-2.0の全文のみ)。配布するときは、上流のリポジトリの表示を確認してください。\n')
 
 # ---- 4. 前処理ツール
 w('## 4. 前処理ツール(`geotiff_preprocess`)が使うもの\n')
@@ -216,14 +267,16 @@ for p in crates:
 # ---- 6. ライセンス全文
 w('## 6. ライセンス全文\n')
 w('上の各項目で使われているライセンスの全文です。MITライセンスは、著作権者ごとに`Copyright (c) <year> <copyright holders>`の部分だけが異なるので、'
-  '雛形を1つだけ載せ、実際の著作権表示は[5.](#5-著作権表示rustクレートごと)(Rustクレート)の記載を参照してください。\n')
+  '雛形を1つだけ載せ、実際の著作権表示は[5.](#5-著作権表示rustクレートごと)(Rustクレート)と、[3.](#3-サーバーsim_serverに含まれるものc)のC++ライブラリの記載を参照してください。\n')
 order = [('MIT', None), ('Apache-2.0', 'Apache-2.0'), ('Zlib', 'Zlib'), ('Unicode-3.0', 'Unicode-3.0'), ('BSD-2-Clause', 'BSD-2-Clause'),
-         ('ISC', 'ISC'), ('CC0-1.0', 'CC0-1.0'), ('Unlicense', 'Unlicense')]
+         ('ISC', 'ISC'), ('BSL-1.0', None), ('CC0-1.0', 'CC0-1.0'), ('Unlicense', 'Unlicense')]
 for name, key in order:
     w(f'### {name}\n')
     if name == 'MIT':
         body = MIT_TEXT
         w('(雛形)\n')
+    elif name == 'BSL-1.0':
+        body = bsl
     else:
         if key not in texts:
             body = '(全文は <https://spdx.org/licenses/%s.html> を参照)' % key
@@ -233,6 +286,15 @@ for name, key in order:
     w('```text')
     w(body)
     w('```\n')
+
+# ---- 6.1. 任意のデスクトップ配布
+desktop_package = json.loads(read(REPO + 'sim_desktop/package.json'))
+electron_version = desktop_package['devDependencies']['electron']
+w('### Electronデスクトップ版の追加依存\n')
+w(f'`sample/sim_desktop`はElectron {electron_version}(MIT)を使用します。配布元: <https://github.com/electron/electron>。')
+w('Electronに同梱されるChromium・Node.js等のライセンス/著作権表示は、配布フォルダーの`LICENSE`と`LICENSES.chromium.html`を参照してください。'
+  '`package.cjs`はElectronの配布ファイルをそのままコピーし、これらの表示を保持します。\n')
+w('npmの取得・展開用依存は開発時だけ使用し、アプリの`node_modules`は配布しません。ブラウザ版にはElectronは含まれません。\n')
 
 # ---- 7. 含めないもの・更新
 w('## 7. この文書に含めないもの・更新方法\n')
@@ -245,9 +307,9 @@ w('- 解説ノート(Artifact「Sim3dViewのしくみ」)。Google Fontsを外�
 w('**更新方法**(依存を追加・更新したときに再実行する)')
 w('```powershell')
 w('# リポジトリのルートで実行する(cargo metadataは、スクリプトが自分で実行する)')
-w('python scripts/gen_third_party_notice.py')
+w('python sample/scripts/gen_third_party_notice.py')
 w('```')
-w('前処理CLIの依存は `tools/geotiff_preprocess/vcpkg.json` を参照して更新してください。')
+w('C++側(3.・4.)の版とライセンスは、`sample/sim_server/vcpkg.json`・`tools/geotiff_preprocess/vcpkg.json`とサブモジュールの版(`git submodule status`)を見て、手で更新してください。')
 
 open(OUT, 'w', encoding='utf-8', newline='\n').write('\n'.join(out) + '\n')
 print('written', OUT, len(out), 'lines;', 'texts:', sorted(texts))

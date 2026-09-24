@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["sim_frontend"]
+
+[profile.release]
+opt-level = "s"

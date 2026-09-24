@@ -6,7 +6,7 @@
 
 ## 開発環境から起動
 
-ルートREADMEの手順でC++サーバー(Debug)をビルドし、地形を生成しておく。
+[サンプルREADME](../README.md)の手順でC++サーバー(Debug)をビルドし、地形を生成しておく。
 追加でNode.js 22.12以降(推奨24 LTS)が必要。
 
 ```powershell
@@ -21,15 +21,11 @@ npm start
 Trunk開発サーバーの`sample/sim_frontend/dist`は使わない。UIを編集したら再ビルドして起動する。
 ブラウザ版のサーバーが9001番で起動中でも、Electronは別の空きポートを使う。
 
-既定の地形は`sample/sim_server/assets/terrain`。
-配布版では実行ファイルの隣の`terrain`を探し、見つからなければフォルダー選択画面を開く。
-選ぶのはGeoTIFFの`map_data`ではなく、`metadata.json`、`tile_index.json`、`base.bin`、`tiles/`のある前処理済みフォルダー。
-選択はユーザーデータ内の`desktop-settings.json`に保存される。
-「ファイル → 地形フォルダーを変更…」で変更するとアプリが再起動する。
+開発時の既定の地形は`sample/sim_server/assets/terrain`。
+配布版は`resources/terrain`の同梱データを使い、フォルダー選択や保存設定は不要。
+`SIM3DVIEW_TERRAIN_DIR`は開発時の読み込み先と配布生成時のコピー元だけに使用する。
 
-環境変数で指定する場合(保存設定より優先):
-
-`SIM3DVIEW_TERRAIN_DIR`指定中はメニューからの地形変更を無効にする。
+開発時に環境変数で指定する場合:
 
 ```powershell
 $env:SIM3DVIEW_TERRAIN_DIR = 'D:\Sim3dView\terrain'
@@ -43,7 +39,7 @@ npm start
 
 ## Windows配布フォルダーの作成
 
-ルートREADMEで使うCMakeでC++サーバーをReleaseビルドしてから実行する。
+[サンプルREADME](../README.md)で使うCMakeでC++サーバーをReleaseビルドしてから実行する。
 
 ```powershell
 # リポジトリルートで実行
@@ -58,7 +54,8 @@ npm run package
 `out/Sim3dView-win32-x64-<生成時刻>/Sim3dView.exe`が起動入口。
 **フォルダー全体**を渡す。利用者側にはNode.js・Rust・Trunkは不要。
 Visual C++のランタイムが無いPCではMicrosoft Visual C++ Redistributable(x64)が必要。
-地形は容量が大きいため自動コピーせず、初回起動時にフォルダーを選ぶ。
+地形全体を`resources/terrain`にコピーする。必須ファイルがない場合は配布生成を失敗させる。
+容量と生成時間は入力地形に比例する(現在の全域データは約12GB)。
 署名とインストーラー、自動更新はこの配布処理の対象外。
 
 Electronの`LICENSE`、`LICENSES.chromium.html`と、プロジェクトの`THIRD_PARTY_NOTICE.md`を一緒に配布する。
@@ -66,7 +63,7 @@ Electronの`LICENSE`、`LICENSES.chromium.html`と、プロジェクトの`THIRD
 
 ## Linuxでの起動と配布
 
-ルートREADMEのLinux手順でサーバーと地形を準備し、Node.js 22.12以降を導入する。
+[サンプルREADME](../README.md)のLinux手順でサーバーと地形を準備し、Node.js 22.12以降を導入する。
 X11またはWaylandのデスクトップセッションと、WebGPU対応GPU・ドライバーが必要。
 Ubuntu 24.04ではElectron用の共有ライブラリも導入する。
 
@@ -101,9 +98,9 @@ Electronのsandboxは有効のまま使用し、管理者(root)では起動し�
 ### オフライン運用
 
 ビルド済み配布フォルダー、前処理済み地形、OSの必要なランタイムとGPUドライバーを事前に用意すれば、インターネット接続なしで運用できる。
-JS/WASM・CSS・3Dモデルは配布フォルダー、地形は指定したローカルフォルダーから読み込む。
+JS/WASM・CSS・3Dモデル・地形を配布フォルダー内から読み込む。
 通信は同一PC内のHTTP/WebSocket(`127.0.0.1`)を使うため、ローカル通信とサーバー起動は必要。
-地形フォルダーは自動同梱されないので、`metadata.json`・`tile_index.json`・`base.bin`・`tiles/`をまとめて持ち込む。
+地形は自動同梱されるため、配布フォルダー全体を持ち込めばよい。
 
 初回の開発環境構築は別途準備が必要。Rust/WASMターゲット・Cargo依存・Trunkと補助ツール、C++ツールチェーン・サブモジュール・vcpkg依存、Node.js・Electronを接続環境で取得しておく。
 `CARGO_NET_OFFLINE=true`で既存キャッシュによるUIビルドを検証できるが、新しいPCで依存を取得せずビルドできることは意味しない。

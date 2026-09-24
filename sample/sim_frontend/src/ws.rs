@@ -368,7 +368,7 @@ pub fn default_ws_url() -> String {
 
 /// `sim3dview::terrain::store::TerrainStore::new()`へ渡す
 /// 地形データ配信のベースURL。sim3dviewライブラリはサーバーのホスト名・ポートを知らないため
-/// (`sim3dview/README.md`のデータ契約参照)、このサンプルアプリ側でsample/sim_serverの規約
+/// (`README.md`のデータ契約参照)、このサンプルアプリ側でsample/sim_serverの規約
 /// (`/terrain/*`、ポート9001)に基づいて組み立てる。
 pub fn default_terrain_base_url() -> String {
     let (hostname, is_tls) = page_host_and_tls();
