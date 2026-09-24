@@ -17,6 +17,8 @@ log = "0.4"
 wgpu = "30"
 bytemuck = { version = "1", features = ["derive"] }
 glam = "0.33"
+# WGS84楕円体の測地線(カーニー法)。多角形面積用の追加機能は不要。
+geographiclib-rs = { version = "0.2.7", default-features = false }
 earcutr = "0.5.0"
 # 3Dモデル(glTF/GLB)の読み込み。画像のデコード(`import`機能=`image`クレート)は使わない(テクスチャ非対応。`terrain::models`)。
 gltf = { version = "1.4.1", default-features = false, features = ["utils"] }

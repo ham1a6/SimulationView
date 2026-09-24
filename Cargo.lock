@@ -613,6 +613,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "geographiclib-rs"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5a7f08910fd98737a6eda7568e7c5e645093e073328eeef49758cfe8b0489c7"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "getrandom"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2034,6 +2043,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "earcutr",
+ "geographiclib-rs",
  "glam",
  "gloo-net 0.7.0",
  "gloo-timers",

@@ -1,27 +1,24 @@
-//! 球面近似による位置関係の計算。楕円体上の厳密な測地距離ではない。
+//! WGS84楕円体上の位置関係の計算(カーニー法)。
 
-/// 緯度・経度(度)から大円距離(m)と初期方位(北から時計回り、0以上360未満の度)を返す。
-/// 平均半径6371kmの球面近似。入力は有限値、緯度は-90〜90度を前提とする。
-/// 同一点・対蹠点では方位は不定のため、返された方位を使用しないこと。
+use geographiclib_rs::{Geodesic, InverseGeodesic};
+
+/// 緯度・経度(度)からWGS84楕円体上の最短測地距離(m)と初期方位(北から時計回り、0以上360未満の度)を返す。
+/// カーニー法を使う。入力は有限値、緯度は-90〜90度を前提とする。
+/// 同一点・複数の最短測地線が存在する場合の方位はGeographicLibの規約値で、一意ではない。
 pub fn distance_and_bearing(lat0: f64, lon0: f64, lat1: f64, lon1: f64) -> (f64, f64) {
-    const EARTH_RADIUS_M: f64 = 6_371_000.0;
-    let (p0, p1) = (lat0.to_radians(), lat1.to_radians());
-    let dlon = (lon1 - lon0).to_radians();
-    let a = ((p1 - p0) * 0.5).sin().powi(2) + p0.cos() * p1.cos() * (dlon * 0.5).sin().powi(2);
-    let distance = 2.0 * EARTH_RADIUS_M * a.clamp(0.0, 1.0).sqrt().asin();
-    let bearing =
-        (dlon.sin() * p1.cos()).atan2(p0.cos() * p1.sin() - p0.sin() * p1.cos() * dlon.cos());
-    (distance, bearing.to_degrees().rem_euclid(360.0))
+    let (distance, bearing, _, _): (f64, f64, f64, f64) =
+        Geodesic::wgs84().inverse(lat0, lon0, lat1, lon1);
+    (distance, bearing.rem_euclid(360.0))
 }
 
-/// 経路の1区間の測定結果。距離は高度・地形の起伏を含まない球面上の距離。
+/// 経路の1区間の測定結果。距離は高度・地形の起伏を含まないWGS84楕円体上の距離。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RouteSegment {
     /// この区間の長さ(m)。
     pub distance_m: f64,
     /// 経路の始点からこの区間の終点までの累積距離(m)。
     pub cumulative_distance_m: f64,
-    /// 北から時計回りの初期方位(度)。同一点・対蹠点付近では不定のためNone。
+    /// 北から時計回りの初期方位(度)。補助球の弧長が0・π付近では保守的にNone。
     pub initial_bearing_deg: Option<f64>,
 }
 
@@ -54,9 +51,10 @@ impl std::error::Error for InvalidRoutePoint {}
 ///
 /// 度単位で緯度は[-90, 90]、経度は[-180, 180]の有限値を受け付ける。
 /// 不正な点があれば最初の点の番号を返す。0〜1点では距離0・区間なし。
-/// 平均半径6371kmの球面近似で、標高や地形に沿った距離ではない。
-/// 日付変更線をまたぐ区間も短い方の大円弧を測る。
-/// 角距離が同一点・対蹠点から1e-7 rad以内では方位をNoneにする。
+/// カーニー法によるWGS84楕円体上の最短測地距離で、標高や地形に沿った距離ではない。
+/// 日付変更線や対蹠点付近をまたぐ区間にも対応する。
+/// 方位の不定・不安定な領域を避けるため、補助球上の弧長が0・πから1e-7 rad以内では
+/// 保守的に方位をNoneにする(距離は常に計算する)。
 pub fn measure_route(points: &[(f64, f64)]) -> Result<RouteMeasurement, InvalidRoutePoint> {
     for (index, &(lat, lon)) in points.iter().enumerate() {
         if !lat.is_finite()
@@ -68,15 +66,17 @@ pub fn measure_route(points: &[(f64, f64)]) -> Result<RouteMeasurement, InvalidR
         }
     }
     let mut total_distance_m = 0.0;
+    let geodesic = Geodesic::wgs84();
     let segments = points
         .windows(2)
         .map(|pair| {
             let (lat0, lon0) = pair[0];
             let (lat1, lon1) = pair[1];
-            let (distance_m, bearing) = distance_and_bearing(lat0, lon0, lat1, lon1);
-            let angle = distance_m / 6_371_000.0;
-            let initial_bearing_deg =
-                (angle > 1e-7 && std::f64::consts::PI - angle > 1e-7).then_some(bearing);
+            let (distance_m, bearing, _, arc_deg): (f64, f64, f64, f64) =
+                geodesic.inverse(lat0, lon0, lat1, lon1);
+            let angle = arc_deg.to_radians();
+            let initial_bearing_deg = (angle > 1e-7 && std::f64::consts::PI - angle > 1e-7)
+                .then_some(bearing.rem_euclid(360.0));
             total_distance_m += distance_m;
             RouteSegment {
                 distance_m,
@@ -96,11 +96,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn near_antipodal_route_matches_geographiclib_reference() {
+        // GeographicLib公式例のWellington→Salamanca。球面近似では一致しない。
+        // https://geographiclib.sourceforge.io/html/python/examples.html
+        let (distance, bearing) = distance_and_bearing(-41.32, 174.81, 40.96, -5.50);
+        assert!((distance - 19_959_679.267).abs() < 0.001);
+        assert!(bearing.is_finite() && (0.0..360.0).contains(&bearing));
+        let route = measure_route(&[(-41.32, 174.81), (40.96, -5.50)]).unwrap();
+        assert_eq!(route.total_distance_m, distance);
+        assert_eq!(route.segments[0].initial_bearing_deg, Some(bearing));
+        let reverse = distance_and_bearing(40.96, -5.50, -41.32, 174.81);
+        assert!((reverse.0 - distance).abs() < 1e-6);
+    }
+
+    #[test]
     fn route_crosses_date_line_and_accumulates_distances() {
         let result = measure_route(&[(0.0, 179.0), (0.0, -180.0), (1.0, -180.0)]).unwrap();
         assert_eq!(result.segments.len(), 2);
-        assert!((result.total_distance_m - 222_389.8533).abs() < 0.01);
-        assert!((result.segments[0].cumulative_distance_m - 111_194.9266).abs() < 0.01);
+        assert!((result.total_distance_m - 221_893.87935107236).abs() < 1e-6);
+        assert!((result.segments[0].cumulative_distance_m - 111_319.49079327357).abs() < 1e-6);
         assert_eq!(
             result.segments[1].cumulative_distance_m,
             result.total_distance_m
@@ -122,7 +136,7 @@ mod tests {
             .segments
             .iter()
             .all(|s| s.initial_bearing_deg.is_none()));
-        assert!((result.total_distance_m - 20_015_086.796).abs() < 0.01);
+        assert!((result.total_distance_m - 20_003_931.458625447).abs() < 1e-6);
         let poles = measure_route(&[(90.0, -180.0), (90.0, 180.0)]).unwrap();
         assert!(poles.segments[0].initial_bearing_deg.is_none());
     }
@@ -149,11 +163,11 @@ mod tests {
     fn cardinal_directions_and_date_line() {
         for (lon0, lon1, bearing) in [(0.0, 1.0, 90.0), (1.0, 0.0, 270.0), (179.5, -179.5, 90.0)] {
             let (d, b) = distance_and_bearing(0.0, lon0, 0.0, lon1);
-            assert!((d - 111_194.9266).abs() < 0.01);
+            assert!((d - 111_319.49079327357).abs() < 1e-6);
             assert!((b - bearing).abs() < 1e-8);
         }
-        let (d, b) = distance_and_bearing(35.0, 139.0, 35.5, 139.0);
-        assert!((d - 55_597.4633).abs() < 0.01);
+        let (d, b) = distance_and_bearing(0.0, 139.0, 1.0, 139.0);
+        assert!((d - 110_574.38855779878).abs() < 1e-6);
         assert!(b.abs() < 1e-8);
     }
 
@@ -161,6 +175,6 @@ mod tests {
     fn coincident_and_antipodal_points_are_finite() {
         assert_eq!(distance_and_bearing(35.0, 139.0, 35.0, 139.0).0, 0.0);
         let (d, _) = distance_and_bearing(0.0, 0.0, 0.0, 180.0);
-        assert!((d - std::f64::consts::PI * 6_371_000.0).abs() < 0.01);
+        assert!((d - 20_003_931.458625447).abs() < 1e-6);
     }
 }

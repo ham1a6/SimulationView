@@ -4,7 +4,7 @@ Sim3dView(`sim3dview`ライブラリ・`sample/sim_frontend`・`sample/sim_serve
 
 > **この文書について**: 依存関係とライセンスの情報を機械的に集めた**参考資料**で、法的な助言ではありません。製品として配布する前に、最新の依存関係(`Cargo.lock`・`vcpkg.json`)で再生成し、必要に応じて法務の確認を受けてください。本プロジェクト自身のライセンスは、このファイルの対象外です(リポジトリにLICENSEファイルはまだありません)。
 
-- 生成日: 2026-09-23(`Cargo.lock`の内容とvcpkg・サブモジュールの版に基づく)
+- 生成日: 2026-09-24(`Cargo.lock`の内容とvcpkg・サブモジュールの版に基づく)
 - 再生成の手順は末尾の「この文書の更新方法」を参照
 
 ## 目次
@@ -43,14 +43,14 @@ Elevation data: ALOS World 3D - 30m (AW3D30), provided by the Japan Aerospace Ex
 
 ## 2. ブラウザに配布されるもの(Rustクレート)
 
-`sim3dview`と`sample/sim_frontend`をWebAssemblyにビルドしたときに、実行時にリンクされるクレートです(`Cargo.lock`から`wasm32-unknown-unknown`向けに解決した**193個**。単体テスト専用の依存(`naga`)、ビルド時だけ動くもの(proc-macro・ビルドスクリプトの依存)、開発用ツール(`trunk`・`wasm-bindgen`のCLI)は含めない)。
+`sim3dview`と`sample/sim_frontend`をWebAssemblyにビルドしたときに、実行時にリンクされるクレートです(`Cargo.lock`から`wasm32-unknown-unknown`向けに解決した**194個**。単体テスト専用の依存(`naga`)、ビルド時だけ動くもの(proc-macro・ビルドスクリプトの依存)、開発用ツール(`trunk`・`wasm-bindgen`のCLI)は含めない)。
 
 ライセンスが「A OR B」の形のクレートは、AとBのどちらの条件でも利用できる二重ライセンスです。
 
 **ライセンスの内訳**:
 
 - 99個: `MIT OR Apache-2.0`
-- 38個: `MIT`
+- 39個: `MIT`
 - 15個: `Unicode-3.0`
 - 13個: `Apache-2.0 OR MIT`
 - 5個: `MIT/Apache-2.0`
@@ -123,6 +123,7 @@ Elevation data: ALOS World 3D - 30m (AW3D30), provided by the Japan Aerospace Ex
 | futures-task | 0.3.34 | MIT OR Apache-2.0 | <https://github.com/rust-lang/futures-rs> |
 | futures-util | 0.3.34 | MIT OR Apache-2.0 | <https://github.com/rust-lang/futures-rs> |
 | generic-array | 0.14.7 | MIT | <https://github.com/fizyk20/generic-array.git> |
+| geographiclib-rs | 0.2.7 | MIT | <https://github.com/georust/geographiclib-rs> |
 | getrandom | 0.4.3 | MIT OR Apache-2.0 | <https://github.com/rust-random/getrandom> |
 | glam | 0.33.7 | MIT OR Apache-2.0 | <https://github.com/bitshifter/glam-rs> |
 | gloo-net | 0.6.0 | MIT OR Apache-2.0 | <https://github.com/rustwasm/gloo> |
@@ -610,6 +611,11 @@ GDALの推移的な依存はvcpkgの版によって変わります。配布す�
 `MIT`
 
 - Copyright (c) 2015 Bartłomiej Kamiński
+
+### geographiclib-rs 0.2.7
+`MIT`
+
+- Copyright (c) 2019
 
 ### getrandom 0.4.3
 `MIT OR Apache-2.0`
