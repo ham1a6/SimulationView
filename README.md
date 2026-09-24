@@ -25,6 +25,7 @@ map_data/          入力: ALOS DSM GeoTIFFタイル(容量が大きいためgit
 
 - `sim3dview`ライブラリだけを自分のアプリに組み込みたい場合は
   **[sim3dview/README.md](sim3dview/README.md)** を参照してください。
+- 公開APIの検索は[APIリファレンス](sim3dview/API_REFERENCE.md)、機能追加・修正の進め方は[実装ガイドライン](sim3dview/IMPLEMENTATION_GUIDELINES.md)を参照してください。
 - このリポジトリを丸ごと動かして完成品(C++シミュレータ + Web UI)を試したい場合は、
   以下のセットアップ手順に従ってください。
 

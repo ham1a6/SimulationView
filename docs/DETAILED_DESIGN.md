@@ -7,6 +7,9 @@
 ライブラリの公開APIは[sim3dview/README.md](../sim3dview/README.md)、変更の経緯は
 [DEVELOPMENT_HISTORY.md](DEVELOPMENT_HISTORY.md)を参照する。
 
+公開APIの索引と利用契約は[APIリファレンス](../sim3dview/API_REFERENCE.md)、変更時の作業手順は
+[実装ガイドライン](../sim3dview/IMPLEMENTATION_GUIDELINES.md)にまとめる。設計・実装仕様の正は引き続き本書に置く。
+
 ### 0.1 目的と構成
 
 既存のC++シミュレータにRust/WASM/Leptos製Web UIを接続し、ALOS DSMを使った3D地形、

@@ -3,7 +3,7 @@
 //! `terrain::markers::RadarMarkersState` contextから読む(呼び出し側が`provide_context`する。
 //! `sim3dview/README.md`参照)。自由視点カメラはドラッグで回転、ホイールでズーム、
 //! 3DモードではShift+ドラッグで注視点(中心点)を平行移動できる(シミュレーション原点
-//! [`terrain::origin::OriginState`]は変更しない)。`terrain::recenter::RecenterRequestState`
+//! [`crate::terrain::origin::OriginState`]は変更しない)。`terrain::recenter::RecenterRequestState`
 //! contextの通知(表示メニューの「中心点を原点に戻す」ボタン)で中心点を原点へ戻す。
 //! `terrain::origin_pick::OriginPickState` contextが提供されていて`active`の間は、地図の
 //! 左クリック(ドラッグではない単発クリック)の地点を原点として`on_pick`へ渡す。

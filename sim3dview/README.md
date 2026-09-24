@@ -1,5 +1,16 @@
 # sim3dview
 
+## ドキュメントの入口
+
+| 目的 | 文書 |
+|---|---|
+| 組み込み・機能別の使用例・CSS | 本README |
+| 公開APIの検索・contextと更新方法 | [APIリファレンス](API_REFERENCE.md) |
+| 機能追加・修正時の責務、実装ルール、検証 | [実装ガイドライン](IMPLEMENTATION_GUIDELINES.md) |
+| 設計理由・アルゴリズム・データ形式 | [統合設計書](../docs/DETAILED_DESIGN.md) |
+
+型・メソッドの完全なシグネチャは`cargo doc -p sim3dview --no-deps --target wasm32-unknown-unknown --open`で参照できます。
+
 ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し(Line of Sight)計算・レーダー観測点
 管理を提供する、[Leptos](https://leptos.dev/)(WASM/CSR)向けのRustライブラリです。
 
@@ -529,7 +540,7 @@ provide_context(ModelSettingsDialogState(RwSignal::new(false)));
 サンプルアプリでは、`app.rs`が5種類のモデルを登録し、表示メニューの「3Dモデル...」が設定ウインドウです。モデルは`scripts/gen_sample_models.py`が生成する簡易なもの
 (`sample/sim_frontend/assets/models/`。`index.html`のcopy-dirで`models/`として配信)で、`python scripts/gen_sample_models.py`で作り直せます。
 `sample/sim_server`のデモシナリオは、`TrackList`のピッチ・ロールに、旋回のバンク・上昇降下・波の揺れを入れています。
-設計は[DETAILED_DESIGN.md](../docs/DETAILED_DESIGN.md) 6.13節。**カメラは地表から100mまでしか近づけない**ので、実寸のモデルが大きく見えるのは大きな画面のときです。
+設計は[DETAILED_DESIGN.md](../docs/DETAILED_DESIGN.md) 6.13節。カメラの地表からの最小距離は`terrain::camera::MIN_EYE_CLEARANCE_M`を参照してください。
 
 ## 右クリックメニュー
 
