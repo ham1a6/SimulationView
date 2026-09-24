@@ -21,6 +21,7 @@ use super::geodesy::EnuTransform;
 use super::origin::Origin;
 use super::render_bias::DRAWING_M;
 use super::vertex::DrawVertex;
+mod drape;
 /// 座標の種類ごとの頂点列。アルファがこの値以上の色は不透明として`opaque`に入れる。
 const OPAQUE_ALPHA: f32 = 0.999;
 
@@ -42,6 +43,8 @@ pub struct DrawingBatches {
 
 /// ジオメトリ生成に必要な、地形・座標変換・画面サイズ。
 pub struct BuildContext<'a> {
+    /// 地表貼り付け図形を表示中の地形三角形へ直接重ねるためのグリッド。
+    pub terrain: Option<&'a super::loader::TerrainData>,
     /// 現在GPUにある地形メッシュの原点のENU変換(`World`の出力座標)。
     pub mesh_transform: &'a EnuTransform,
     pub ellipsoid: &'a Ellipsoid,
@@ -347,10 +350,10 @@ const STEPS_FLAT: Steps = Steps {
     fill: 20_000.0,
     arc: 2_000.0,
 };
-/// 地表に貼り付ける面・線: 地形の起伏に沿うよう細かく分割する。
+/// 地表に貼り付ける面・線: 約30mの地形セル内の尾根も拾う。
 const STEPS_GROUND: Steps = Steps {
-    fill: 500.0,
-    arc: 250.0,
+    fill: 20.0,
+    arc: 20.0,
 };
 const STEPS_NONE: Steps = Steps {
     fill: f64::INFINITY,
@@ -457,7 +460,7 @@ fn sector_geom(radius: f64, start_deg: f64, end_deg: f64, steps: Steps) -> Geom2
         outline.extend((0..=n).map(|i| at(radius, i)));
     }
     geom.outlines.push(Outline {
-        points: outline,
+        points: densify(&outline, true, steps.arc),
         closed: true,
     });
     geom
@@ -620,6 +623,10 @@ impl Frame2d {
                 };
                 let steps = match altitude {
                     Altitude::Msl(_) => STEPS_FLAT,
+                    Altitude::AboveGround(_) if ctx.terrain.is_some() => Steps {
+                        fill: f64::INFINITY,
+                        arc: STEPS_FLAT.arc,
+                    },
                     Altitude::AboveGround(_) => STEPS_GROUND,
                 };
                 (frame, steps)
@@ -700,6 +707,30 @@ impl Frame2d {
 }
 
 fn emit_geom2d(sink: &mut Sink, ctx: &BuildContext, frame: &Frame2d, geom: &Geom2d, style: &Style) {
+    if let (
+        Some(terrain),
+        Frame2d::World {
+            altitude: Altitude::AboveGround(height),
+            ..
+        },
+    ) = (ctx.terrain, frame)
+    {
+        drape::emit(sink, ctx, terrain, frame, geom, style, *height);
+        return;
+    }
+    let refined;
+    let geom = if matches!(
+        frame,
+        Frame2d::World {
+            altitude: Altitude::AboveGround(_),
+            ..
+        }
+    ) {
+        refined = refine_ground_geom(ctx, frame, geom, style.fill.is_some());
+        &refined
+    } else {
+        geom
+    };
     if let Some(fill) = style.fill {
         let color = fill.to_array();
         for tri in geom.fill.as_chunks::<3>().0 {
@@ -725,13 +756,85 @@ fn emit_geom2d(sink: &mut Sink, ctx: &BuildContext, frame: &Frame2d, geom: &Geom
     }
 }
 
+/// 尾根をまたぐ面・線は長さだけでは精度が足りないため、高さの補間誤差でも細分化する。
+/// 深さ6・既存の頂点数上限で計算量を制限する。広域図形で上限に達した場合は近似を保つ。
+fn refine_ground_geom(ctx: &BuildContext, frame: &Frame2d, geom: &Geom2d, fill: bool) -> Geom2d {
+    let mid = |a: [f64; 2], b: [f64; 2]| [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+    let error = |points: &[[f64; 2]]| {
+        let n = points.len() as f64;
+        let center = std::array::from_fn(|k| points.iter().map(|p| p[k]).sum::<f64>() / n);
+        let expected = frame.map(ctx, center)[2];
+        let interpolated = points
+            .iter()
+            .map(|&p| frame.map(ctx, p)[2] as f64)
+            .sum::<f64>()
+            / n;
+        (expected as f64 - interpolated).abs() > DRAWING_M * 0.25
+    };
+    let mut out = Geom2d::default();
+    if fill {
+        let mut stack: Vec<_> = geom
+            .fill
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|&tri| (tri, 0))
+            .collect();
+        while let Some(([a, b, c], depth)) = stack.pop() {
+            if depth < 6
+                && out.fill.len() + stack.len() * 3 + 12 <= MAX_REFINED_VERTICES
+                && (error(&[a, b]) || error(&[b, c]) || error(&[c, a]) || error(&[a, b, c]))
+            {
+                let (ab, bc, ca) = (mid(a, b), mid(b, c), mid(c, a));
+                stack.extend(
+                    [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]
+                        .map(|tri| (tri, depth + 1)),
+                );
+            } else {
+                out.fill.extend([a, b, c]);
+            }
+        }
+    }
+    for outline in &geom.outlines {
+        let mut points = Vec::new();
+        let n = outline.points.len();
+        let segments = if outline.closed {
+            n
+        } else {
+            n.saturating_sub(1)
+        };
+        for i in 0..segments {
+            let mut stack = vec![(outline.points[i], outline.points[(i + 1) % n], 0)];
+            while let Some((a, b, depth)) = stack.pop() {
+                if depth < 6
+                    && points.len() + stack.len() + segments - i + 2 < MAX_REFINED_VERTICES
+                    && error(&[a, b])
+                {
+                    let m = mid(a, b);
+                    stack.extend([(m, b, depth + 1), (a, m, depth + 1)]);
+                } else {
+                    points.push(a);
+                }
+            }
+        }
+        if !outline.closed {
+            points.extend(outline.points.last().copied());
+        }
+        out.outlines.push(Outline {
+            points,
+            closed: outline.closed,
+        });
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------------------------
 // 折れ線
 // ---------------------------------------------------------------------------------------------
 
 /// `World`の折れ線の点の間を分割する長さの上限(メートル)。地表に貼り付ける点があれば細かく。
 const POLYLINE_STEP_FLAT_M: f64 = 2_000.0;
-const POLYLINE_STEP_GROUND_M: f64 = 250.0;
+const POLYLINE_STEP_GROUND_M: f64 = 20.0;
 
 fn emit_polyline(sink: &mut Sink, ctx: &BuildContext, points: &[Position], style: &Style) {
     let Some(stroke) = style.stroke.filter(|_| style.stroke_width_px > 0.0) else {
@@ -1195,6 +1298,7 @@ mod tests {
         // 地表は標高100mの平地とみなす。
         let ground = |_: f64, _: f64| 100.0;
         f(&BuildContext {
+            terrain: None,
             mesh_transform: &transform,
             ellipsoid: &Ellipsoid::WGS84,
             ground: &ground,
@@ -1562,12 +1666,65 @@ mod tests {
     }
 
     #[test]
+    fn ground_fill_and_outlines_clear_a_narrow_ridge_between_vertices() {
+        with_ctx((800.0, 600.0), |ctx| {
+            // 旧500m格子の頂点間に、高さ150m・幅100mの尾根を置く。
+            let ground = |lat, lon| {
+                let [east, _, _] = ctx.mesh_transform.transform_f64(lat, lon, 0.0);
+                150.0 * (1.0 - (east - 125.0).abs() / 50.0).max(0.0)
+            };
+            let ctx = BuildContext {
+                ground: &ground,
+                ..*ctx
+            };
+            let (frame, steps) = Frame2d::at(
+                &ctx,
+                &Position::world(ORIGIN.lat_deg, ORIGIN.lon_deg, Altitude::AboveGround(0.0)),
+            );
+            let shapes = [
+                rect_geom(1000.0, 1000.0, 0.0, steps),
+                sector_geom(500.0, 0.0, 360.0, steps),
+                sector_geom(500.0, 0.0, 90.0, steps),
+                polygon_geom(&[[-500.0, -500.0], [500.0, -500.0], [0.0, 500.0]], steps),
+            ];
+            let check = |p: [f32; 3]| {
+                let (lat, lon, height) =
+                    ctx.mesh_transform
+                        .enu_to_geodetic(p[0] as f64, p[1] as f64, p[2] as f64);
+                assert!(height >= ground(lat, lon) - 0.1, "地形に埋没: {height}");
+            };
+            for geom in shapes {
+                let geom = refine_ground_geom(&ctx, &frame, &geom, true);
+                for tri in geom.fill.as_chunks::<3>().0 {
+                    let p = tri.map(|p| frame.map(&ctx, p));
+                    for i in 0..=4 {
+                        for j in 0..=4 - i {
+                            let weights =
+                                [i as f32 / 4.0, j as f32 / 4.0, (4 - i - j) as f32 / 4.0];
+                            check(std::array::from_fn(|k| {
+                                (0..3).map(|v| p[v][k] * weights[v]).sum()
+                            }));
+                        }
+                    }
+                }
+                for outline in geom.outlines {
+                    for i in 0..outline.points.len() {
+                        let a = frame.map(&ctx, outline.points[i]);
+                        let b = frame.map(&ctx, outline.points[(i + 1) % outline.points.len()]);
+                        check(std::array::from_fn(|k| (a[k] + b[k]) * 0.5));
+                    }
+                }
+            }
+        });
+    }
+
+    #[test]
     fn long_polyline_is_subdivided_along_the_ground() {
         with_ctx((800.0, 600.0), |ctx| {
             let a = Position::world(35.0, 138.0, Altitude::AboveGround(0.0));
             let b = Position::world(35.0, 139.0, Altitude::AboveGround(0.0));
             let points = world_polyline(ctx, &[a, b]);
-            // 約91kmを250m以下に分割する。
+            // 約91kmを20m刻み、上限4000分割で分割する。
             assert!(points.len() > 300, "len={}", points.len());
             // 端点はそれぞれの位置(標高100m+バイアス)。
             let first = points[0];

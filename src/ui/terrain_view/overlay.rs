@@ -73,11 +73,12 @@ impl GeometryInputs {
     }
 
     fn with_context<R>(&self, f: impl FnOnce(&drawing_geometry::BuildContext) -> R) -> R {
-        // 地形データの範囲外・海は標高0mとして扱う(`heightmap::sample_heightmap`)。
+        // 描画中の三角形に高さを合わせる。範囲外・海は標高0m。
         let ground = |lat: f64, lon: f64| {
-            heightmap::sample_heightmap(&self.terrain, lat, lon).unwrap_or(0.0) as f64
+            heightmap::sample_surface_height(&self.terrain, lat, lon).unwrap_or(0.0) as f64
         };
         f(&drawing_geometry::BuildContext {
+            terrain: Some(&self.terrain),
             mesh_transform: &self.transform,
             ellipsoid: &self.terrain.metadata.ellipsoid,
             ground: &ground,

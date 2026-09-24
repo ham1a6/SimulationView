@@ -588,6 +588,7 @@ mod tests {
         let transform = EnuTransform::new(&ORIGIN, &Ellipsoid::WGS84);
         let ground = |_: f64, _: f64| 100.0;
         let ctx = BuildContext {
+            terrain: None,
             mesh_transform: &transform,
             ellipsoid: &Ellipsoid::WGS84,
             ground: &ground,

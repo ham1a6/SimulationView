@@ -176,6 +176,97 @@ impl TerrainData {
         &self.tiles
     }
 
+    /// 指定範囲に重なる表示LODの地表三角形を、経度・緯度・標高で列挙する。
+    /// 未取得・欠損・範囲外は海面を張る。スカートは地表ではないため含めない。
+    pub(crate) fn visit_surface_triangles(
+        &self,
+        bounds: GeodeticBounds,
+        mut visit: impl FnMut([[f64; 3]; 3]),
+    ) {
+        let k = self.chunks_per_tile();
+        for lat in bounds.min_lat.floor() as i32..bounds.max_lat.ceil() as i32 {
+            for lon in bounds.min_lon.floor() as i32..bounds.max_lon.ceil() as i32 {
+                let tile = self.tile((lat, lon));
+                let mut grid = |values: Option<&[i16]>,
+                                cells: usize,
+                                start: [f64; 2],
+                                step: f64,
+                                base: bool| {
+                    let begin = [
+                        ((bounds.min_lon - start[0]) / step).floor().max(0.0) as usize,
+                        ((bounds.min_lat - start[1]) / step).floor().max(0.0) as usize,
+                    ];
+                    let end = [
+                        (((bounds.max_lon - start[0]) / step).ceil().max(0.0) as usize).min(cells),
+                        (((bounds.max_lat - start[1]) / step).ceil().max(0.0) as usize).min(cells),
+                    ];
+                    for j in begin[1]..end[1] {
+                        for i in begin[0]..end[0] {
+                            if base
+                                && tile.is_some_and(|t| {
+                                    let cx =
+                                        (((i as f64 + 0.5) * step * k as f64) as usize).min(k - 1);
+                                    let cy =
+                                        (((j as f64 + 0.5) * step * k as f64) as usize).min(k - 1);
+                                    let level = t.chunk_level[cy * k + cx].get() as usize;
+                                    level > 0 && self.chunk_grid(t, level, cy * k + cx).is_some()
+                                })
+                            {
+                                continue;
+                            }
+                            let node = |x: usize, y: usize| {
+                                [
+                                    start[0] + x as f64 * step,
+                                    start[1] + y as f64 * step,
+                                    values.map_or(0, |g| g[y * (cells + 1) + x]) as f64,
+                                ]
+                            };
+                            let [a, b, c, d] = [
+                                node(i, j),
+                                node(i + 1, j),
+                                node(i, j + 1),
+                                node(i + 1, j + 1),
+                            ];
+                            for mut tri in [[a, b, c], [b, d, c]] {
+                                if tri.iter().any(|p| p[2] == NO_DATA as f64) {
+                                    for p in &mut tri {
+                                        p[2] = 0.0;
+                                    }
+                                }
+                                visit(tri);
+                            }
+                        }
+                    }
+                };
+                let base_cells = self.level_cells(0);
+                grid(
+                    tile.map(|t| self.whole_grid(t)),
+                    base_cells,
+                    [lon as f64, lat as f64],
+                    1.0 / base_cells as f64,
+                    true,
+                );
+                if let Some(tile) = tile {
+                    for chunk in 0..self.chunk_count() {
+                        let level = tile.chunk_level[chunk].get() as usize;
+                        if level == 0 {
+                            continue;
+                        }
+                        if let Some(values) = self.chunk_grid(tile, level, chunk) {
+                            let cells = self.chunk_cells(level);
+                            let step = 1.0 / self.level_cells(level) as f64;
+                            let start = [
+                                lon as f64 + (chunk % k * cells) as f64 * step,
+                                lat as f64 + (chunk / k * cells) as f64 * step,
+                            ];
+                            grid(Some(&values), cells, start, step, false);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn tile(&self, key: TileKey) -> Option<&TileEntry> {
         let b = &self.metadata.geodetic_bounds;
         let row = key.0 - b.min_lat as i32;
@@ -305,6 +396,15 @@ impl TerrainData {
     /// タイル内の位置(u=経度方向, v=緯度方向。ともに0〜1)の標高を、いま画面に出している
     /// レベルのグリッドから双線形補間で求める。周辺4ノードのいずれかがデータなし(海)なら0。
     pub fn sample_bilinear(&self, tile: &TileEntry, u: f64, v: f64) -> f32 {
+        self.sample_grid(tile, u, v, false)
+    }
+
+    /// 描画メッシュと同じ南東―北西の対角線で三角形補間する。
+    pub(crate) fn sample_surface(&self, tile: &TileEntry, u: f64, v: f64) -> f32 {
+        self.sample_grid(tile, u, v, true)
+    }
+
+    fn sample_grid(&self, tile: &TileEntry, u: f64, v: f64, surface: bool) -> f32 {
         let k = self.chunks_per_tile();
         let cx = ((u * k as f64).floor().max(0.0) as usize).min(k - 1);
         let cy = ((v * k as f64).floor().max(0.0) as usize).min(k - 1);
@@ -324,6 +424,19 @@ impl TerrainData {
                 at(j0 + 1, i0),
                 at(j0 + 1, i0 + 1),
             );
+            if surface {
+                let (values, weights) = if tx + ty <= 1.0 {
+                    ([v00, v10, v01], [1.0 - tx - ty, tx, ty])
+                } else {
+                    ([v11, v01, v10], [tx + ty - 1.0, 1.0 - tx, 1.0 - ty])
+                };
+                // 海岸では、描画される三角形の3ノードだけで判定する。
+                return if values.contains(&NO_DATA) {
+                    0.0
+                } else {
+                    values.iter().zip(weights).map(|(&h, w)| h as f32 * w).sum()
+                };
+            }
             if v00 == NO_DATA || v10 == NO_DATA || v01 == NO_DATA || v11 == NO_DATA {
                 return 0.0;
             }
@@ -512,6 +625,27 @@ mod tests {
         assert!((data.sample_bilinear(tile, 0.0, 0.0)).abs() < 1e-3);
         // 東端・北端(u,v=1)でも範囲外を引かずに端の値を返す。
         assert!((data.sample_bilinear(tile, 1.0, 1.0) - 660.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn surface_matches_mesh_diagonal_and_ignores_unused_no_data_corner() {
+        let data = one_tile(|lat, lon| if lat == 30.0 && lon == 120.0 { 1000 } else { 0 });
+        let tile = data.tile(KEY).unwrap();
+        let cell = 1.0 / data.level_cells(0) as f64;
+        assert!((data.sample_surface(tile, 0.25 * cell, 0.25 * cell) - 500.0).abs() < 0.01);
+        assert_eq!(data.sample_surface(tile, 0.75 * cell, 0.75 * cell), 0.0);
+        assert_eq!(data.sample_surface(tile, 0.5 * cell, 0.5 * cell), 0.0);
+
+        let coast = one_tile(|lat, lon| {
+            if lat > 30.0 && lon > 120.0 {
+                NO_DATA
+            } else {
+                100
+            }
+        });
+        let tile = coast.tile(KEY).unwrap();
+        assert_eq!(coast.sample_surface(tile, 0.25 * cell, 0.25 * cell), 100.0);
+        assert_eq!(coast.sample_surface(tile, 0.75 * cell, 0.75 * cell), 0.0);
     }
 
     #[test]

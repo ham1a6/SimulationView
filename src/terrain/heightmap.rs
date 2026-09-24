@@ -12,6 +12,15 @@ use super::loader::TerrainData;
 /// `terrain/los.rs`(見通し)・`terrain/markers.rs`(観測点)・`terrain/profile.rs`(断面図)・
 /// `terrain/pick.rs`(クリック判定)・`ui/terrain_view.rs`(カメラ注視点の高さ)から使う。
 pub fn sample_heightmap(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> Option<f32> {
+    sample(data, lat_deg, lon_deg, false)
+}
+
+/// 地表に貼り付ける描画用。表示LODの三角形と同じ補間で標高を求める。
+pub(crate) fn sample_surface_height(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> Option<f32> {
+    sample(data, lat_deg, lon_deg, true)
+}
+
+fn sample(data: &TerrainData, lat_deg: f64, lon_deg: f64, surface: bool) -> Option<f32> {
     let b = &data.metadata.geodetic_bounds;
     if lat_deg < b.min_lat || lat_deg > b.max_lat || lon_deg < b.min_lon || lon_deg > b.max_lon {
         return None;
@@ -25,7 +34,11 @@ pub fn sample_heightmap(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> Optio
     };
     let u = (lon_deg - lon0 as f64).clamp(0.0, 1.0);
     let v = (lat_deg - lat0 as f64).clamp(0.0, 1.0);
-    Some(data.sample_bilinear(tile, u, v))
+    Some(if surface {
+        data.sample_surface(tile, u, v)
+    } else {
+        data.sample_bilinear(tile, u, v)
+    })
 }
 
 /// ENUの水平位置(東, 北)の真上/真下にある地表点の(緯度, 経度, ENU上座標)。

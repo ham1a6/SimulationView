@@ -630,10 +630,10 @@ flowchart LR
 
 - 面も太い線も`DrawVertex`(位置・RGBA・aux・params、56バイト)のTriangleListで表す。頂点列は座標の種類ごと(`world`/`view`/`screen`)、さらに`world`/`view`は不透明(深度を書く)と半透明(書かない)に分ける
 - 2D図形は、置いた位置を中心とするローカル平面(x=右/東, y=上/北)で三角形と輪郭線を作り、種類ごとの変換で出力座標にする。`World`では、ローカル座標を基準点からの方位・距離(方位角等距離図法、球面の直接解)とみなして緯度経度へ戻し、
-  `Altitude`から高さを決めて`EnuTransform`でメッシュ原点のENUへ変換する。多角形は三角形分割(`earcutr`)+辺の長さ上限での分割。分割の細かさは海抜の水平面で辺20km・輪郭2km、地表貼り付けで辺500m・輪郭250m
+  `Altitude`から高さを決めてメッシュ原点のENUへ変換する。地表貼り付けでは、塗りと輪郭を表示LODの地形三角形で切り抜き、その三角形の頂点を補間して配置する。点サンプリングによる再分割は、広域で分割上限に達したときや確認点間の山頂を見落としたときに埋没するため、実地形の描画では使わない。海抜の水平面は辺20km・輪郭2kmで分割する
 - 3D図形は位置における局所ENU(位置を通る鉛直線が+z)で作り、`enu_to_geodetic`→`EnuTransform::transform`で厳密に変換する(遠方でも地球の丸みで傾いた上向きが正しい)
 - `World`の折れ線は点の間を大円に沿って分割し、地表基準は「地表からの高さ」を補間する
-- 標高は`ctx.ground`クロージャで受ける(`ui::terrain_view`は`heightmap::sample_heightmap`を渡す)ので、地形なしで単体テストできる
+- 標高は`ctx.ground`クロージャで受ける(`ui::terrain_view`は表示LODの三角形補間`heightmap::sample_surface_height`を渡す。双線形補間と描画三角形の高さの差を避ける)ので、地形なしで単体テストできる
 
 **太い線**(`terrain/draw.wgsl`): WebGPUの線プリミティブは太さ1pxしかないため、線分1本を四角形(三角形2枚)にして頂点シェーダーで**画面のピクセル幅**へ広げる。
 各頂点は「この端点(`position`)」と「反対側の端点(`aux`)」を持ち、クリップ座標→ピクセル座標で向きと法線を求めてから`params.x`(px)の半分だけ左右へ、端点は線の向きへ半幅だけ延ばす(折れ線のつなぎ目の隙間を埋める)。
@@ -1270,7 +1270,9 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 - `Shape::validate() -> Result<Space, &str>`: 位置なし・種類が混在・`Screen`に3D図形はエラー(不正な図形は描かず警告ログ)。`depends_on_terrain()`は`AboveGround`の`World`位置を持つか(地形LODが変わったら描き直す)
 - `DrawingState`: `add(shape, style) -> id`(後ろに追加したものほど手前=`Screen`の重なり順・`World/View`の半透明どうしの重なり順)、`update(id, f)`、`remove(id)`、`clear()`
 
-**ジオメトリ生成 `drawing_geometry::build(ctx, drawings) -> DrawingBatches`**(純粋関数。`ctx = { mesh_transform, ellipsoid, ground: &dyn Fn(lat,lon)->f64, viewport_px }`):
+描画用標高は`sample_surface_height`から表示LODのグリッドを引き、南東―北西の対角線で三角形補間する。セル内位置を`tx,ty`とすると、`tx+ty≤1`は南西・南東・北西を重み`(1-tx-ty,tx,ty)`、それ以外は北東・北西・南東を`(tx+ty-1,1-tx,1-ty)`で補間する。選ばれた3ノードに`NO_DATA`があれば海面0mとする。見通し等の既存の双線形補間は維持する。
+
+**ジオメトリ生成 `drawing_geometry::build(ctx, drawings) -> DrawingBatches`**(純粋関数。`ctx = { terrain: Option<&TerrainData>, mesh_transform, ellipsoid, ground: &dyn Fn(lat,lon)->f64, viewport_px }`):
 `DrawingBatches { world: Batch, view: Batch, screen: Vec<DrawVertex> }`(`Batch { opaque, blend }`。アルファ≥`0.999`なら`opaque`、`Screen`は追加順に重ねるので1列)。出力座標: `World`=現在のメッシュ原点のENU(カメラの`view_proj`)、
 `View`=(右, 上, **-前方**)(`Camera::projection_matrix()`)、`Screen`=ピクセル座標(左上原点・y下向き・z=0。`screen_matrix`)。
 
@@ -1278,10 +1280,13 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 - **緯度経度⇔基準点からの方位・距離**(方位角等距離図法、球面の直接解): `mean_radius(ellipsoid, lat) = a·sqrt(1-e2)/(1-e2·sin²lat)`、`destination(lat,lon,bearing,dist,radius)`(`δ=dist/radius`、`lat2 = asin(sin lat1 cos δ + cos lat1 sin δ cos bearing)`、
   `lon2 = lon1 + atan2(sin bearing sin δ cos lat1, cos δ - sin lat1 sin lat2)`)、`to_local`はその逆(haversine+方位)
 - **2D図形**: 置いた位置を中心とするローカル平面(x=右/東, y=上/北)で三角形`fill`と輪郭`outlines`を作り、`Frame2d`で出力座標へ写す(`World`は`destination`で緯度経度へ→`Altitude`から高さ(`DRAWING_M`込み)→`EnuTransform`)。
-  分割の細かさ: 海抜の水平面は`fill 20km・arc 2km`、地表貼り付けは`fill 500m・arc 250m`、`View/Screen`は分割しない。定数`MAX_FILL_TRIANGLES=50_000`、`MIN/MAX_CIRCLE_SEGMENTS=48/720`、`MAX_GRID_CELLS=512`、`MAX_EDGE_PARTS=2000`、`MAX_REFINED_VERTICES=300_000`。
+  **表示地形がある地表貼り付け**: `drawing_geometry::drape`で輪郭の緯度経度点列を`earcutr`で三角形化し、各三角形の外接矩形に重なる地形セルだけを列挙する。輪郭の形状近似は2km以下(既存の辺数上限あり)、塗りと輪郭は同じ境界点を使う。`visit_surface_triangles`は現在のチャンクLODを使い、未取得ならレベル0、存在しないタイル・欠損三角形なら標高0mの面を返す。陸地の3ノードと南東―北西の対角線は地形描画と一致させ、スカートは除外する。
+  地形三角形を図形三角形の3半平面でクリップし、残った凸多角形を扇状に三角形化する。交点の緯度経度の重心座標で、地形描画と同じf32のENU頂点を補間する。ENU上方向へ対地高度+`DRAWING_M`を加える。頂点間も同じ地形平面上となるため山頂を飛び越えない。輪郭線も地形三角形との交差区間ごとに分割し、共有辺の同一区間は二重描画しない。LOD変更時は従来通り再生成する。最終の面を固定頂点数で粗く戻さず、出力の大きさは図形範囲内の表示地形LODに従う。
+  **地形グリッドを渡さない場合の補間経路と海抜指定**: 分割の細かさ: 海抜の水平面は`fill 20km・arc 2km`、地表貼り付けは`fill 20m・arc 20m`、`View/Screen`は分割しない。定数`MAX_FILL_TRIANGLES=50_000`、`MIN/MAX_CIRCLE_SEGMENTS=48/720`、`MAX_GRID_CELLS=512`、`MAX_EDGE_PARTS=2000`、`MAX_REFINED_VERTICES=300_000`。
   `effective_fill_step(area, fill) = max(fill, sqrt(2·area/MAX_FILL_TRIANGLES))`。円・扇形はリング分割(`arc = min(steps.arc, radius·0.09)`)、矩形は格子(セルは`[a,b,c, a,c,d]`)、
-  多角形は`earcutr`で三角形分割(反時計回りに揃える。凹・共線も可)→最長辺が上限を超える三角形を辺の中点で4分割することを繰り返す(`MAX_REFINED_VERTICES`まで)。輪郭は`densify`
-- **折れ線**: `World`は隣接2点を大円に沿って分割(`grounded`=どちらかが`AboveGround`なら250m刻み、そうでなければ2000m刻み、上限4000分割)。地表基準は「地表からの高さ」を補間し`DRAWING_M`を足す。`View`・`Screen`は座標変換のみ
+  多角形は`earcutr`で三角形分割(反時計回りに揃える。凹・共線も可)→最長辺が上限を超える三角形を辺の中点で4分割することを繰り返す(`MAX_REFINED_VERTICES`まで)。輪郭は円・扇形の直線辺も含め`densify`。面積・頂点数の上限に達する広域図形では分割が粗くなるため、地形追従は近似となる
+  地表貼り付けの面は出力前に3辺の中点と重心で、地表に沿うENU上座標と頂点の線形補間との差を比較する。絶対誤差が`DRAWING_M×0.25=3.75m`を超えた三角形は4分割し、輪郭は辺の中点で同じ判定をして2分割する。最大6段・`MAX_REFINED_VERTICES`まで。塗りなしの場合は面の再分割を省略する。
+- **折れ線**: `World`は隣接2点を大円に沿って分割(`grounded`=どちらかが`AboveGround`なら20m刻み、そうでなければ2000m刻み、上限4000分割)。地表基準は「地表からの高さ」を補間し`DRAWING_M`を足す。`View`・`Screen`は座標変換のみ
 - **3D図形**: 位置における**局所ENU**(位置を通る鉛直線が+z)で作り、`enu_to_geodetic`→`EnuTransform::transform`で厳密に変換する(遠方でも地球の丸みで傾いた上向きが正しい)。3D図形は`render_bias`の持ち上げを付けない。
   球は`SPHERE_SEGMENTS=48`×`SPHERE_RINGS=24`、他は`SOLID_SEGMENTS=48`。稜線=球は直交する3つの大円、直方体は縦4本+底・天の閉ループ、円柱は90°ごと4本の縦線+底・天の円、円錐は底の点→先端の4本+底の円。円錐の側面は頂点ごとに専用の先端頂点を持つ(法線を面ごとに変えるため)。
   `View`では(東,北,上)→(右,前方=-z,上)、`Screen`に3D図形は置けない
