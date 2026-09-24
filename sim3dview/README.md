@@ -221,6 +221,27 @@ for segment in &route.segments {
 閉路にする場合は始点を末尾にも指定してください。距離はカーニー法によるWGS84楕円体上の測地距離で、
 高度差や地形に沿った距離は含みません。
 
+### 一定高度を飛行する経路を測定する
+
+```rust
+use sim3dview::terrain::measurement::{measure_route, measure_route_at_height};
+
+let points = [(35.0, 139.0), (35.5, 139.0), (35.5, 139.5)];
+let surface = measure_route(&points).expect("有効な経路");
+let flight = measure_route_at_height(&points, 10_000.0).expect("有効な経路と楕円体高");
+let extra_distance_m = flight.total_distance_m - surface.total_distance_m;
+```
+
+地表のカーニー法による経路の真上を、地球の丸みに沿って一定高度で飛ぶ曲線の長さを数値積分します。
+区間距離・累積距離・総距離・初期方位は飛行経路の値になり、高度0では`measure_route`と一致します。
+高度面上の最短経路を再探索する機能や、2点間の空間直線距離の計算ではありません。
+
+高度は**WGS84楕円体高(m)**で、対応範囲は0〜1,000,000mの有限値です。
+海抜高度・対地高度・気圧高度を直接渡さないでください。海抜高度はジオイド高を加えて楕円体高に
+変換しますが、ジオイド高が地点ごとに変わるため、一定海抜高度の経路とは厳密には一致しません。
+既存の`Altitude::Msl`も別の高度基準です。地形・障害物との衝突や上昇下降は計算しません。
+不正な高度は`FlightMeasurementError::InvalidHeight`、不正な座標は`InvalidPoint`を返します。
+
 ## 原点をサーバーと同期する
 
 `OriginState`(`terrain::origin::OriginState`)はこのライブラリが通信プロトコルを知らずに

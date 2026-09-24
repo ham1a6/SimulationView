@@ -2,6 +2,9 @@
 
 use geographiclib_rs::{Geodesic, InverseGeodesic};
 
+mod flight;
+pub use flight::{measure_route_at_height, FlightMeasurementError};
+
 /// 緯度・経度(度)からWGS84楕円体上の最短測地距離(m)と初期方位(北から時計回り、0以上360未満の度)を返す。
 /// カーニー法を使う。入力は有限値、緯度は-90〜90度を前提とする。
 /// 同一点・複数の最短測地線が存在する場合の方位はGeographicLibの規約値で、一意ではない。
@@ -11,7 +14,7 @@ pub fn distance_and_bearing(lat0: f64, lon0: f64, lat1: f64, lon1: f64) -> (f64,
     (distance, bearing.rem_euclid(360.0))
 }
 
-/// 経路の1区間の測定結果。距離は高度・地形の起伏を含まないWGS84楕円体上の距離。
+/// 経路の1区間の測定結果。距離・方位の基準は呼び出した測定関数による。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RouteSegment {
     /// この区間の長さ(m)。
