@@ -14,6 +14,7 @@ let window;
 let quitting = false;
 let stopped = false;
 let failed = false;
+let localCertificateFingerprint;
 
 async function certificateFingerprint256(file) {
   return new X509Certificate(await readFile(file)).fingerprint256;
@@ -22,6 +23,26 @@ async function certificateFingerprint256(file) {
 function isLoopback(hostname) {
   return hostname === '127.0.0.1' || hostname === '::1' || hostname === 'localhost';
 }
+
+function hasPinnedLoopbackCertificate(url, certificate) {
+  try {
+    return isLoopback(new URL(url).hostname)
+      && new X509Certificate(certificate.data).fingerprint256 === localCertificateFingerprint;
+  } catch {
+    return false;
+  }
+}
+
+// setCertificateVerifyProcを通らずにChromiumが検証失敗を通知する経路もあるため、
+// 同じ制約で明示的に受理する。外部ホストや異なる証明書は常に通常どおり拒否する。
+app.on('certificate-error', (event, contents, url, _error, certificate, callback) => {
+  if (contents === window?.webContents && hasPinnedLoopbackCertificate(url, certificate)) {
+    event.preventDefault();
+    callback(true);
+    return;
+  }
+  callback(false);
+});
 function fail(error) {
   if (quitting || failed) return;
   failed = true;
@@ -38,7 +59,7 @@ async function start() {
     : developmentServer());
   const certFile = process.env.SIM3DVIEW_CERT_FILE || (app.isPackaged ? path.join(process.resourcesPath, 'certs', 'dev-cert.pem') : path.join(__dirname, '../certs/dev-cert.pem'));
   const keyFile = process.env.SIM3DVIEW_KEY_FILE || (app.isPackaged ? path.join(process.resourcesPath, 'certs', 'dev-key.pem') : path.join(__dirname, '../certs/dev-key.pem'));
-  const localCertificateFingerprint = await certificateFingerprint256(certFile);
+  localCertificateFingerprint = await certificateFingerprint256(certFile);
   runtime = new DesktopRuntime({
     serverExe: path.resolve(serverExe), terrainDir,
     certFile, keyFile,
