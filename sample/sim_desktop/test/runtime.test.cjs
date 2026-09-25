@@ -6,6 +6,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const http = require('node:http');
+const https = require('node:https');
 const { DesktopRuntime, serveFrontend, validateTerrain } = require('../runtime.cjs');
 const { developmentServer } = require('../platform.cjs');
 
@@ -22,7 +23,7 @@ test('UI配信はWASMのMIME、HEAD、外部パス・Host拒否を維持する',
   const base = `http://127.0.0.1:${server.address().port}`;
   const wasm = await fetch(`${base}/test.wasm`);
   assert.equal(wasm.headers.get('content-type'), 'application/wasm');
-  assert.match(wasm.headers.get('content-security-policy'), /ws:\/\/127.0.0.1:12345/);
+  assert.match(wasm.headers.get('content-security-policy'), /https:\/\/127.0.0.1:12345/);
   assert.equal(await wasm.text(), 'wasm');
   assert.equal(await (await fetch(base, { method: 'HEAD' })).text(), '');
   assert.equal((await fetch(base, { method: 'POST' })).status, 405);
@@ -42,7 +43,7 @@ test('地形ファイル不足はサーバー起動前に検出する', async ()
   await assert.rejects(validateTerrain(__dirname));
 });
 
-test('実サーバーは自動ポートで並行起動し、HTTP Range・WS接続・終了を行える', async t => {
+test('実サーバーは自動ポートで並行起動し、HTTPS Range・終了を行える', async t => {
   const serverExe = process.env.SIM3DVIEW_SERVER_EXE || developmentServer();
   // 通信検証用の最小データを一時生成し、実地形の有無に依存させない。
   const terrainDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sim3dview-terrain-'));
@@ -60,18 +61,20 @@ test('実サーバーは自動ポートで並行起動し、HTTP Range・WS接�
   t.after(async () => { await Promise.all(instances.map(instance => instance.stop())); });
   await Promise.all(instances.map(instance => instance.start()));
   assert.notEqual(instances[0].backendPort, instances[1].backendPort);
-  for (const instance of instances) {
-    const base = `http://127.0.0.1:${instance.backendPort}`;
-    const response = await fetch(`${base}/terrain/base.bin`, { headers: { Range: 'bytes=0-15' } });
-    assert.equal(response.status, 206);
-    assert.equal((await response.arrayBuffer()).byteLength, 16);
-    await new Promise((resolve, reject) => {
-      const ws = new WebSocket(`ws://127.0.0.1:${instance.backendPort}/sim`);
-      const timer = setTimeout(() => { ws.close(); reject(new Error('WSタイムアウト')); }, 3000);
-      ws.onmessage = () => { clearTimeout(timer); ws.close(); resolve(); };
-      ws.onerror = error => { clearTimeout(timer); reject(error); };
+  const request = (url, headers = {}) => new Promise((resolve, reject) => {
+    const req = https.get(url, { headers, rejectUnauthorized: false }, response => {
+      const chunks = [];
+      response.on('data', chunk => chunks.push(chunk));
+      response.on('end', () => resolve({ status: response.statusCode, body: Buffer.concat(chunks) }));
     });
+    req.on('error', reject);
+  });
+  for (const instance of instances) {
+    const base = `https://127.0.0.1:${instance.backendPort}`;
+    const response = await request(`${base}/terrain/base.bin`, { Range: 'bytes=0-15' });
+    assert.equal(response.status, 206);
+    assert.equal(response.body.byteLength, 16);
     await instance.stop();
-    await assert.rejects(fetch(`${base}/terrain/metadata.json`));
+    await assert.rejects(request(`${base}/terrain/metadata.json`));
   }
 });

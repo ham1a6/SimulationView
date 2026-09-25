@@ -99,7 +99,7 @@ Electronのsandboxは有効のまま使用し、管理者(root)では起動し�
 
 ビルド済み配布フォルダー、前処理済み地形、OSの必要なランタイムとGPUドライバーを事前に用意すれば、インターネット接続なしで運用できる。
 JS/WASM・CSS・3Dモデル・地形を配布フォルダー内から読み込む。
-通信は同一PC内のHTTP/WebSocket(`127.0.0.1`)を使うため、ローカル通信とサーバー起動は必要。
+通信は同一PC内のHTTPS/WebTransport(HTTP/3、`127.0.0.1`)を使うため、ローカル通信とサーバー起動は必要。
 地形は自動同梱されるため、配布フォルダー全体を持ち込めばよい。
 
 初回の開発環境構築は別途準備が必要。Rust/WASMターゲット・Cargo依存・Trunkと補助ツール、C++ツールチェーン・サブモジュール・vcpkg依存、Node.js・Electronを接続環境で取得しておく。
@@ -113,7 +113,7 @@ Remove-Item Env:SIM3DVIEW_TEST_OFFLINE
 Remove-Item Env:SIM3DVIEW_TEST_OUTPUT
 ```
 
-このモードは新規テストプロファイルで、Electronセッションのループバック以外へのHTTP/WebSocket要求を拒否する。
+このモードは新規テストプロファイルで、Electronセッションのループバック以外へのHTTP/WebTransport要求を拒否する。
 起動・開始/一時停止・2D/3D切替・再読み込みを検証し、外部要求があれば失敗する。
 取得URL一覧を`offline-requests.json`、画面を`screen-0.png`・`screen-1.png`へ保存する。
 OSのネットワーク切断やファイアウォール変更は行わず、OS全体・Electron内部サービス・C++プロセスの全通信を遮断する試験ではない。
@@ -129,7 +129,7 @@ npm run test:ui
 ```
 
 Nodeの組み込みテストで静的配信のMIME/パス境界、実サーバー2個の同時起動、
-HTTP Range、WebSocket接続、子プロセス終了を検証する。
+HTTP Range、WebTransport接続、子プロセス終了を検証する。
 実サーバーテストにはビルド済みC++サーバーが必要。通信専用の最小地形ファイルは一時生成する。
 `test:ui`はElectron本体を起動し、開始・一時停止、2D/3D切替、再読み込みを繰り返し、
 スクリーンショットを`out/smoke`へ保存する。終了後のポート解放も確認する。

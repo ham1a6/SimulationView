@@ -106,9 +106,6 @@ for p in crates:
         for k, fn in MARKERS.items():
             if k not in texts and fn(t):
                 texts[k] = (p['name'], t.strip('\n'))
-# Boost Software License 1.0 は msgpack-cxx のものを使う
-bsl = read(REPO + 'sim_server/third_party/msgpack-cxx/LICENSE_1_0.txt').strip('\n')
-
 MIT_TEXT = '''MIT License
 
 Copyright (c) <year> <copyright holders>
@@ -194,7 +191,7 @@ w('**ライセンスの内訳**:\n')
 for k, v in sorted(c.items(), key=lambda kv: (-kv[1], kv[0])):
     w(f'- {v}個: `{k}`')
 w('')
-w('主要なクレートの役割: `leptos`(UIフレームワーク)、`wgpu`(WebGPU描画)、`glam`(ベクトル・行列)、`earcutr`(多角形の三角形分割)、`serde`/`serde_json`/`rmp-serde`(シリアライズ)、'
+w('主要なクレートの役割: `leptos`(UIフレームワーク)、`wgpu`(WebGPU描画)、`glam`(ベクトル・行列)、`earcutr`(多角形の三角形分割)、'
   '`gloo-net`/`gloo-timers`/`web-sys`/`wasm-bindgen`/`js-sys`(ブラウザAPI)、`bytemuck`(GPUバッファへのコピー)。\n')
 w('| クレート | 版 | ライセンス | 配布元 |')
 w('|---|---|---|---|')
@@ -212,18 +209,13 @@ w('| ライブラリ | 版 | ライセンス | 配布元・ライセンスファ
 w('|---|---|---|---|')
 w('| uWebSockets | v20.80.0系(サブモジュール) | Apache-2.0 | <https://github.com/uNetworking/uWebSockets> (`sample/sim_server/third_party/uWebSockets/LICENSE`) |')
 w('| uSockets | v0.8.8系(uWebSocketsに同梱) | Apache-2.0 | <https://github.com/uNetworking/uSockets> (`.../uWebSockets/uSockets/LICENSE`) |')
-w('| msgpack-c(C++版、msgpack-cxx) | cpp-9.0.0(サブモジュール) | BSL-1.0(Boost Software License 1.0)。著作権表示: Copyright (C) 2008-2015 FURUHASHI Sadayuki | <https://github.com/msgpack/msgpack-c> (`.../msgpack-cxx/LICENSE_1_0.txt`・`COPYING`・`NOTICE`) |')
+w('| wtransport | 0.7.2(Cargo) | MIT OR Apache-2.0 | <https://github.com/BiagioFesta/wtransport> (HTTP/3 WebTransportランタイム) |')
 w('| libuv | 1.52.1(vcpkg) | MIT | <https://github.com/libuv/libuv> |')
 w('| OpenSSL | 3.6.4(vcpkg) | Apache-2.0 | <https://www.openssl.org/> (TLS用。ビルドには常に必要) |')
 w('| zlib | 1.3.2(vcpkg) | Zlib | <https://zlib.net/> |\n')
-w('- msgpack-cxxは、Boost PredefとBoost Preprocessor(いずれもBoost Software License 1.0)を同梱しています(`msgpack-cxx/NOTICE`)。')
 w('- uSocketsのソースには、BoringSSL・lsquicのディレクトリがありますが、`sample/sim_server/CMakeLists.txt`はこれらをビルドに使いません(TLSはvcpkgのOpenSSL)。')
 w('- サーバー本体(`sample/sim_server/src`・`include`)はこのプロジェクトのコードです。')
 w('- 配布物にサブモジュールのソースを含める場合は、各サブモジュールの`LICENSE`ファイルを一緒に配布してください。\n')
-w('### 3.1 msgpack-cxxのライセンス全文(Boost Software License 1.0)\n')
-w('```text')
-w(bsl)
-w('```\n')
 w('uWebSockets・uSockets・OpenSSLのApache-2.0、libuvのMIT、zlibのZlibライセンスの全文は、[6. ライセンス全文](#6-ライセンス全文)にあります'
   '(libuvは`Copyright (c) 2015-present libuv project contributors.`、zlibは`(C) 1995-2026 Jean-loup Gailly and Mark Adler`)。'
   'uWebSockets・uSocketsのソースには、著作権者名の記載も`NOTICE`ファイルもありません(`LICENSE`はApache-2.0の全文のみ)。配布するときは、上流のリポジトリの表示を確認してください。\n')
@@ -269,14 +261,12 @@ w('## 6. ライセンス全文\n')
 w('上の各項目で使われているライセンスの全文です。MITライセンスは、著作権者ごとに`Copyright (c) <year> <copyright holders>`の部分だけが異なるので、'
   '雛形を1つだけ載せ、実際の著作権表示は[5.](#5-著作権表示rustクレートごと)(Rustクレート)と、[3.](#3-サーバーsim_serverに含まれるものc)のC++ライブラリの記載を参照してください。\n')
 order = [('MIT', None), ('Apache-2.0', 'Apache-2.0'), ('Zlib', 'Zlib'), ('Unicode-3.0', 'Unicode-3.0'), ('BSD-2-Clause', 'BSD-2-Clause'),
-         ('ISC', 'ISC'), ('BSL-1.0', None), ('CC0-1.0', 'CC0-1.0'), ('Unlicense', 'Unlicense')]
+         ('ISC', 'ISC'), ('CC0-1.0', 'CC0-1.0'), ('Unlicense', 'Unlicense')]
 for name, key in order:
     w(f'### {name}\n')
     if name == 'MIT':
         body = MIT_TEXT
         w('(雛形)\n')
-    elif name == 'BSL-1.0':
-        body = bsl
     else:
         if key not in texts:
             body = '(全文は <https://spdx.org/licenses/%s.html> を参照)' % key

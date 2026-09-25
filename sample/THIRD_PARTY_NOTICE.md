@@ -4,7 +4,7 @@ Sim3dView(`sim3dview`ライブラリ・`sample/sim_frontend`・`sample/sim_serve
 
 > **この文書について**: 依存関係とライセンスの情報を機械的に集めた**参考資料**で、法的な助言ではありません。製品として配布する前に、最新の依存関係(`Cargo.lock`・`vcpkg.json`)で再生成し、必要に応じて法務の確認を受けてください。本プロジェクト自身のライセンスは、このファイルの対象外です(リポジトリにLICENSEファイルはまだありません)。
 
-- 生成日: 2026-09-24(`Cargo.lock`の内容とvcpkg・サブモジュールの版に基づく)
+- 生成日: 2026-09-25(`Cargo.lock`の内容とvcpkg・サブモジュールの版に基づく)
 - 再生成の手順は末尾の「この文書の更新方法」を参照
 
 ## 目次
@@ -43,14 +43,14 @@ Elevation data: ALOS World 3D - 30m (AW3D30), provided by the Japan Aerospace Ex
 
 ## 2. ブラウザに配布されるもの(Rustクレート)
 
-`sim3dview`と`sample/sim_frontend`をWebAssemblyにビルドしたときに、実行時にリンクされるクレートです(`Cargo.lock`から`wasm32-unknown-unknown`向けに解決した**194個**。単体テスト専用の依存(`naga`)、ビルド時だけ動くもの(proc-macro・ビルドスクリプトの依存)、開発用ツール(`trunk`・`wasm-bindgen`のCLI)は含めない)。
+`sim3dview`と`sample/sim_frontend`をWebAssemblyにビルドしたときに、実行時にリンクされるクレートです(`Cargo.lock`から`wasm32-unknown-unknown`向けに解決した**193個**。単体テスト専用の依存(`naga`)、ビルド時だけ動くもの(proc-macro・ビルドスクリプトの依存)、開発用ツール(`trunk`・`wasm-bindgen`のCLI)は含めない)。
 
 ライセンスが「A OR B」の形のクレートは、AとBのどちらの条件でも利用できる二重ライセンスです。
 
 **ライセンスの内訳**:
 
-- 99個: `MIT OR Apache-2.0`
-- 39個: `MIT`
+- 100個: `MIT OR Apache-2.0`
+- 37個: `MIT`
 - 15個: `Unicode-3.0`
 - 13個: `Apache-2.0 OR MIT`
 - 5個: `MIT/Apache-2.0`
@@ -67,7 +67,7 @@ Elevation data: ALOS World 3D - 30m (AW3D30), provided by the Japan Aerospace Ex
 - 1個: `ISC`
 - 1個: `Zlib OR Apache-2.0 OR MIT`
 
-主要なクレートの役割: `leptos`(UIフレームワーク)、`wgpu`(WebGPU描画)、`glam`(ベクトル・行列)、`earcutr`(多角形の三角形分割)、`serde`/`serde_json`/`rmp-serde`(シリアライズ)、`gloo-net`/`gloo-timers`/`web-sys`/`wasm-bindgen`/`js-sys`(ブラウザAPI)、`bytemuck`(GPUバッファへのコピー)。
+主要なクレートの役割: `leptos`(UIフレームワーク)、`wgpu`(WebGPU描画)、`glam`(ベクトル・行列)、`earcutr`(多角形の三角形分割)、`gloo-net`/`gloo-timers`/`web-sys`/`wasm-bindgen`/`js-sys`(ブラウザAPI)、`bytemuck`(GPUバッファへのコピー)。
 
 | クレート | 版 | ライセンス | 配布元 |
 |---|---|---|---|
@@ -193,14 +193,13 @@ Elevation data: ALOS World 3D - 30m (AW3D30), provided by the Japan Aerospace Ex
 | profiling | 1.0.18 | MIT OR Apache-2.0 | <https://github.com/aclysma/profiling> |
 | quote | 1.0.47 | MIT OR Apache-2.0 | <https://github.com/dtolnay/quote> |
 | quote-use | 0.8.4 | MIT | <https://github.com/ModProg/quote-use> |
+| rand_core | 0.10.1 | MIT OR Apache-2.0 | <https://github.com/rust-random/rand_core> |
 | raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib | <https://github.com/rust-windowing/raw-window-handle> |
 | reactive_graph | 0.2.14 | MIT | <https://github.com/leptos-rs/leptos> |
 | reactive_stores | 0.4.3 | MIT | <https://github.com/leptos-rs/leptos> |
 | regex | 1.13.1 | MIT OR Apache-2.0 | <https://github.com/rust-lang/regex> |
 | regex-automata | 0.4.18 | MIT OR Apache-2.0 | <https://github.com/rust-lang/regex> |
 | regex-syntax | 0.8.11 | MIT OR Apache-2.0 | <https://github.com/rust-lang/regex> |
-| rmp | 0.8.15 | MIT | <https://github.com/3Hren/msgpack-rust> |
-| rmp-serde | 1.3.1 | MIT | <https://github.com/3Hren/msgpack-rust> |
 | rstml | 0.12.1 | MIT | <https://github.com/rs-tml/rstml> |
 | rustc-hash | 1.1.0 | Apache-2.0/MIT | <https://github.com/rust-lang-nursery/rustc-hash> |
 | rustc-hash | 2.1.3 | Apache-2.0 OR MIT | <https://github.com/rust-lang/rustc-hash> |
@@ -276,43 +275,14 @@ WebAssemblyにはRustの標準ライブラリ(`std`・`core`・`alloc`、`compil
 |---|---|---|---|
 | uWebSockets | v20.80.0系(サブモジュール) | Apache-2.0 | <https://github.com/uNetworking/uWebSockets> (`sample/sim_server/third_party/uWebSockets/LICENSE`) |
 | uSockets | v0.8.8系(uWebSocketsに同梱) | Apache-2.0 | <https://github.com/uNetworking/uSockets> (`.../uWebSockets/uSockets/LICENSE`) |
-| msgpack-c(C++版、msgpack-cxx) | cpp-9.0.0(サブモジュール) | BSL-1.0(Boost Software License 1.0)。著作権表示: Copyright (C) 2008-2015 FURUHASHI Sadayuki | <https://github.com/msgpack/msgpack-c> (`.../msgpack-cxx/LICENSE_1_0.txt`・`COPYING`・`NOTICE`) |
+| wtransport | 0.7.2(Cargo) | MIT OR Apache-2.0 | <https://github.com/BiagioFesta/wtransport> (HTTP/3 WebTransportランタイム) |
 | libuv | 1.52.1(vcpkg) | MIT | <https://github.com/libuv/libuv> |
 | OpenSSL | 3.6.4(vcpkg) | Apache-2.0 | <https://www.openssl.org/> (TLS用。ビルドには常に必要) |
 | zlib | 1.3.2(vcpkg) | Zlib | <https://zlib.net/> |
 
-- msgpack-cxxは、Boost PredefとBoost Preprocessor(いずれもBoost Software License 1.0)を同梱しています(`msgpack-cxx/NOTICE`)。
 - uSocketsのソースには、BoringSSL・lsquicのディレクトリがありますが、`sample/sim_server/CMakeLists.txt`はこれらをビルドに使いません(TLSはvcpkgのOpenSSL)。
 - サーバー本体(`sample/sim_server/src`・`include`)はこのプロジェクトのコードです。
 - 配布物にサブモジュールのソースを含める場合は、各サブモジュールの`LICENSE`ファイルを一緒に配布してください。
-
-### 3.1 msgpack-cxxのライセンス全文(Boost Software License 1.0)
-
-```text
-Boost Software License - Version 1.0 - August 17th, 2003
-
-Permission is hereby granted, free of charge, to any person or organization
-obtaining a copy of the software and accompanying documentation covered by
-this license (the "Software") to use, reproduce, display, distribute,
-execute, and transmit the Software, and to prepare derivative works of the
-Software, and to permit third-parties to whom the Software is furnished to
-do so, all subject to the following:
-
-The copyright notices in the Software and this entire statement, including
-the above license grant, this restriction and the following disclaimer,
-must be included in all copies of the Software, in whole or in part, and
-all derivative works of the Software, unless such copies or derivative
-works are solely in the form of machine-executable object code generated by
-a source language processor.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT
-SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE
-FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
-ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
-```
 
 uWebSockets・uSockets・OpenSSLのApache-2.0、libuvのMIT、zlibのZlibライセンスの全文は、[6. ライセンス全文](#6-ライセンス全文)にあります(libuvは`Copyright (c) 2015-present libuv project contributors.`、zlibは`(C) 1995-2026 Jean-loup Gailly and Mark Adler`)。uWebSockets・uSocketsのソースには、著作権者名の記載も`NOTICE`ファイルもありません(`LICENSE`はApache-2.0の全文のみ)。配布するときは、上流のリポジトリの表示を確認してください。
 
@@ -973,6 +943,13 @@ GDALの推移的な依存はvcpkgの版によって変わります。配布す�
 
 - (著作権表示の記載なし。配布元を参照)
 
+### rand_core 0.10.1
+`MIT OR Apache-2.0`
+
+- Copyrights in the Rand project are retained by their contributors. No
+- copyright assignment is required to contribute to the Rand project.
+- Copyright (c) 2018-2026 The Rand Project Developers
+
 ### raw-window-handle 0.6.2
 `MIT OR Apache-2.0 OR Zlib`
 
@@ -1003,16 +980,6 @@ GDALの推移的な依存はvcpkgの版によって変わります。配布す�
 `MIT OR Apache-2.0`
 
 - Copyright (c) 2014 The Rust Project Developers
-
-### rmp 0.8.15
-`MIT`
-
-- Copyright (c) 2017 Evgeny Safronov
-
-### rmp-serde 1.3.1
-`MIT`
-
-- Copyright (c) 2017 Evgeny Safronov
 
 ### rstml 0.12.1
 `MIT`
@@ -1708,34 +1675,6 @@ INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
 OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
 TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
 THIS SOFTWARE.
-```
-
-### BSL-1.0
-
-```text
-Boost Software License - Version 1.0 - August 17th, 2003
-
-Permission is hereby granted, free of charge, to any person or organization
-obtaining a copy of the software and accompanying documentation covered by
-this license (the "Software") to use, reproduce, display, distribute,
-execute, and transmit the Software, and to prepare derivative works of the
-Software, and to permit third-parties to whom the Software is furnished to
-do so, all subject to the following:
-
-The copyright notices in the Software and this entire statement, including
-the above license grant, this restriction and the following disclaimer,
-must be included in all copies of the Software, in whole or in part, and
-all derivative works of the Software, unless such copies or derivative
-works are solely in the form of machine-executable object code generated by
-a source language processor.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. IN NO EVENT
-SHALL THE COPYRIGHT HOLDERS OR ANYONE DISTRIBUTING THE SOFTWARE BE LIABLE
-FOR ANY DAMAGES OR OTHER LIABILITY, WHETHER IN CONTRACT, TORT OR OTHERWISE,
-ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-DEALINGS IN THE SOFTWARE.
 ```
 
 ### CC0-1.0

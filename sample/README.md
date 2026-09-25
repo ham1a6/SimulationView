@@ -40,7 +40,7 @@ CMakeの`build`ディレクトリはOSごとに別のチェックアウトで生
 ```bash
 sudo apt-get update
 sudo apt-get install -y build-essential cmake ninja-build pkg-config git curl libssl-dev zlib1g-dev libgdal-dev
-git submodule update --init sample/sim_server/third_party/uWebSockets sample/sim_server/third_party/msgpack-cxx
+git submodule update --init sample/sim_server/third_party/uWebSockets
 git -C sample/sim_server/third_party/uWebSockets submodule update --init uSockets libdeflate
 rustup target add wasm32-unknown-unknown
 cargo install trunk --locked
@@ -68,7 +68,7 @@ NO_COLOR=true trunk serve
 ```
 
 専用ウィンドウで起動する場合は[デスクトップ版のLinux手順](sim_desktop/README.md#linuxでの起動と配布)を使う。
-LAN公開時はサーバーの`--host`を公開先に合わせ、HTTPS/WSS用の証明書を`--cert`/`--key`へ指定する。
+LAN公開時はサーバーの`--host`を公開先に合わせ、HTTPS/HTTP3用の証明書を`--cert`/`--key`へ指定する。
 Linuxでも地形・通信・描画の仕様は共通で、vcpkgやPowerShellは不要。
 `bash sample/ci/linux.sh`でC++テスト、Rust/WASM検証、実サーバー通信、UIビルドを実行する。地形が準備済みの場合は配布生成も行う。
 ルートのGitHub Actionsはライブラリだけを検証する。
@@ -81,14 +81,14 @@ GPU描画・ウィンドウ操作の検証はCIの対象外。
 ```powershell
 git clone <このリポジトリのURL> Sim3dView
 cd Sim3dView
-git submodule update --init sample/sim_server/third_party/uWebSockets sample/sim_server/third_party/msgpack-cxx
+git submodule update --init sample/sim_server/third_party/uWebSockets
 git -C sample/sim_server/third_party/uWebSockets submodule update --init uSockets libdeflate
 ```
 
 サブモジュールは以下の2つ(`sample/sim_server/third_party/`配下):
 
-- `uWebSockets`(uSockets含む) — WebSocket/HTTPサーバー
-- `msgpack-cxx`(msgpack-cの`cpp_master`ブランチ) — MessagePackシリアライズ(ヘッダオンリー)
+- `uWebSockets`(uSockets含む) — HTTPS静的配信サーバー
+- Rust `wtransport` — HTTP/3 WebTransportランタイム
 
 > **`git submodule update --init --recursive`は使わないこと**: `uWebSockets`は`fuzzing/*`・
 > `h1spec`(テスト用、不要)を、その子の`uSockets`はさらに`boringssl`・`lsquic`(TLS/QUIC用、
@@ -161,12 +161,12 @@ CTestは、シミュレーションの状態遷移、HTTP Range・ETag・安全�
 タイル名・外接矩形・チャンク分割という、外部I/Oに依存しない中核ロジックを検証する。
 
 初回のconfigure時にvcpkgが依存を自動ビルドする(sim_serverは`libuv`/`openssl`/`zlib`=`sample/sim_server/vcpkg.json`、
-前処理ツールは`gdal`=`tools/geotiff_preprocess/vcpkg.json`)。sim_serverの`openssl`はHTTPS/WSS用。**GDALのフルビルドだけで15分前後かかる**
+前処理ツールは`gdal`=`tools/geotiff_preprocess/vcpkg.json`)。sim_serverの`openssl`はHTTPS/HTTP3用。**GDALのフルビルドだけで15分前後かかる**
 (2回目以降はバイナリキャッシュが効いて数秒〜数十秒)。
 
 ビルドが成功すると以下が生成される(出力先が2箇所に分かれる点に注意):
 
-- `sample/sim_server/build/Debug/sim_server.exe` — シミュレーション本体+WebSocket/HTTPサーバー
+- `sample/sim_server/build/Debug/sim_server.exe` — シミュレーション本体+WebTransport/HTTPSサーバー
 - `tools/geotiff_preprocess/build/Debug/geotiff_preprocess.exe` — 地形データ前処理ツール
 
 ### 4. 地形データの生成(初回のみ・1回だけ実行)
@@ -216,15 +216,17 @@ C++サーバーと専用ウィンドウが一緒に起動する(C++のDebugビ�
 以下のブラウザ版の手順も従来どおり使え、デスクトップ版と同時起動できる(シミュレーション状態は別々)。
 
 ビルドとデータ生成が済んだら、**2つのプロセスを同時に起動**する(別々のターミナルで)。
+初回は先に`pwsh sample/tools/gen_dev_cert.ps1`で開発用証明書を生成する。
 
 ### ターミナル1: C++側(sim_server)を起動
 
 ```powershell
 cd sample/sim_server
-.\build\Debug\sim_server.exe
+.\build\Debug\sim_server.exe --cert ../certs/dev-cert.pem --key ../certs/dev-key.pem
 ```
 
-既定でポート9001をWebSocket(`/sim`)とHTTP(`/terrain/*`)の両方で待ち受ける。
+既定でポート9001のUDPでWebTransport (`https://…/sim`、HTTP/3) を、TCPでHTTPS地形配信
+(`/terrain/*`)を待ち受ける。WebTransportはTLS 1.3が必須のため`--cert`/`--key`は省略できない。
 `sample/sim_server/`ディレクトリから起動すること(`assets/terrain/...`を相対パスで開くため)。
 
 > **Windowsの「アプリケーション制御ポリシー」に注意**: 環境によっては、`Start-Process`経由での
@@ -251,11 +253,11 @@ trunk serve
 http://localhost:8081
 ```
 
-`sample/sim_frontend`は起動時に `ws://<ページのホスト名>:9001/sim` へ自動接続する。**sim_server.exeを
+`sample/sim_frontend`は起動時に `https://<ページのホスト名>:9001/sim` へWebTransport接続する。**sim_server.exeを
 先に起動してから**ブラウザを開くこと(先にブラウザを開いても、自動再接続機能により後からsim_serverを
 起動すれば数秒以内につながる)。
 
-### HTTPS/WSSで開く(任意。LANの別端末からWebGPUを使うときなど)
+### HTTPS/WebTransportで開く(LANの別端末から使うとき)
 
 `http://localhost`以外(`http://192.168.x.x:8081`等)は**セキュアコンテキストではない**ため、ブラウザは
 WebGPUなど一部の機能を無効にする。LAN越しに使うにはHTTPSで開く。開発用の自己署名証明書を使う:
@@ -263,7 +265,7 @@ WebGPUなど一部の機能を無効にする。LAN越しに使うにはHTTPSで
 ```powershell
 pwsh sample/tools/gen_dev_cert.ps1                       # sample/certs/dev-cert.pem と dev-key.pem を生成(git管理外)
 
-# ターミナル1: sim_serverを--cert/--keyつきで起動(ws→wss、http→httpsになる)
+# ターミナル1: sim_serverを--cert/--keyつきで起動(HTTP/3 WebTransport+HTTPS)
 cd sample/sim_server
 ./build/Debug/sim_server.exe --cert ../certs/dev-cert.pem --key ../certs/dev-key.pem
 
@@ -273,9 +275,8 @@ $env:NO_COLOR = "true"
 trunk serve --tls-cert-path ../certs/dev-cert.pem --tls-key-path ../certs/dev-key.pem
 ```
 
-`https://<このPCのIP>:8081`で開く。`sample/sim_frontend`はページのスキームに合わせて`wss://`・`https://`で
-sim_server(9001)へ接続する(HTTPSページから平文の`ws://`・`http://`へはMixed Contentで繋がらないため、
-**sim_serverも必ずTLSで起動する**)。`--cert/--key`を付けなければ従来どおり平文のHTTP/WS。
+`https://<このPCのIP>:8081`で開く。WebTransportは常にHTTPS/HTTP3を使うため、**sim_serverも必ずTLSで
+起動する**。平文HTTP/WebSocketへのフォールバックはない。
 
 証明書は自己署名なので、ブラウザに信頼させる必要がある。次のいずれか:
 
@@ -283,7 +284,7 @@ sim_server(9001)へ接続する(HTTPSページから平文の`ws://`・`http://`
   (Windows: `certutil -addstore -user Root sample\certs\dev-cert.pem`、他OSは各OSの手順)。以後、警告なしで
   8081・9001の両方に繋がる。
 - 登録しない場合は、警告画面を8081(ページ)と**9001(`https://<IP>:9001/terrain/metadata.json`を一度開く)**
-  の両方で「詳細設定→続行」しておく(後者を忘れるとWebSocket/地形取得だけ黙って失敗する)。
+  の両方で「詳細設定→続行」しておく(後者を忘れるとWebTransport/地形取得だけ黙って失敗する)。
 
 証明書のSANには生成時のホスト名・IPだけが入る。PCのIPが変わったら`sample/tools/gen_dev_cert.ps1`を再実行する
 (`-ExtraHost`で追加のDNS名/IPも指定可)。

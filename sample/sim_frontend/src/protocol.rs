@@ -1,314 +1,83 @@
-//! Sim3dView 通信プロトコル定義。
-//! フレーミング: `[1 byte: msg_type][MessagePack body]`
-//! 詳細: DETAILED_DESIGN.md 4節。C++側 (`sim_server/include/protocol.hpp`) と内容を一致させること。
-//!
-//! 注意: rmp-serdeはデフォルトでstructをmsgpackの「配列」としてエンコード/デコードする
-//! (C++側の`MSGPACK_DEFINE`マクロと同じ、フィールド名ではなく宣言順の位置で対応する形式)。
-//! そのため各structのフィールド宣言順は、C++側の`MSGPACK_DEFINE(...)`の引数順と
-//! **完全に一致させる必要がある**(片方だけ並び替えるとデータが壊れる)。
+//! WebTransport用の固定長バイナリプロトコル。C++の`webtransport_protocol.hpp`と同じlittle endian配置を読む。
 
-use serde::{Deserialize, Serialize};
 use std::fmt;
 
+const HEADER_SIZE: usize = 8;
+const SIM_STATE_SIZE: usize = 48;
+const ORIGIN_STATE_SIZE: usize = 16;
+const COMMAND_ERROR_SIZE: usize = 8;
+const APP_STATUS_SIZE: usize = 8;
+const TRACK_SIZE: usize = 88;
+const TRACK_LIST_SIZE: usize = 1424;
+const MAX_TRACKS: usize = 16;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum MsgType {
-    SimState = 0x01,
-    OriginState = 0x03,
-    StatusPanelConfig = 0x04,
-    CommandError = 0x05,
-    AppStatus = 0x06,
-    TrackList = 0x07,
-}
+#[repr(u16)]
+pub enum MsgType { ClientCommand = 1, SimState = 2, OriginState = 3, CommandError = 4, AppStatus = 5, TrackList = 6 }
+impl MsgType { fn from_u16(value: u16) -> Option<Self> { match value { 1 => Some(Self::ClientCommand), 2 => Some(Self::SimState), 3 => Some(Self::OriginState), 4 => Some(Self::CommandError), 5 => Some(Self::AppStatus), 6 => Some(Self::TrackList), _ => None } } }
 
-impl MsgType {
-    pub fn from_byte(b: u8) -> Option<Self> {
-        match b {
-            0x01 => Some(MsgType::SimState),
-            0x03 => Some(MsgType::OriginState),
-            0x04 => Some(MsgType::StatusPanelConfig),
-            0x05 => Some(MsgType::CommandError),
-            0x06 => Some(MsgType::AppStatus),
-            0x07 => Some(MsgType::TrackList),
-            _ => None,
-        }
-    }
-}
-
-/// 型バイトを検証・復号したサーバー通知。
 #[derive(Debug, Clone)]
-pub enum ServerMessage {
-    SimState(SimState),
-    OriginState(OriginState),
-    StatusPanelConfig(StatusPanelConfig),
-    CommandError(CommandError),
-    AppStatus(AppStatus),
-    TrackList(TrackList),
-}
-
-#[derive(Debug)]
-pub enum DecodeFrameError {
-    Empty,
-    UnknownType(u8),
-    InvalidBody {
-        msg_type: MsgType,
-        source: rmp_serde::decode::Error,
-    },
-}
-
-impl fmt::Display for DecodeFrameError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => write!(f, "空のフレーム"),
-            Self::UnknownType(value) => write!(f, "未知のmsg_type: 0x{value:02x}"),
-            Self::InvalidBody { msg_type, source } => {
-                write!(f, "{msg_type:?}のMessagePackが不正: {source}")
-            }
-        }
-    }
-}
-
+pub enum ServerMessage { SimState(SimState), OriginState(OriginState), CommandError(CommandError), AppStatus(AppStatus), TrackList(TrackList) }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeFrameError { TooShort, UnknownType(u16), InvalidLength { msg_type: MsgType, actual: usize, expected: usize }, ReservedHeader }
+impl fmt::Display for DecodeFrameError { fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { match self { Self::TooShort => write!(f, "フレームが短すぎます"), Self::UnknownType(id) => write!(f, "未知のmessage_id: 0x{id:04x}"), Self::InvalidLength { msg_type, actual, expected } => write!(f, "{msg_type:?}のサイズが不正: {actual} (期待値 {expected})"), Self::ReservedHeader => write!(f, "予約ヘッダが不正です") } } }
 impl std::error::Error for DecodeFrameError {}
 
-/// `[msg_type][MessagePack body]`をDOMやLeptosに依存せず復号する。
+fn u16_at(bytes: &[u8], at: usize) -> u16 { u16::from_le_bytes(bytes[at..at + 2].try_into().unwrap()) }
+fn u32_at(bytes: &[u8], at: usize) -> u32 { u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) }
+fn f32_at(bytes: &[u8], at: usize) -> f32 { f32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) }
+fn f64_at(bytes: &[u8], at: usize) -> f64 { f64::from_le_bytes(bytes[at..at + 8].try_into().unwrap()) }
+fn expect_size(kind: MsgType, bytes: &[u8], expected: usize) -> Result<(), DecodeFrameError> { if bytes.len() == expected { Ok(()) } else { Err(DecodeFrameError::InvalidLength { msg_type: kind, actual: bytes.len(), expected }) } }
+
+/// `[u16 message_id][u16 reserved=0][u32 payload_size][固定長payload]`を復号する。
 pub fn decode_frame(bytes: &[u8]) -> Result<ServerMessage, DecodeFrameError> {
-    let (&kind, body) = bytes.split_first().ok_or(DecodeFrameError::Empty)?;
-    let msg_type = MsgType::from_byte(kind).ok_or(DecodeFrameError::UnknownType(kind))?;
-    macro_rules! decode {
-        ($type:ty, $variant:ident) => {
-            rmp_serde::from_slice::<$type>(body)
-                .map(ServerMessage::$variant)
-                .map_err(|source| DecodeFrameError::InvalidBody { msg_type, source })
-        };
-    }
+    if bytes.len() < HEADER_SIZE { return Err(DecodeFrameError::TooShort); }
+    let message_id = u16_at(bytes, 0);
+    let msg_type = MsgType::from_u16(message_id).ok_or(DecodeFrameError::UnknownType(message_id))?;
+    if u16_at(bytes, 2) != 0 || u32_at(bytes, 4) as usize != bytes.len() - HEADER_SIZE { return Err(DecodeFrameError::ReservedHeader); }
+    let body = &bytes[HEADER_SIZE..];
     match msg_type {
-        MsgType::SimState => decode!(SimState, SimState),
-        MsgType::OriginState => decode!(OriginState, OriginState),
-        MsgType::StatusPanelConfig => decode!(StatusPanelConfig, StatusPanelConfig),
-        MsgType::CommandError => decode!(CommandError, CommandError),
-        MsgType::AppStatus => decode!(AppStatus, AppStatus),
-        MsgType::TrackList => decode!(TrackList, TrackList),
+        MsgType::SimState => { expect_size(msg_type, body, SIM_STATE_SIZE)?; Ok(ServerMessage::SimState(SimState { t: f64_at(body, 0), positions: vec![f32_at(body, 8), f32_at(body, 12), f32_at(body, 16)], frame_id: u32_at(body, 20), status_values: vec![f64_at(body, 24), f64_at(body, 32), f64_at(body, 40)] })) }
+        MsgType::OriginState => { expect_size(msg_type, body, ORIGIN_STATE_SIZE)?; Ok(ServerMessage::OriginState(OriginState { lat_deg: f64_at(body, 0), lon_deg: f64_at(body, 8) })) }
+        MsgType::CommandError => { expect_size(msg_type, body, COMMAND_ERROR_SIZE)?; Ok(ServerMessage::CommandError(CommandError::from_wire(body[0], body[1]))) }
+        MsgType::AppStatus => { expect_size(msg_type, body, APP_STATUS_SIZE)?; Ok(ServerMessage::AppStatus(AppStatus { text: if body[0] == 0 { "一時停止中" } else { "シミュレーション実行中" }.to_string() })) }
+        MsgType::TrackList => decode_track_list(body).map(ServerMessage::TrackList),
+        MsgType::ClientCommand => Err(DecodeFrameError::UnknownType(message_id)),
     }
 }
 
-// --- Server -> Client ------------------------------------------------
-
-/// シミュレーション状態(高頻度、約60Hz)。DETAILED_DESIGN.md 4.3節。
-#[derive(Debug, Clone, Deserialize)]
-pub struct SimState {
-    pub t: f64,
-    #[allow(dead_code)]
-    // v1はまだ実体を描画しないが、msgpackは配列位置エンコードのため保持が必要。
-    pub positions: Vec<f32>,
-    pub frame_id: u32,
-    /// StatusPanelConfig.items と同じ順序・同じ数(v1では数値項目のみ)。
-    pub status_values: Vec<f64>,
+fn decode_track_list(body: &[u8]) -> Result<TrackList, DecodeFrameError> {
+    expect_size(MsgType::TrackList, body, TRACK_LIST_SIZE)?;
+    let count = (u32_at(body, 8) as usize).min(MAX_TRACKS);
+    let mut tracks = Vec::with_capacity(count);
+    for index in 0..count {
+        let track = &body[16 + index * TRACK_SIZE..16 + (index + 1) * TRACK_SIZE];
+        let end = track[64..88].iter().position(|byte| *byte == 0).unwrap_or(24);
+        tracks.push(Track { lat_deg: f64_at(track, 0), lon_deg: f64_at(track, 8), alt_m: f64_at(track, 16), heading_deg: f64_at(track, 24), speed_mps: f64_at(track, 32), pitch_deg: f64_at(track, 40), roll_deg: f64_at(track, 48), id: u32_at(track, 56), kind: track[60], affiliation: track[61], alt_ref: track[62], label: String::from_utf8_lossy(&track[64..64 + end]).into_owned() });
+    }
+    Ok(TrackList { t: f64_at(body, 0), tracks })
 }
 
-/// 基準位置(原点)。DETAILED_DESIGN.md 3節・4.3節。サーバーが保持する状態が正。
-#[derive(Debug, Clone, Copy, Deserialize)]
-pub struct OriginState {
-    pub lat_deg: f64,
-    pub lon_deg: f64,
-}
+#[derive(Debug, Clone)] pub struct SimState { pub t: f64, pub positions: Vec<f32>, pub frame_id: u32, pub status_values: Vec<f64> }
+#[derive(Debug, Clone, Copy)] pub struct OriginState { pub lat_deg: f64, pub lon_deg: f64 }
+#[derive(Debug, Clone)] pub struct StatusItem { pub id: String, pub label: String, pub unit: String }
+#[derive(Debug, Clone)] pub struct StatusPanelConfig { pub items: Vec<StatusItem> }
+#[derive(Debug, Clone)] pub struct AppStatus { pub text: String }
+#[derive(Debug, Clone)] pub struct Track { pub id: u32, pub kind: u8, pub affiliation: u8, pub label: String, pub lat_deg: f64, pub lon_deg: f64, pub alt_m: f64, pub alt_ref: u8, pub heading_deg: f64, pub speed_mps: f64, pub pitch_deg: f64, pub roll_deg: f64 }
+#[derive(Debug, Clone)] pub struct TrackList { pub t: f64, pub tracks: Vec<Track> }
+#[derive(Debug, Clone)] pub struct CommandError { pub command_type: String, pub message: String }
+impl CommandError { fn from_wire(command: u8, code: u8) -> Self { let command_type = match command { 1 => "pause", 2 => "resume", 3 => "set_param", 4 => "set_origin", _ => "unknown" }.to_string(); let message = match code { 2 => "シミュレーション実行中は原点を変更できません", 3 => "指定された緯度経度が地形データの範囲外です", _ => "未対応のコマンドです" }.to_string(); Self { command_type, message } } }
 
-/// 状況パネル項目1個分。DETAILED_DESIGN.md 4.3節・7.5節。
-#[derive(Debug, Clone, Deserialize)]
-pub struct StatusItem {
-    #[allow(dead_code)]
-    // UIはlabel/unitのみ表示に使うが、msgpackは配列位置エンコードのため保持が必要。
-    pub id: String,
-    pub label: String,
-    /// 単位。なければ空文字列
-    pub unit: String,
-}
-
-/// 状況パネル項目定義(状態変化時のみ送信)。実際の値は SimState.status_values で配信する。
-#[derive(Debug, Clone, Deserialize)]
-pub struct StatusPanelConfig {
-    pub items: Vec<StatusItem>,
-}
-
-/// コマンド拒否応答。要求元クライアントのみに送信される。DETAILED_DESIGN.md 4.3節。
-#[derive(Debug, Clone, Deserialize)]
-pub struct CommandError {
-    /// 拒否された ClientCommand.type
-    pub command_type: String,
-    /// エラー内容(人間可読)
-    pub message: String,
-}
-
-/// シミュレータアプリケーション自体の状態を表す表示用文字列(状態変化時+接続直後)。
-/// DETAILED_DESIGN.md 7.7節: WebSocket接続が確立している間、シミュレーションステータス
-/// パネルはこの文字列をそのまま表示する。
-#[derive(Debug, Clone, Deserialize)]
-pub struct AppStatus {
-    pub text: String,
-}
-
-/// 航跡(トラック)1個分: 航空機・艦船・車両等の現在位置とシンボル情報。DETAILED_DESIGN.md 4.3節。
-/// `kind`/`affiliation`/`alt_ref`の値の意味はC++側(`protocol.hpp`の`TrackKind`等)と一致させる
-/// (`track_bridge.rs`がsim3dviewライブラリの型へ変換する)。
-#[derive(Debug, Clone, Deserialize)]
-pub struct Track {
-    /// 同じ実体には常に同じID(航跡・ラベルの対応づけに使う)。
-    pub id: u32,
-    /// 0=不明 / 1=固定翼機 / 2=ヘリ / 3=艦船 / 4=地上車両 / 5=ミサイル
-    pub kind: u8,
-    /// 0=不明 / 1=友軍 / 2=敵 / 3=中立
-    pub affiliation: u8,
-    pub label: String,
-    pub lat_deg: f64,
-    pub lon_deg: f64,
-    pub alt_m: f64,
-    /// 0=`alt_m`は海抜 / 1=地表からの高さ
-    pub alt_ref: u8,
-    /// 進行方向(北から時計回り)
-    pub heading_deg: f64,
-    /// 対地速度(m/s)
-    pub speed_mps: f64,
-    /// ピッチ(度、機首上げが正)。3Dモデル表示の向きに使う。古いサーバー(このフィールドを送らない)なら0
-    #[serde(default)]
-    pub pitch_deg: f64,
-    /// ロール(度、右翼が下がる向きが正)。同上
-    #[serde(default)]
-    pub roll_deg: f64,
-}
-
-/// 航跡の一覧(全トラックの最新状態。トラックが消えたら次の一覧から抜ける)。
-#[derive(Debug, Clone, Deserialize)]
-pub struct TrackList {
-    #[allow(dead_code)] // 現在は表示に使わないが、msgpackは配列位置エンコードのため保持が必要。
-    pub t: f64,
-    pub tracks: Vec<Track>,
-}
-
-// --- Client -> Server --------------------------------------------------
-
-/// クライアントからの操作コマンド。DETAILED_DESIGN.md 4.3節。
-/// (プレフィックスバイトなし、msgpack本体のみで送信する)
-#[derive(Debug, Clone, Serialize, Default)]
-pub struct ClientCommand {
-    /// "pause" / "resume" / "set_param" / "set_origin"
-    #[serde(rename = "type")]
-    pub type_: String,
-    /// 旧ボタンIDの予約スロット。配列位置の互換性のため空文字で送る。
-    pub reserved: String,
-    /// set_param時のみ使用
-    pub value: f64,
-    /// set_origin時のみ使用
-    pub lat_deg: f64,
-    /// set_origin時のみ使用
-    pub lon_deg: f64,
-}
-
+#[derive(Debug, Clone, Copy)] enum Command { Pause = 1, Resume = 2, SetOrigin = 4 }
+#[derive(Debug, Clone)] pub struct ClientCommand { command: Command, pub value: f64, pub lat_deg: f64, pub lon_deg: f64 }
 impl ClientCommand {
-    pub fn set_origin(lat_deg: f64, lon_deg: f64) -> Self {
-        Self {
-            type_: "set_origin".to_string(),
-            lat_deg,
-            lon_deg,
-            ..Default::default()
-        }
-    }
-
-    /// シミュレーションを進める(停止中は原点を変更できるが、実行中はできない)。
-    pub fn resume() -> Self {
-        Self {
-            type_: "resume".to_string(),
-            ..Default::default()
-        }
-    }
-
-    /// シミュレーションを一時停止する。
-    pub fn pause() -> Self {
-        Self {
-            type_: "pause".to_string(),
-            ..Default::default()
-        }
-    }
+    pub fn set_origin(lat_deg: f64, lon_deg: f64) -> Self { Self { command: Command::SetOrigin, value: 0.0, lat_deg, lon_deg } }
+    pub fn resume() -> Self { Self { command: Command::Resume, value: 0.0, lat_deg: 0.0, lon_deg: 0.0 } }
+    pub fn pause() -> Self { Self { command: Command::Pause, value: 0.0, lat_deg: 0.0, lon_deg: 0.0 } }
+    pub fn encode(&self) -> [u8; 32] { let mut bytes = [0_u8; 32]; bytes[0] = self.command as u8; bytes[8..16].copy_from_slice(&self.value.to_le_bytes()); bytes[16..24].copy_from_slice(&self.lat_deg.to_le_bytes()); bytes[24..32].copy_from_slice(&self.lon_deg.to_le_bytes()); bytes }
 }
+pub fn frame_client_command(command: &ClientCommand) -> Vec<u8> { let payload = command.encode(); let mut frame = Vec::with_capacity(HEADER_SIZE + payload.len()); frame.extend_from_slice(&(MsgType::ClientCommand as u16).to_le_bytes()); frame.extend_from_slice(&0_u16.to_le_bytes()); frame.extend_from_slice(&(payload.len() as u32).to_le_bytes()); frame.extend_from_slice(&payload); frame }
+pub fn default_status_panel_config() -> StatusPanelConfig { StatusPanelConfig { items: vec![StatusItem { id: "elapsed_time".into(), label: "経過時間".into(), unit: "s".into() }, StatusItem { id: "altitude".into(), label: "高度".into(), unit: "m".into() }, StatusItem { id: "speed".into(), label: "速度".into(), unit: "m/s".into() }] } }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn frame<T: Serialize>(kind: MsgType, value: &T) -> Vec<u8> {
-        let mut bytes = vec![kind as u8];
-        bytes.extend(rmp_serde::to_vec(value).unwrap());
-        bytes
-    }
-
-    #[test]
-    fn decodes_each_server_message_type() {
-        assert!(matches!(
-            decode_frame(&frame(
-                MsgType::SimState,
-                &(1.0_f64, vec![0.0_f32], 2_u32, vec![3.0_f64])
-            )),
-            Ok(ServerMessage::SimState(_))
-        ));
-        assert!(matches!(
-            decode_frame(&frame(MsgType::OriginState, &(35.0_f64, 139.0_f64))),
-            Ok(ServerMessage::OriginState(_))
-        ));
-        assert!(matches!(
-            decode_frame(&frame(
-                MsgType::StatusPanelConfig,
-                &(vec![("id", "label", "m")],)
-            )),
-            Ok(ServerMessage::StatusPanelConfig(_))
-        ));
-        assert!(matches!(
-            decode_frame(&frame(MsgType::CommandError, &("resume", "拒否"))),
-            Ok(ServerMessage::CommandError(_))
-        ));
-        assert!(matches!(
-            decode_frame(&frame(MsgType::AppStatus, &("停止中",))),
-            Ok(ServerMessage::AppStatus(_))
-        ));
-        assert!(matches!(
-            decode_frame(&frame(MsgType::TrackList, &(0.0_f64, Vec::<(u32,)>::new()))),
-            Ok(ServerMessage::TrackList(_))
-        ));
-    }
-
-    #[test]
-    fn commands_keep_wire_positions_without_button_ids() {
-        for cmd in [
-            ClientCommand::resume(),
-            ClientCommand::pause(),
-            ClientCommand::set_origin(35.0, 139.0),
-        ] {
-            let bytes = rmp_serde::to_vec(&cmd).unwrap();
-            let wire: (String, String, f64, f64, f64) = rmp_serde::from_slice(&bytes).unwrap();
-            assert_eq!(
-                wire,
-                (
-                    cmd.type_,
-                    String::new(),
-                    cmd.value,
-                    cmd.lat_deg,
-                    cmd.lon_deg
-                )
-            );
-        }
-        assert!(matches!(
-            decode_frame(&[0x02]),
-            Err(DecodeFrameError::UnknownType(0x02))
-        ));
-    }
-
-    #[test]
-    fn rejects_empty_unknown_and_malformed_frames() {
-        assert!(matches!(decode_frame(&[]), Err(DecodeFrameError::Empty)));
-        assert!(matches!(
-            decode_frame(&[0xff]),
-            Err(DecodeFrameError::UnknownType(0xff))
-        ));
-        assert!(matches!(
-            decode_frame(&[MsgType::OriginState as u8, 0xc1]),
-            Err(DecodeFrameError::InvalidBody { .. })
-        ));
-    }
-}
+mod tests { use super::*; #[test] fn command_is_a_fixed_cxx_layout() { let frame = frame_client_command(&ClientCommand::set_origin(35.0, 139.0)); assert_eq!(frame.len(), 40); assert_eq!(u16_at(&frame, 0), MsgType::ClientCommand as u16); assert_eq!(f64_at(&frame[HEADER_SIZE..], 16), 35.0); assert_eq!(f64_at(&frame[HEADER_SIZE..], 24), 139.0); } }

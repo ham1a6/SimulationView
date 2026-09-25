@@ -4,10 +4,10 @@
 // 「実シミュレーションループとの結合、コマンドキュー実装、原点状態の保持・変更ガード実装」
 //
 // スレッドモデル(DETAILED_DESIGN.md 5.1節):
-// - .messageハンドラ(uWSイベントループスレッド)で受信したコマンドは、直接状態を書き換えず
+// - WebTransport受信コールバックで受信したコマンドは、直接状態を書き換えず
 //   enqueue_command()でスレッドセーフなキューに積むだけにする。
 // - simスレッド側でstep()を呼ぶたびに、キューを消費してから物理状態を1ステップ進める。
-// - 状態の読み取り(snapshot系)はuWSスレッド(broadcast用)からも呼ばれるため、
+// - 状態の読み取り(snapshot系)はWebTransport送信側(broadcast用)からも呼ばれるため、
 //   mutexで保護する。
 
 #include <cstdint>
@@ -22,8 +22,8 @@
 namespace sim3dview {
 
 // 接続クライアントを識別する不透明なID。
-// uWebSocketsの`WebSocket*`はuWSイベントループスレッドでしか安全に扱えないため、
-// simスレッドとのやり取りにはこのIDだけを使う(実際のポインタへの変換はws_server側の責務)。
+// WebTransport接続はランタイム固有であるため、
+// simスレッドとのやり取りにはこのIDだけを使う(接続表の管理は送信層の責務)。
 using ClientId = uint64_t;
 
 // enqueue_command()で積まれる1件分。

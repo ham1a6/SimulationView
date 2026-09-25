@@ -1,0 +1,12 @@
+[package]
+name = "sim3dview_webtransport_bridge"
+version = "0.1.0"
+edition = "2021"
+description = "sim_server向けWebTransport (HTTP/3) のC ABIブリッジ"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util"] }
+wtransport = "0.7.2"

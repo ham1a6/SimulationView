@@ -28,6 +28,8 @@ async function start() {
     : developmentServer());
   runtime = new DesktopRuntime({
     serverExe: path.resolve(serverExe), terrainDir,
+    certFile: process.env.SIM3DVIEW_CERT_FILE || (app.isPackaged ? path.join(process.resourcesPath, 'certs', 'dev-cert.pem') : path.join(__dirname, '../certs/dev-cert.pem')),
+    keyFile: process.env.SIM3DVIEW_KEY_FILE || (app.isPackaged ? path.join(process.resourcesPath, 'certs', 'dev-key.pem') : path.join(__dirname, '../certs/dev-key.pem')),
     frontendDir: app.isPackaged ? path.join(__dirname, 'frontend') : path.join(__dirname, 'out/frontend'),
     onFailure: fail,
   });

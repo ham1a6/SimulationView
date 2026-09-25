@@ -77,33 +77,27 @@ stateDiagram-v2
 
 ### 4.1 メッセージフレーミング
 
-serdeの`tag`機能をC++側で素朴に再現するのは実装コストが高いため、**先頭1バイトをメッセージタイプ
-識別子、残りをMessagePackボディとする自前フレーミング**を採用する(サーバー→クライアント方向のみ)。
+WebTransportの信頼ストリームはバイト列であり書き込み境界を保存しないため、すべての送受信に
+**8バイトの固定ヘッダ**を付ける。ヘッダ後はC++の固定長・標準レイアウト構造体の生バイト列である。
+可変長型(`std::string`/`std::vector`/ポインタ)をそのまま送ってはならない。
 
 ```
-[1 byte: msg_type] [N bytes: MessagePack body]
+[u16 little endian: message_id] [u16 reserved=0] [u32 little endian: payload_size] [payload]
 ```
 
-クライアント→サーバー方向(`ClientCommand`)はメッセージ型が1種類のみのため、プレフィックスバイトを
-付けず、MessagePackボディのみを送信する。
+`sample/sim_server/include/webtransport_protocol.hpp`がC++の正、Rust側はABIに依存せず同ファイルの
+サイズ・オフセットを明示的にlittle endianで復号する。全payloadは`static_assert`でサイズを固定する。
 
-msgpackへのシリアライズは、Rust側(rmp-serde)・C++側(msgpack-cxxの`MSGPACK_DEFINE`)ともに
-**構造体を配列(フィールド宣言順の位置)としてエンコードする**方式を採る(mapではない)。したがって
-両言語の構造体定義は**フィールド宣言順を完全に一致させる必要がある**(片方だけ並び替えるとデータが
-壊れる)。
-
-### 4.2 msg_type 一覧
+### 4.2 message_id 一覧
 
 | 値 | 名前 | 方向 | 送信タイミング |
 |---|---|---|---|
-| 0x01 | SimState | Server→Client | 高頻度(約60Hz) |
-| 0x02 | 予約(旧VabConfig) | — | 使用しない・再利用しない |
-| 0x03 | OriginState | Server→Client | 状態変化時、接続直後にも1回、全クライアントへbroadcast |
-| 0x04 | StatusPanelConfig | Server→Client | 状態変化時、接続直後にも1回 |
-| 0x05 | CommandError | Server→Client | コマンド拒否時。**要求元クライアントのみ**に送信 |
-| 0x06 | AppStatus | Server→Client | 状態変化時(pause/resume)、接続直後にも1回、全クライアントへbroadcast |
-| 0x07 | TrackList | Server→Client | シミュレーション進行中は約20Hz(SimStateの3フレームに1回)、接続直後にも1回。停止中は送らない |
-| (なし) | ClientCommand | Client→Server | ユーザー操作時 |
+| 0x0001 | ClientCommand | Client→Server | ユーザー操作時、信頼ストリーム |
+| 0x0002 | SimState | Server→Client | 高頻度(約60Hz)、**到達保証なしデータグラム** |
+| 0x0003 | OriginState | Server→Client | 状態変化時・接続直後、信頼ストリームでbroadcast |
+| 0x0004 | CommandError | Server→Client | コマンド拒否時、信頼ストリームで要求元のみ |
+| 0x0005 | AppStatus | Server→Client | 状態変化時・接続直後、信頼ストリームでbroadcast |
+| 0x0006 | TrackList | Server→Client | 約20Hz・接続直後、信頼ストリームでbroadcast |
 
 ### 4.3 メッセージ型定義
 
@@ -123,7 +117,7 @@ lat_deg: f64
 lon_deg: f64
 ```
 
-**StatusPanelConfig**(サーバー→クライアント、状態変化時+接続直後)
+**StatusPanelConfig**(フロント内の固定表示定義。WebTransportでは送受信しない)
 ```
 items: Vec<StatusItem>
   StatusItem:
@@ -134,25 +128,25 @@ items: Vec<StatusItem>
 
 **CommandError**(サーバー→クライアント、要求元のみ)
 ```
-command_type: String          // 拒否されたClientCommand.type
-message: String                // エラー内容(人間可読)
+command: u8                   // 拒否されたClientCommandの種別
+code: u8                      // 0=未対応 1=実行中の原点変更 2=範囲外
 ```
 
 **AppStatus**(サーバー→クライアント、状態変化時+接続直後。7.7節)
 ```
-text: String                   // シミュレータアプリケーション自体の状態文字列
-                                // (例: "シミュレーション実行中" / "一時停止中")
+running: u8                   // 0=一時停止中、1=シミュレーション実行中
 ```
 
 **TrackList**(サーバー→クライアント、進行中は約20Hz+接続直後。6.12節)
 ```
 t: f64                         // シミュレーション時刻(秒)
-tracks: Vec<Track>             // 全トラックの最新状態(消えたトラックは次の一覧から抜ける)
+count: u32                    // 有効な先頭要素数(最大16)
+tracks: Track[16]              // 全トラックの最新状態。labelはNUL終端の24バイト固定長
   Track:
     id: u32                    // 同じ実体には常に同じID(フロントの航跡・ラベルの対応づけ)
     kind: u8                   // 0=不明 1=固定翼機 2=ヘリ 3=艦船 4=地上車両 5=ミサイル
     affiliation: u8            // 0=不明 1=友軍 2=敵 3=中立
-    label: String              // 表示名(コールサイン等)
+label: char[24]           // 表示名(コールサイン等、NUL終端)
     lat_deg: f64
     lon_deg: f64
     alt_m: f64
@@ -165,8 +159,8 @@ tracks: Vec<Track>             // 全トラックの最新状態(消えたトラ
 
 **ClientCommand**(クライアント→サーバー)
 ```
-type: String                   // "pause" / "resume" / "set_param" / "set_origin"
-reserved: String               // 旧ボタンIDの予約スロット(空文字)、配列位置を維持
+command: u8                  // 1=pause 2=resume 3=set_param 4=set_origin
+reserved: u8[7]               // 0で埋める
 value: f64                     // set_param時のみ使用
 lat_deg: f64                   // set_origin時のみ使用
 lon_deg: f64                   // set_origin時のみ使用
@@ -175,21 +169,22 @@ lon_deg: f64                   // set_origin時のみ使用
 ### 4.4 送信頻度
 
 - シミュレーションループ(simスレッド)は約60Hz(16ms間隔)で駆動する
-- `OriginState`/`StatusPanelConfig`は変化があったときのみ送信(毎フレーム送らない)
+- `OriginState`/`AppStatus`は変化があったときのみ送信(毎フレーム送らない)
 - `TrackList`は全トラックの最新状態をまとめて、シミュレーション進行中だけ約20Hzで送る(3フレームに1回)。位置は
   シミュレーション時刻の関数で、停止中は変わらないので送らない(新規接続には接続直後に1回)。フロントの描画は全体の再描画になるので、
   60Hzで送らずに表示に十分な頻度に抑えている
 
-### 4.5 WebSocket再接続処理(フロント側)
+### 4.5 WebTransport再接続処理(フロント側)
 
-- 受信フレームの`[msg_type][MessagePack body]`の検証と復号は、DOM・Leptosに依存しない
-  `protocol::decode_frame()`が`ServerMessage`へ変換する。`ws.rs`は復号済みメッセージを対応するシグナルへ反映するだけとする
+- `WebTransport`は`https://<host>:<port>/sim`へ接続する。接続後、サーバーからの信頼メッセージは
+  incoming unidirectional stream、リアルタイム状態はdatagram readerで受信する
+- 固定ヘッダとpayloadの検証・復号はDOM・Leptosに依存しない`protocol::decode_frame()`が担当する
 - 再接続間隔は**指数バックオフ**(初回1秒、以後2倍ずつ、上限30秒でキャップ)
 - バックオフ間隔に**ジッター(±300ms)**を加える(サーバー再起動時のサンダリングハード回避)
 - **ブラウザタブが非表示の間は再接続の試行を一時停止**する(Page Visibility API)。タブがアクティブに
   戻ったタイミングで即座に再接続を再開する(バックオフの残り時間を待たない)
 - リトライ回数の上限は設けない(タブが表示されている間は無制限にリトライ)
-- 再接続成功後は、サーバーから`OriginState`/`StatusPanelConfig`が接続直後の仕様により
+- 再接続成功後は、サーバーから`OriginState`/`AppStatus`が接続直後の仕様により
   再送されるため、フロント側の表示状態は自然に復旧する
 
 ### 4.6 プロトコルのクラス図
@@ -198,12 +193,12 @@ lon_deg: f64                   // set_origin時のみ使用
 classDiagram
     class MsgType {
         <<enumeration>>
-        SimState = 0x01
-        OriginState = 0x03
-        StatusPanelConfig = 0x04
-        CommandError = 0x05
-        AppStatus = 0x06
-        TrackList = 0x07
+        ClientCommand = 0x0001
+        SimState = 0x0002
+        OriginState = 0x0003
+        CommandError = 0x0004
+        AppStatus = 0x0005
+        TrackList = 0x0006
     }
     class SimState {
         +f64 t
@@ -262,23 +257,21 @@ classDiagram
 ```mermaid
 sequenceDiagram
     participant C as Client(Rust/WASM)
-    participant WS as WsServer(uWSスレッド)
+    participant WT as WebTransportMessaging
     participant Sim as Simulation(simスレッド)
 
-    C->>WS: WebSocket接続 (ws://.../sim)
-    WS->>WS: client_idを採番、clientsマップへ登録
-    WS->>Sim: snapshot_origin()
-    WS-->>C: OriginState (0x03)
-    WS->>Sim: status_panel_config()
-    WS-->>C: StatusPanelConfig (0x04)
-    WS->>Sim: snapshot_app_status()
-    WS-->>C: AppStatus (0x06)
-    WS->>Sim: snapshot_tracks()
-    WS-->>C: TrackList (0x07)
+    C->>WT: WebTransport接続 (https://.../sim)
+    WT->>WT: client_idを採番、接続表へ登録
+    WT->>Sim: snapshot_origin()
+    WT-->>C: OriginState (0x0003, 信頼ストリーム)
+    WT->>Sim: snapshot_app_status()
+    WT-->>C: AppStatus (0x0005, 信頼ストリーム)
+    WT->>Sim: snapshot_tracks()
+    WT-->>C: TrackList (0x0006, 信頼ストリーム)
     loop 約60Hz
         Sim->>Sim: step(dt)
-        Sim-->>WS: SimulationTickResult
-        WS-->>C: SimState (0x01, Loop::defer経由)
+        Sim-->>WT: SimulationTickResult
+        WT-->>C: SimState (0x0002, データグラム)
     end
 ```
 
@@ -287,27 +280,27 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant C as Client
-    participant WS as WsServer(uWSスレッド)
+    participant WT as WebTransportMessaging
     participant Sim as Simulation(simスレッド)
     participant All as 他の全クライアント
 
-    C->>WS: ClientCommand{type:"set_origin", lat, lon}
-    WS->>Sim: enqueue_command(client_id, cmd)
+    C->>WT: ClientCommand固定長構造体
+    WT->>Sim: enqueue_command(client_id, cmd)
     Note over Sim: 次のstep()呼び出し時にキューを消費
 
     alt シミュレーション実行中(running=true)
         Sim->>Sim: apply_set_origin() → 拒否
-        Sim-->>WS: OutgoingCommandError
-        WS-->>C: CommandError (0x05, 要求元のみ)
+        Sim-->>WT: OutgoingCommandError
+        WT-->>C: CommandError (0x0004, 信頼ストリーム、要求元のみ)
     else geodetic_bounds範囲外
         Sim->>Sim: apply_set_origin() → 拒否
-        Sim-->>WS: OutgoingCommandError
-        WS-->>C: CommandError (0x05, 要求元のみ)
+        Sim-->>WT: OutgoingCommandError
+        WT-->>C: CommandError (0x0004, 信頼ストリーム、要求元のみ)
     else 停止中 かつ 範囲内
         Sim->>Sim: origin_を更新
-        Sim-->>WS: origin_changed = true
-        WS-->>C: OriginState (0x03, broadcast。要求元も含む全クライアントへ)
-        WS-->>All: OriginState (0x03, broadcast)
+        Sim-->>WT: origin_changed = true
+        WT-->>C: OriginState (0x0003, 信頼ストリーム、broadcast。要求元も含む)
+        WT-->>All: OriginState (0x0003, 信頼ストリーム、broadcast)
     end
 ```
 
@@ -317,17 +310,17 @@ sequenceDiagram
 sequenceDiagram
     participant U as ユーザー
     participant V as Vabコンポーネント(Rust)
-    participant WS as WsServer
+    participant WT as WebTransportMessaging
     participant Sim as Simulation
 
     U->>V: クリック(有効なボタン)
     V->>V: 表示定義から操作を選ぶ(ローカル操作はここで完結)
     V->>V: 開始/一時停止ならClientCommand::resume()/pause()
-    V->>WS: WebSocket送信(msgpack, プレフィックスなし)
-    WS->>Sim: enqueue_command(client_id, cmd)
+    V->>WT: 信頼ユニストリーム送信(8 byteヘッダー+ClientCommand)
+    WT->>Sim: enqueue_command(client_id, cmd)
     Sim->>Sim: step()内でコマンドを検証・実行
-    Sim-->>WS: 状態更新またはCommandError
-    WS-->>V: 応答・状態通知
+    Sim-->>WT: 状態更新またはCommandError
+    WT-->>V: 応答・状態通知
 ```
 
 ---
@@ -336,23 +329,24 @@ sequenceDiagram
 
 ### 5.1 スレッドモデル
 
-- **uWSイベントループスレッド**: `WsServer::run()`を呼んだスレッド。HTTP/WebSocketの送受信を担当。
-  `uWS::App`はシングルスレッド前提のため、このスレッド以外から`ws->send()`を直接呼んではならない
-- **simスレッド**: `WsServer::run()`内で`std::thread`として起動。`Simulation::step()`を約60Hz
+- **HTTP静的配信スレッド**: `WebTransportServer::run()`を呼んだスレッド。uWSはHTTPSの地形・アップロード配信だけを担当する
+- **WebTransport runtimeスレッド**: Rust/wtransportが同じポート番号のUDPでHTTP/3を待ち受ける。
+  C++は`WebTransportMessaging`だけを通じて送受信し、QUIC接続オブジェクトを保持しない
+- **simスレッド**: `WebTransportServer::run()`内で`std::thread`として起動。`Simulation::step()`を約60Hz
   (16ms間隔)で呼び続ける
-- simスレッドからuWSスレッドへ処理を戻す(実際の送信を行わせる)には、必ず`uWS::Loop::defer()`を
-  経由する
+- simスレッドからの送信は`WebTransportMessaging::send()`/`broadcast()`が非同期runtimeへ委譲する。
+  `SimState`だけはデータグラム、それ以外は信頼ストリームを指定する
 
 ```mermaid
 flowchart LR
-    subgraph uWSスレッド
-        A[".messageハンドラ"] -->|enqueue_command| B[(コマンドキュー\nSimulation内)]
-        F["Loop::defer()で受け取ったコールバック"] --> G["ws->send()"]
+    subgraph WebTransport runtime
+        A["メッセージID別コールバック"] -->|enqueue_command| B[(コマンドキュー\nSimulation内)]
+        F["送信要求"] --> G["信頼ストリーム / データグラム"]
     end
     subgraph simスレッド
         C["Simulation::step(dt)"] -->|キューを消費| B
         C --> D["SimulationTickResult"]
-        D -->|Loop::defer経由| F
+        D --> F
     end
 ```
 
@@ -368,22 +362,20 @@ flowchart LR
 
 ```mermaid
 classDiagram
-    class WsServer {
+    class WebTransportServer {
         -Impl* impl_
-        +WsServer(port: uint16_t)
-        +~WsServer()
+        +WebTransportServer(port: uint16_t)
+        +~WebTransportServer()
         +run()
     }
-    class WsServerImpl {
+    class WebTransportServerImpl {
         -uint16_t port
         -Simulation simulation
-        -unordered_map~ClientId,ServerWebSocket*~ clients
-        -mutex clients_mutex
-        -atomic~ClientId~ next_client_id
+        -WebTransportMessaging transport
         -thread sim_thread
         -atomic~bool~ keep_running
-        +broadcast(frame)
-        +send_to_client(client_id, frame)
+        +broadcast_struct(message_id, delivery, data)
+        +send_struct(client_id, message_id, delivery, data)
     }
     class Simulation {
         -mutex state_mutex_
@@ -419,8 +411,8 @@ classDiagram
         +CommandError error
     }
 
-    WsServer o-- WsServerImpl
-    WsServerImpl *-- Simulation
+    WebTransportServer o-- WebTransportServerImpl
+    WebTransportServerImpl *-- Simulation
     Simulation ..> QueuedCommand : キューに積む
     Simulation ..> SimulationTickResult : step()の戻り値
     SimulationTickResult *-- OutgoingCommandError
@@ -428,7 +420,7 @@ classDiagram
 
 ### 5.4 HTTP静的配信(地形データ)
 
-`sim_server`は`/sim`(WebSocket)とは別に、以下のHTTP GETルートを持つ:
+`sim_server`は`/sim`(WebTransport)とは別に、以下のHTTPS GETルートを持つ:
 
 | パス | Content-Type | 内容 |
 |---|---|---|
@@ -509,7 +501,7 @@ graph TD
     RadarMarkersState -.共有データ.-> BottomStatusPanel
 ```
 
-### 6.2 WebSocket接続管理のクラス図(サンプルアプリ側)
+### 6.2 WebTransport接続管理のクラス図(サンプルアプリ側)
 
 ```mermaid
 classDiagram
@@ -534,7 +526,7 @@ classDiagram
     }
     class Inner {
         +String url
-        +Option~WebSocket~ socket
+        +Option~WebTransport~ transport
         +u32 reconnect_attempt
         +bool tab_visible
         +Option~Timeout~ reconnect_timeout
@@ -749,7 +741,7 @@ stateDiagram-v2
 ### 7.8 シミュレーションステータスパネルの状態表示(AppStatus)
 
 シミュレーションステータスパネルの状態表示は、バッジなどの装飾を付けず、C++側から配信された
-`AppStatus.text`を**そのまま文字列として表示する**だけ。取得できない場合(WebSocketが
+`AppStatus.running`を状態文字列へ変換して表示する。取得できない場合(WebTransportが
 `ConnectionStatus::Connected`でない、または接続済みでもまだ`AppStatus`を受け取っていない)は、
 詳細を出し分けず一律「接続中」とだけ表示する(`ConnectionStatus`ごとの色分け・文言の出し分けはしない)。
 

@@ -1,26 +1,13 @@
 #pragma once
 
-// Sim3dView 通信プロトコル定義。
-// フレーミング: [1 byte: msg_type][MessagePack body]
-// 詳細: DETAILED_DESIGN.md 4節。C++側/Rust側で内容を一致させること。
+// シミュレーション内部で使う値オブジェクト。
+// WebTransportのワイヤ形式は webtransport_protocol.hpp が唯一の定義である。
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
-#include <msgpack.hpp>
-
 namespace sim3dview::protocol {
-
-enum class MsgType : uint8_t {
-    SimState = 0x01,          // Server -> Client (高頻度)
-    // 0x02は旧VAB設定の予約番号。再利用しない。
-    OriginState = 0x03,       // Server -> Client (状態変化時、接続直後にも送信)
-    StatusPanelConfig = 0x04, // Server -> Client (状態変化時、接続直後にも送信)
-    CommandError = 0x05,      // Server -> Client (要求元クライアントのみ)
-    AppStatus = 0x06,         // Server -> Client (状態変化時、接続直後にも送信)
-    TrackList = 0x07,         // Server -> Client (シミュレーション進行中は約20Hz、接続直後にも送信)
-};
 
 // --- Server -> Client ------------------------------------------------
 
@@ -32,7 +19,6 @@ struct SimState {
     // StatusPanelConfig.items と同じ順序・同じ数(v1では数値項目のみ)。
     std::vector<double> status_values;
 
-    MSGPACK_DEFINE(t, positions, frame_id, status_values);
 };
 
 // 基準位置(原点)。DETAILED_DESIGN.md 3節・4.3節。サーバーが保持する状態が正。
@@ -40,7 +26,6 @@ struct OriginState {
     double lat_deg = 0.0;
     double lon_deg = 0.0;
 
-    MSGPACK_DEFINE(lat_deg, lon_deg);
 };
 
 // 状況パネル項目1個分。DETAILED_DESIGN.md 4.3節・7.5節。
@@ -49,14 +34,12 @@ struct StatusItem {
     std::string label;
     std::string unit; // 単位。なければ空文字列
 
-    MSGPACK_DEFINE(id, label, unit);
 };
 
 // 状況パネル項目定義(状態変化時のみ送信)。実際の値は SimState.status_values で配信する。
 struct StatusPanelConfig {
     std::vector<StatusItem> items;
 
-    MSGPACK_DEFINE(items);
 };
 
 // コマンド拒否応答。要求元クライアントのみに送信する。DETAILED_DESIGN.md 4.3節。
@@ -64,17 +47,15 @@ struct CommandError {
     std::string command_type; // 拒否された ClientCommand.type
     std::string message;      // エラー内容(人間可読)
 
-    MSGPACK_DEFINE(command_type, message);
 };
 
 // シミュレータアプリケーション自体の状態を表す表示用文字列(状態変化時+接続直後)。
-// フロント側のシミュレーションステータスパネルは、WebSocket接続が確立している間は
+// フロント側のシミュレーションステータスパネルは、WebTransport接続が確立している間は
 // この文字列をそのまま表示する(接続そのものの状態はConnectionStatusとして
 // フロント側が自前で計算する、別レイヤーの情報)。
 struct AppStatus {
     std::string text; // 例: "シミュレーション実行中" / "一時停止中"
 
-    MSGPACK_DEFINE(text);
 };
 
 // 航跡(トラック)1個分: 航空機・艦船・車両等の現在位置とシンボル情報。DETAILED_DESIGN.md 4.3節。
@@ -112,8 +93,6 @@ struct Track {
     double pitch_deg = 0.0;   // ピッチ(機首上げが正)。フロントの3Dモデル表示の向きに使う
     double roll_deg = 0.0;    // ロール(右翼が下がる向きが正)。同上
 
-    MSGPACK_DEFINE(id, kind, affiliation, label, lat_deg, lon_deg, alt_m, alt_ref, heading_deg,
-                   speed_mps, pitch_deg, roll_deg);
 };
 
 // 航跡の一覧(全トラックの最新状態をまとめて送る)。トラックが消えたら次の一覧から抜ける。
@@ -121,7 +100,6 @@ struct TrackList {
     double t = 0.0; // シミュレーション時刻
     std::vector<Track> tracks;
 
-    MSGPACK_DEFINE(t, tracks);
 };
 
 // --- Client -> Server --------------------------------------------------
@@ -134,39 +112,6 @@ struct ClientCommand {
     double lat_deg = 0.0;  // set_origin時のみ使用
     double lon_deg = 0.0;  // set_origin時のみ使用
 
-    MSGPACK_DEFINE(type, reserved, value, lat_deg, lon_deg);
 };
-
-// --- フレーミング用ヘルパー ---------------------------------------------
-
-// [1 byte msg_type][MessagePack body] 形式のバイナリフレームを構築する。
-template <typename T>
-std::string encode_frame(MsgType type, const T& payload) {
-    msgpack::sbuffer buf;
-    msgpack::pack(buf, payload);
-
-    std::string frame;
-    frame.reserve(buf.size() + 1);
-    frame.push_back(static_cast<char>(static_cast<uint8_t>(type)));
-    frame.append(buf.data(), buf.size());
-    return frame;
-}
-
-// 受信フレームの先頭1バイトから msg_type を読み取る。フレームが空なら false を返す。
-inline bool read_msg_type(const char* data, size_t size, MsgType& out_type) {
-    if (size < 1) {
-        return false;
-    }
-    out_type = static_cast<MsgType>(static_cast<uint8_t>(data[0]));
-    return true;
-}
-
-// フレームの MessagePack body 部分(先頭1バイトを除いた領域)を T にデコードする。
-template <typename T>
-T decode_body(const char* data, size_t size) {
-    // data[0] は msg_type なので、body は data+1 から size-1 バイト。
-    msgpack::object_handle handle = msgpack::unpack(data + 1, size - 1);
-    return handle.get().as<T>();
-}
 
 } // namespace sim3dview::protocol

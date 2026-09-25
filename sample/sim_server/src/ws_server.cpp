@@ -1,47 +1,113 @@
 #include "ws_server.hpp"
 #include "http_utils.hpp"
 #include "upload_file.hpp"
+#include "webtransport_messaging.hpp"
+#include "webtransport_protocol.hpp"
 #include <memory>
 
 #include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstring>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <iostream>
-#include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
-#include <unordered_map>
 
-// uWebSockets。TLS(HTTPS/WSS)対応のため、SSLありのSSLAppとSSLなしのAppを両方使う
+// uWebSocketsはHTTPSの静的配信にだけ用いる。WebTransportはRustランタイムがHTTP/3で処理する。
 // (LIBUS_USE_OPENSSL は CMake 側で定義する)。
 #include <App.h>
+#include <openssl/pem.h>
+#include <openssl/x509.h>
 
 namespace sim3dview {
 
-using protocol::ClientCommand;
-using protocol::MsgType;
+namespace wt = webtransport_protocol;
 
 namespace {
 
-// WebSocket 1接続あたりの付随データ。
-// simスレッドとのやり取りは生の`WebSocket*`ではなくClientId(不透明な整数)で行うため、
-// 各接続に割り当てたIDをここに保持しておく。
-struct PerSocketData {
-    ClientId client_id = 0;
-};
+protocol::ClientCommand to_simulation_command(const wt::ClientCommand& command) {
+    protocol::ClientCommand result;
+    switch (command.command) {
+    case wt::Command::Pause: result.type = "pause"; break;
+    case wt::Command::Resume: result.type = "resume"; break;
+    case wt::Command::SetParam: result.type = "set_param"; break;
+    case wt::Command::SetOrigin: result.type = "set_origin"; break;
+    default: result.type = "unsupported"; break;
+    }
+    result.value = command.value;
+    result.lat_deg = command.lat_deg;
+    result.lon_deg = command.lon_deg;
+    return result;
+}
 
-// SSL=trueがHTTPS/WSS(uWS::SSLApp)、falseが平文HTTP/WS(uWS::App)。
-template <bool SSL>
-using ServerWebSocket = uWS::WebSocket<SSL, true, PerSocketData>;
+wt::SimState to_wire_state(const protocol::SimState& state) {
+    wt::SimState result;
+    result.t = state.t;
+    if (state.positions.size() >= 3) {
+        result.position_x = state.positions[0];
+        result.position_y = state.positions[1];
+        result.position_z = state.positions[2];
+    }
+    result.frame_id = state.frame_id;
+    result.elapsed_time_s = state.status_values.empty() ? state.t : state.status_values[0];
+    result.altitude_m = state.status_values.size() < 2 ? 0.0 : state.status_values[1];
+    result.speed_mps = state.status_values.size() < 3 ? 0.0 : state.status_values[2];
+    return result;
+}
+
+wt::OriginState to_wire_origin(const protocol::OriginState& state) {
+    return {state.lat_deg, state.lon_deg};
+}
+
+wt::AppStatus to_wire_app_status(const protocol::AppStatus& state) {
+    return {static_cast<std::uint8_t>(state.text == "シミュレーション実行中")};
+}
+
+wt::TrackList to_wire_tracks(const protocol::TrackList& list) {
+    wt::TrackList result;
+    result.t = list.t;
+    result.count = static_cast<std::uint32_t>(std::min(list.tracks.size(), wt::kMaxTracks));
+    for (std::size_t i = 0; i < result.count; ++i) {
+        const auto& source = list.tracks[i];
+        auto& destination = result.tracks[i];
+        destination.lat_deg = source.lat_deg;
+        destination.lon_deg = source.lon_deg;
+        destination.alt_m = source.alt_m;
+        destination.heading_deg = source.heading_deg;
+        destination.speed_mps = source.speed_mps;
+        destination.pitch_deg = source.pitch_deg;
+        destination.roll_deg = source.roll_deg;
+        destination.id = source.id;
+        destination.kind = source.kind;
+        destination.affiliation = source.affiliation;
+        destination.alt_ref = source.alt_ref;
+        const auto label_size = std::min(source.label.size(), destination.label.size() - 1);
+        std::copy_n(source.label.data(), label_size, destination.label.data());
+    }
+    return result;
+}
+
+wt::Command to_wire_command(const std::string& type) {
+    if (type == "set_origin") return wt::Command::SetOrigin;
+    if (type == "pause") return wt::Command::Pause;
+    if (type == "resume") return wt::Command::Resume;
+    if (type == "set_param") return wt::Command::SetParam;
+    return wt::Command::SetParam;
+}
+
+wt::CommandErrorCode to_wire_error_code(const std::string& message) {
+    if (message.find("実行中") != std::string::npos) return wt::CommandErrorCode::OriginChangeWhileRunning;
+    if (message.find("範囲外") != std::string::npos) return wt::CommandErrorCode::OriginOutsideTerrain;
+    return wt::CommandErrorCode::UnsupportedCommand;
+}
 
 // "bytes=START-END"または"bytes=START-"(単一範囲のみ)を解釈する。解釈できなければfalse。
 // endは含む(HTTPのRangeの仕様どおり)。END省略時は末尾まで。
@@ -135,7 +201,7 @@ bool is_safe_path_component(const std::string& name) {
 
 } // namespace
 
-struct WsServer::Impl {
+struct WebTransportServer::Impl {
     Impl(uint16_t port_, TlsConfig tls_, std::string host_, std::string terrain_dir_, std::string upload_dir_)
         : port(port_), tls(std::move(tls_)), host(std::move(host_)),
           terrain_dir(std::move(terrain_dir_)), upload_dir(std::move(upload_dir_)), simulation(terrain_dir + "/metadata.json") {}
@@ -146,45 +212,19 @@ struct WsServer::Impl {
     std::string terrain_dir;
     std::string upload_dir;
     Simulation simulation;
-
-    // ClientId -> 送信関数 のマップ。uWSイベントループスレッドからのみ生ポインタ(WebSocket*)を
-    // 触ってよいため、参照・変更は必ずclients_mutex経由で行う。SSLの有無(WebSocketの型)を
-    // この構造体の外へ漏らさないよう、WebSocket*を捕捉した送信関数として持つ。
-    std::unordered_map<ClientId, std::function<void(const std::string&)>> clients;
-    std::mutex clients_mutex;
-    std::atomic<ClientId> next_client_id{1};
+    WebTransportMessaging transport;
 
     std::thread sim_thread;
     std::atomic<bool> keep_running{true};
-
-    void broadcast(const std::string& frame) {
-        std::lock_guard<std::mutex> lock(clients_mutex);
-        for (auto& [id, send] : clients) {
-            send(frame);
-        }
-    }
-
-    void send_to_client(ClientId client_id, const std::string& frame) {
-        std::lock_guard<std::mutex> lock(clients_mutex);
-        auto it = clients.find(client_id);
-        if (it != clients.end()) {
-            it->second(frame);
-        }
-    }
-
-    template <bool SSL>
-    void send_to(ServerWebSocket<SSL>* ws, const std::string& frame) {
-        ws->send(frame, uWS::OpCode::BINARY);
-    }
 
     template <bool SSL, typename AppT>
     void run_app(AppT app);
 };
 
-WsServer::WsServer(uint16_t port, TlsConfig tls, std::string host, std::string terrain_dir, std::string upload_dir)
+WebTransportServer::WebTransportServer(uint16_t port, TlsConfig tls, std::string host, std::string terrain_dir, std::string upload_dir)
     : impl_(new Impl(port, std::move(tls), std::move(host), std::move(terrain_dir), std::move(upload_dir))) {}
 
-WsServer::~WsServer() {
+WebTransportServer::~WebTransportServer() {
     impl_->keep_running = false;
     if (impl_->sim_thread.joinable()) {
         impl_->sim_thread.join();
@@ -192,72 +232,47 @@ WsServer::~WsServer() {
     delete impl_;
 }
 
-void WsServer::run() {
-    if (impl_->tls.enabled()) {
-        uWS::SocketContextOptions options{};
-        options.key_file_name = impl_->tls.key_file.c_str();
-        options.cert_file_name = impl_->tls.cert_file.c_str();
-        impl_->run_app<true>(uWS::SSLApp(options));
-    } else {
-        impl_->run_app<false>(uWS::App());
+void WebTransportServer::run() {
+    // WebTransport は HTTP/3/QUIC と TLS 1.3 を前提とする。従来の平文WS互換モードは持たない。
+    if (!impl_->tls.enabled()) {
+        throw std::runtime_error("WebTransportには --cert と --key の指定が必要です");
     }
+    uWS::SocketContextOptions options{};
+    options.key_file_name = impl_->tls.key_file.c_str();
+    options.cert_file_name = impl_->tls.cert_file.c_str();
+    impl_->run_app<true>(uWS::SSLApp(options));
 }
 
-// SSL=trueならHTTPS/WSS、falseなら平文HTTP/WSでサーバーを起動する(呼び出しスレッドをブロックする)。
+// ChromiumのWebTransport用 `serverCertificateHashes` に渡す、葉証明書DERのSHA-256を
+// URL-safe Base64で返す。通常の公開CA証明書では不要だが、Electron同梱の開発用自己署名証明書で
+// ループバック接続を安全にピン留めするために使う。
+std::string certificate_sha256_base64url(const std::string& cert_file) {
+    BIO* bio = BIO_new_file(cert_file.c_str(), "r");
+    if (!bio) return {};
+    X509* cert = PEM_read_bio_X509(bio, nullptr, nullptr, nullptr);
+    BIO_free(bio);
+    if (!cert) return {};
+    std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+    unsigned int digest_size = 0;
+    const bool ok = X509_digest(cert, EVP_sha256(), digest.data(), &digest_size) == 1;
+    X509_free(cert);
+    if (!ok) return {};
+    std::array<unsigned char, 64> encoded{};
+    const int encoded_size = EVP_EncodeBlock(encoded.data(), digest.data(), digest_size);
+    if (encoded_size <= 0) return {};
+    std::string result(reinterpret_cast<const char*>(encoded.data()), encoded_size);
+    std::replace(result.begin(), result.end(), '+', '-');
+    std::replace(result.begin(), result.end(), '/', '_');
+    while (!result.empty() && result.back() == '=') result.pop_back();
+    return result;
+}
+
+// HTTPS静的配信を起動する(呼び出しスレッドをブロックする)。
 template <bool SSL, typename AppT>
-void WsServer::Impl::run_app(AppT app) {
+void WebTransportServer::Impl::run_app(AppT app) {
     Impl* impl = this;
 
-    uWS::Loop* loop = uWS::Loop::get();
-
-    typename AppT::template WebSocketBehavior<PerSocketData> behavior;
-    behavior.compression = uWS::DISABLED;
-    behavior.maxPayloadLength = 16 * 1024;
-    behavior.idleTimeout = 120;
-
-    behavior.open = [impl](ServerWebSocket<SSL>* ws) {
-        const ClientId client_id = impl->next_client_id.fetch_add(1);
-        ws->getUserData()->client_id = client_id;
-        {
-            std::lock_guard<std::mutex> lock(impl->clients_mutex);
-            impl->clients[client_id] = [ws](const std::string& frame) {
-                ws->send(frame, uWS::OpCode::BINARY);
-            };
-        }
-        std::cout << "[ws_server] client connected (id=" << client_id << ")" << std::endl;
-
-        // 接続直後に現在の状態を1回送信する(DETAILED_DESIGN.md 4.2節/4.3節)。
-        impl->send_to(ws, protocol::encode_frame(MsgType::OriginState,
-                                                   impl->simulation.snapshot_origin()));
-        impl->send_to(ws, protocol::encode_frame(MsgType::StatusPanelConfig,
-                                                   impl->simulation.status_panel_config()));
-        impl->send_to(ws, protocol::encode_frame(MsgType::AppStatus,
-                                                   impl->simulation.snapshot_app_status()));
-        impl->send_to(ws, protocol::encode_frame(MsgType::TrackList,
-                                                   impl->simulation.snapshot_tracks()));
-    };
-
-    behavior.message = [impl](ServerWebSocket<SSL>* ws, std::string_view message, uWS::OpCode) {
-        try {
-            ClientCommand cmd =
-                msgpack::unpack(message.data(), message.size()).get().as<ClientCommand>();
-            // DETAILED_DESIGN.md 5.2節: 受信したコマンドは直接シミュレーション状態を書き換えず、
-            // スレッドセーフなキューに積む(simスレッド側でstep()時に消費・適用する)。
-            impl->simulation.enqueue_command(ws->getUserData()->client_id, std::move(cmd));
-        } catch (const std::exception& e) {
-            std::cerr << "[ws_server] failed to decode ClientCommand: " << e.what() << std::endl;
-        }
-    };
-
-    behavior.close = [impl](ServerWebSocket<SSL>* ws, int /*code*/, std::string_view /*message*/) {
-        std::lock_guard<std::mutex> lock(impl->clients_mutex);
-        impl->clients.erase(ws->getUserData()->client_id);
-        std::cout << "[ws_server] client disconnected" << std::endl;
-    };
-
-    app.template ws<PerSocketData>("/sim", std::move(behavior));
-
-    // 地形データの静的配信(DETAILED_DESIGN.md 5.4節: WebSocketの/simエンドポイントとは独立したHTTPルート)。
+    // 地形データの静的配信。WebTransportの /sim は同じポート番号の UDP/HTTP3 側で受ける。
     // フロント(trunk serve)とは別オリジンからfetchされるためCORSヘッダーを付与する。
     // 生バイトを受信する。通常のHTMLフォームからの書き込みは拒否する。
     app.options("/uploads", [](uWS::HttpResponse<SSL>* res, uWS::HttpRequest*) {
@@ -333,6 +348,7 @@ void WsServer::Impl::run_app(AppT app) {
 
     // 通常はLAN公開、Electronは127.0.0.1とポート0を指定する(設計書7.9節)。
     bool listening = false;
+    std::string webtransport_error;
     app.listen(impl->host, impl->port, [impl, &listening](us_listen_socket_t* token) {
         if (token) {
             const int actual_port = us_socket_local_port(0, reinterpret_cast<us_socket_t*>(token));
@@ -342,10 +358,8 @@ void WsServer::Impl::run_app(AppT app) {
             }
             impl->port = static_cast<uint16_t>(actual_port);
             listening = true;
-            std::cout << "[ws_server] listening on " << (SSL ? "wss" : "ws") << "://"
-                      << impl->host << ":" << impl->port << "/sim" << std::endl;
-            // Electronは自身が起動したプロセスの標準出力で起動完了を判定する。
-            std::cout << "SIM3DVIEW_READY " << impl->port << std::endl;
+            std::cout << "[sim_server] HTTPS static server listening on https://" << impl->host
+                      << ":" << impl->port << std::endl;
         } else {
             std::cerr << "[ws_server] failed to listen on port " << impl->port << std::endl;
         }
@@ -354,9 +368,43 @@ void WsServer::Impl::run_app(AppT app) {
         throw std::runtime_error("サーバーの待ち受けを開始できませんでした");
     }
 
-    // simスレッド: Simulation::step()を約60Hzで進め、結果をuWSスレッドへ
-    // Loop::defer()経由で配信させる(別スレッドから直接ws->send()してはならない)。
-    impl->sim_thread = std::thread([impl, loop]() {
+    // TCPの実ポートが決まってから、同じ番号のUDPポートでHTTP/3 WebTransportを開始する。
+    // TCP/UDPは別のトランスポートなので、同一ポート番号を安全に共有できる。
+    impl->transport.register_handler(static_cast<wt::MessageId>(wt::Message::ClientCommand),
+                                     [impl](TransportClientId client_id, const std::byte* data,
+                                            std::size_t size) {
+        if (size != sizeof(wt::ClientCommand)) return;
+        wt::ClientCommand command{};
+        std::memcpy(&command, data, sizeof(command));
+        impl->simulation.enqueue_command(client_id, to_simulation_command(command));
+    });
+    impl->transport.set_connection_handlers(
+        [impl](TransportClientId client_id) {
+            std::cout << "[webtransport] client connected (id=" << client_id << ")" << std::endl;
+            impl->transport.send_struct(client_id, static_cast<wt::MessageId>(wt::Message::OriginState),
+                                        DeliveryMode::ReliableStream,
+                                        to_wire_origin(impl->simulation.snapshot_origin()));
+            impl->transport.send_struct(client_id, static_cast<wt::MessageId>(wt::Message::AppStatus),
+                                        DeliveryMode::ReliableStream,
+                                        to_wire_app_status(impl->simulation.snapshot_app_status()));
+            impl->transport.send_struct(client_id, static_cast<wt::MessageId>(wt::Message::TrackList),
+                                        DeliveryMode::ReliableStream,
+                                        to_wire_tracks(impl->simulation.snapshot_tracks()));
+        },
+        [](TransportClientId client_id) {
+            std::cout << "[webtransport] client disconnected (id=" << client_id << ")" << std::endl;
+        });
+    if (!impl->transport.start(impl->port, impl->tls.cert_file, impl->tls.key_file,
+                               webtransport_error)) {
+        throw std::runtime_error("WebTransportの開始に失敗: " + webtransport_error);
+    }
+    // Electronは自身が起動したプロセスの標準出力で起動完了を判定する。
+    std::cout << "SIM3DVIEW_READY " << impl->port << " "
+              << certificate_sha256_base64url(impl->tls.cert_file) << std::endl;
+
+    // simスレッド: Simulation::step()を約60Hzで進める。WebTransportMessagingは送信を
+    // HTTP/3ランタイムへ非同期で委譲するので、uWS::Loop::deferは不要である。
+    impl->sim_thread = std::thread([impl]() {
         using clock = std::chrono::steady_clock;
         const auto frame_interval = std::chrono::milliseconds(16); // 約60Hz
         auto next_tick = clock::now();
@@ -369,46 +417,40 @@ void WsServer::Impl::run_app(AppT app) {
             const double dt = std::chrono::duration<double>(frame_interval).count();
             SimulationTickResult tick = impl->simulation.step(dt);
 
-            // 毎フレームのSimStateは全クライアントへブロードキャスト。
-            std::string sim_frame =
-                protocol::encode_frame(MsgType::SimState, impl->simulation.snapshot_sim_state());
-            loop->defer([impl, sim_frame = std::move(sim_frame)]() { impl->broadcast(sim_frame); });
+            // 60Hzの状態だけは最新値で上書きできればよいので、到達保証なしのデータグラムにする。
+            impl->transport.broadcast_struct(static_cast<wt::MessageId>(wt::Message::SimState),
+                                              DeliveryMode::UnreliableDatagram,
+                                              to_wire_state(impl->simulation.snapshot_sim_state()));
 
             // シミュレーション時刻が進んでいる間、一定間隔で航跡(TrackList)を全クライアントへ配信する。
             // 一時停止中は位置が変わらないので送らない(新規接続には接続直後に1回送る)。
             if (tick.time_advanced && (++frame_counter % kTrackListEveryNFrames) == 0) {
-                std::string track_frame = protocol::encode_frame(
-                    MsgType::TrackList, impl->simulation.snapshot_tracks());
-                loop->defer([impl, track_frame = std::move(track_frame)]() {
-                    impl->broadcast(track_frame);
-                });
+                impl->transport.broadcast_struct(static_cast<wt::MessageId>(wt::Message::TrackList),
+                                                  DeliveryMode::ReliableStream,
+                                                  to_wire_tracks(impl->simulation.snapshot_tracks()));
             }
 
             // 原点が変化していれば新しいOriginStateを全クライアントへ再配信(4.1節)。
             if (tick.origin_changed) {
-                std::string origin_frame = protocol::encode_frame(
-                    MsgType::OriginState, impl->simulation.snapshot_origin());
-                loop->defer([impl, origin_frame = std::move(origin_frame)]() {
-                    impl->broadcast(origin_frame);
-                });
+                impl->transport.broadcast_struct(static_cast<wt::MessageId>(wt::Message::OriginState),
+                                                  DeliveryMode::ReliableStream,
+                                                  to_wire_origin(impl->simulation.snapshot_origin()));
             }
 
             // pause/resumeでアプリ状態が変化していれば新しいAppStatusを全クライアントへ再配信。
             if (tick.app_status_changed) {
-                std::string app_status_frame = protocol::encode_frame(
-                    MsgType::AppStatus, impl->simulation.snapshot_app_status());
-                loop->defer([impl, app_status_frame = std::move(app_status_frame)]() {
-                    impl->broadcast(app_status_frame);
-                });
+                impl->transport.broadcast_struct(static_cast<wt::MessageId>(wt::Message::AppStatus),
+                                                  DeliveryMode::ReliableStream,
+                                                  to_wire_app_status(impl->simulation.snapshot_app_status()));
             }
 
             // コマンド拒否は要求元クライアントにのみ返す(4.3節)。
             for (auto& err : tick.errors) {
-                std::string err_frame = protocol::encode_frame(MsgType::CommandError, err.error);
-                loop->defer(
-                    [impl, client_id = err.client_id, err_frame = std::move(err_frame)]() {
-                        impl->send_to_client(client_id, err_frame);
-                    });
+                const wt::CommandError error{to_wire_command(err.error.command_type),
+                                             to_wire_error_code(err.error.message)};
+                impl->transport.send_struct(err.client_id,
+                                            static_cast<wt::MessageId>(wt::Message::CommandError),
+                                            DeliveryMode::ReliableStream, error);
             }
 
             next_tick += frame_interval;

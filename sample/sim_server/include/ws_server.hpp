@@ -1,13 +1,13 @@
 #pragma once
 
-// WebSocketサーバー。DETAILED_DESIGN.md 5.1節: 実シミュレーション(Simulation)との結合。
+// HTTP静的配信とWebTransportサーバー。DETAILED_DESIGN.md 5.1節: 実シミュレーション(Simulation)との結合。
 //
 // スレッドモデル(DETAILED_DESIGN.md 5.1節):
-// - uWSイベントループスレッドとsimスレッドを分離する。
-// - .messageハンドラで受信したコマンドは直接状態を書き換えず、
+// - HTTPイベントループ、WebTransportランタイム、simスレッドを分離する。
+// - WebTransport受信コールバックで受けたコマンドは直接状態を書き換えず、
 //   Simulation::enqueue_command()でスレッドセーフなキューに積む。
 // - simスレッドがSimulation::step()を進め、その結果(SimState/OriginState変化/CommandError)を
-//   uWS::Loop::defer() 経由でuWSイベントループスレッドに送信させる。
+//   WebTransportMessaging経由でクライアントに送信する。
 
 #include <cstdint>
 #include <string>
@@ -16,8 +16,7 @@
 
 namespace sim3dview {
 
-// TLS(HTTPS/WSS)設定。証明書・秘密鍵(PEM)のパスが両方そろったときだけTLSを有効にする。
-// 空ならこれまでどおり平文のHTTP/WSで待ち受ける。
+// TLS(HTTPS/HTTP3)設定。WebTransportはTLSを必須とする。
 struct TlsConfig {
     std::string cert_file;
     std::string key_file;
@@ -25,20 +24,20 @@ struct TlsConfig {
     bool enabled() const { return !cert_file.empty() && !key_file.empty(); }
 };
 
-// uWebSocketsベースのWebSocketサーバー。
-class WsServer {
+// HTTPS静的配信とWebTransportを束ねるサーバー。
+class WebTransportServer {
 public:
-    explicit WsServer(uint16_t port, TlsConfig tls = {},
+    explicit WebTransportServer(uint16_t port, TlsConfig tls = {},
                       std::string host = "0.0.0.0",
                       std::string terrain_dir = "assets/terrain",
                       std::string upload_dir = "uploads");
-    ~WsServer();
+    ~WebTransportServer();
 
     // impl_は所有権を持つ生ポインタでコピー・ムーブ双方が二重解放を招くため禁止する。
-    WsServer(const WsServer&) = delete;
-    WsServer& operator=(const WsServer&) = delete;
-    WsServer(WsServer&&) = delete;
-    WsServer& operator=(WsServer&&) = delete;
+    WebTransportServer(const WebTransportServer&) = delete;
+    WebTransportServer& operator=(const WebTransportServer&) = delete;
+    WebTransportServer(WebTransportServer&&) = delete;
+    WebTransportServer& operator=(WebTransportServer&&) = delete;
 
     // イベントループを起動する(呼び出しスレッドをブロックする)。
     void run();

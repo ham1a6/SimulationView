@@ -11,7 +11,7 @@ void print_usage(const char* exe) {
     std::cerr << "usage: " << exe << " [port] [--host <address>] [--terrain-dir <path>] [--upload-dir <path>]"
               << " [--cert <cert.pem> --key <key.pem>]\n"
               << "  port: 0〜65535。0は空きポートを自動割り当て\n"
-              << "  --cert/--key: 両方指定するとHTTPS/WSSで待ち受ける(省略時は平文のHTTP/WS)\n";
+              << "  --cert/--key: WebTransport用のTLS証明書・秘密鍵(両方必須)\n";
 }
 
 } // namespace
@@ -55,11 +55,11 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    std::cout << "Sim3dView sim_server starting (" << (tls.enabled() ? "TLS" : "no TLS") << ")"
+    std::cout << "Sim3dView sim_server starting (HTTPS + WebTransport)"
               << std::endl;
 
     try {
-        sim3dview::WsServer server(port, std::move(tls), host, terrain_dir, upload_dir);
+        sim3dview::WebTransportServer server(port, std::move(tls), host, terrain_dir, upload_dir);
         server.run();
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;

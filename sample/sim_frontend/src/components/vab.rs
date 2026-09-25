@@ -60,7 +60,7 @@ fn VabLabel(#[prop(into)] text: Signal<String>) -> impl IntoView {
 
 #[component]
 pub fn VabPanel(
-    /// WebSocket接続。`WsConnection`はRc<RefCell<..>>を含みSend/Syncでないため、
+    /// WebTransport接続。`WsConnection`はRc<RefCell<..>>を含みSend/Syncでないため、
     /// Copyのハンドル(`WsHandle`)にしてpropとして受け取る。
     conn: WsHandle,
     /// B1〜B4の順に指定する中段のページ数。「◀ 1/N ▶」は常に表示し、
