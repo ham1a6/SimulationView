@@ -55,32 +55,9 @@ target_link_libraries(uwebsockets INTERFACE usockets ZLIB::ZLIB)
 add_library(simulation_core STATIC src/simulation.cpp)
 target_include_directories(simulation_core PUBLIC include)
 
-# --- WebTransport (Rust/wtransport をC ABIで接続) --------------------------
-# HTTP/3/QUIC実装をC++のHTTP静的配信から切り離す。Cargoはワークスペースのロックを使うため、
-# CMakeのビルドディレクトリ内に成果物を置く。
-find_program(CARGO_EXECUTABLE cargo REQUIRED)
-set(WEBTRANSPORT_BRIDGE_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/../webtransport_bridge/Cargo.toml)
-set(WEBTRANSPORT_BRIDGE_TARGET ${CMAKE_BINARY_DIR}/cargo-webtransport)
-if (WIN32)
-    set(WEBTRANSPORT_BRIDGE_LIBRARY ${WEBTRANSPORT_BRIDGE_TARGET}/release/sim3dview_webtransport_bridge.lib)
-else()
-    set(WEBTRANSPORT_BRIDGE_LIBRARY ${WEBTRANSPORT_BRIDGE_TARGET}/release/libsim3dview_webtransport_bridge.a)
-endif()
-add_custom_command(
-    OUTPUT ${WEBTRANSPORT_BRIDGE_LIBRARY}
-    COMMAND ${CARGO_EXECUTABLE} build --manifest-path ${WEBTRANSPORT_BRIDGE_MANIFEST} --package sim3dview_webtransport_bridge --release --target-dir ${WEBTRANSPORT_BRIDGE_TARGET}
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/..
-    DEPENDS ${WEBTRANSPORT_BRIDGE_MANIFEST} ${CMAKE_CURRENT_SOURCE_DIR}/../webtransport_bridge/src/lib.rs
-    COMMENT "WebTransport HTTP/3 ブリッジをビルド"
-    VERBATIM)
-add_custom_target(webtransport_bridge_build DEPENDS ${WEBTRANSPORT_BRIDGE_LIBRARY})
-add_library(webtransport_bridge STATIC IMPORTED GLOBAL)
-set_target_properties(webtransport_bridge PROPERTIES IMPORTED_LOCATION ${WEBTRANSPORT_BRIDGE_LIBRARY})
-add_dependencies(webtransport_bridge webtransport_bridge_build)
-
-add_executable(sim_server src/main.cpp src/ws_server.cpp src/webtransport_messaging.cpp)
+add_executable(sim_server src/main.cpp src/ws_server.cpp src/websocket_messaging.cpp)
 target_include_directories(sim_server PRIVATE include)
-target_link_libraries(sim_server PRIVATE simulation_core uwebsockets webtransport_bridge)
+target_link_libraries(sim_server PRIVATE simulation_core uwebsockets)
 
 if (WIN32)
     target_compile_definitions(sim_server PRIVATE _WIN32_WINNT=0x0601 NOMINMAX)

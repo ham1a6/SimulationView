@@ -4,7 +4,7 @@ Sim3dView(`sim3dview`ライブラリ・`sample/sim_frontend`・`sample/sim_serve
 
 > **この文書について**: 依存関係とライセンスの情報を機械的に集めた**参考資料**で、法的な助言ではありません。製品として配布する前に、最新の依存関係(`Cargo.lock`・`vcpkg.json`)で再生成し、必要に応じて法務の確認を受けてください。本プロジェクト自身のライセンスは、このファイルの対象外です(リポジトリにLICENSEファイルはまだありません)。
 
-- 生成日: 2026-09-25(`Cargo.lock`の内容とvcpkg・サブモジュールの版に基づく)
+- 生成日: 2026-09-26(`Cargo.lock`の内容とvcpkg・サブモジュールの版に基づく)
 - 再生成の手順は末尾の「この文書の更新方法」を参照
 
 ## 目次
@@ -43,13 +43,13 @@ Elevation data: ALOS World 3D - 30m (AW3D30), provided by the Japan Aerospace Ex
 
 ## 2. ブラウザに配布されるもの(Rustクレート)
 
-`sim3dview`と`sample/sim_frontend`をWebAssemblyにビルドしたときに、実行時にリンクされるクレートです(`Cargo.lock`から`wasm32-unknown-unknown`向けに解決した**193個**。単体テスト専用の依存(`naga`)、ビルド時だけ動くもの(proc-macro・ビルドスクリプトの依存)、開発用ツール(`trunk`・`wasm-bindgen`のCLI)は含めない)。
+`sim3dview`と`sample/sim_frontend`をWebAssemblyにビルドしたときに、実行時にリンクされるクレートです(`Cargo.lock`から`wasm32-unknown-unknown`向けに解決した**192個**。単体テスト専用の依存(`naga`)、ビルド時だけ動くもの(proc-macro・ビルドスクリプトの依存)、開発用ツール(`trunk`・`wasm-bindgen`のCLI)は含めない)。
 
 ライセンスが「A OR B」の形のクレートは、AとBのどちらの条件でも利用できる二重ライセンスです。
 
 **ライセンスの内訳**:
 
-- 100個: `MIT OR Apache-2.0`
+- 99個: `MIT OR Apache-2.0`
 - 37個: `MIT`
 - 15個: `Unicode-3.0`
 - 13個: `Apache-2.0 OR MIT`
@@ -193,7 +193,6 @@ Elevation data: ALOS World 3D - 30m (AW3D30), provided by the Japan Aerospace Ex
 | profiling | 1.0.18 | MIT OR Apache-2.0 | <https://github.com/aclysma/profiling> |
 | quote | 1.0.47 | MIT OR Apache-2.0 | <https://github.com/dtolnay/quote> |
 | quote-use | 0.8.4 | MIT | <https://github.com/ModProg/quote-use> |
-| rand_core | 0.10.1 | MIT OR Apache-2.0 | <https://github.com/rust-random/rand_core> |
 | raw-window-handle | 0.6.2 | MIT OR Apache-2.0 OR Zlib | <https://github.com/rust-windowing/raw-window-handle> |
 | reactive_graph | 0.2.14 | MIT | <https://github.com/leptos-rs/leptos> |
 | reactive_stores | 0.4.3 | MIT | <https://github.com/leptos-rs/leptos> |
@@ -275,9 +274,8 @@ WebAssemblyにはRustの標準ライブラリ(`std`・`core`・`alloc`、`compil
 |---|---|---|---|
 | uWebSockets | v20.80.0系(サブモジュール) | Apache-2.0 | <https://github.com/uNetworking/uWebSockets> (`sample/sim_server/third_party/uWebSockets/LICENSE`) |
 | uSockets | v0.8.8系(uWebSocketsに同梱) | Apache-2.0 | <https://github.com/uNetworking/uSockets> (`.../uWebSockets/uSockets/LICENSE`) |
-| wtransport | 0.7.2(Cargo) | MIT OR Apache-2.0 | <https://github.com/BiagioFesta/wtransport> (HTTP/3 WebTransportランタイム) |
 | libuv | 1.52.1(vcpkg) | MIT | <https://github.com/libuv/libuv> |
-| OpenSSL | 3.6.4(vcpkg) | Apache-2.0 | <https://www.openssl.org/> (TLS用。ビルドには常に必要) |
+| OpenSSL | 3.6.4(vcpkg) | Apache-2.0 | <https://www.openssl.org/> (uWebSocketsのTLS対応用。通常のHTTP/WS配布では不要) |
 | zlib | 1.3.2(vcpkg) | Zlib | <https://zlib.net/> |
 
 - uSocketsのソースには、BoringSSL・lsquicのディレクトリがありますが、`sample/sim_server/CMakeLists.txt`はこれらをビルドに使いません(TLSはvcpkgのOpenSSL)。
@@ -942,13 +940,6 @@ GDALの推移的な依存はvcpkgの版によって変わります。配布す�
 `MIT`
 
 - (著作権表示の記載なし。配布元を参照)
-
-### rand_core 0.10.1
-`MIT OR Apache-2.0`
-
-- Copyrights in the Rand project are retained by their contributors. No
-- copyright assignment is required to contribute to the Rand project.
-- Copyright (c) 2018-2026 The Rand Project Developers
 
 ### raw-window-handle 0.6.2
 `MIT OR Apache-2.0 OR Zlib`

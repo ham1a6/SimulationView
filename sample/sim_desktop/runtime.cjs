@@ -56,7 +56,7 @@ async function serveFrontend(directory, backendPort) {
         'Cache-Control': 'no-store',
         'X-Content-Type-Options': 'nosniff',
         // TrunkのインラインmoduleとLeptosの動的styleを許可する。
-        'Content-Security-Policy': `default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://127.0.0.1:${backendPort}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`,
+        'Content-Security-Policy': `default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:${backendPort} ws://127.0.0.1:${backendPort}; object-src 'none'; base-uri 'none'; frame-ancestors 'none'`,
       });
       if (req.method === 'HEAD') { res.end(); return; }
       const stream = createReadStream(file);
@@ -75,17 +75,16 @@ async function serveFrontend(directory, backendPort) {
 }
 
 class DesktopRuntime {
-  constructor({ serverExe, terrainDir, frontendDir, certFile = path.resolve(__dirname, '../certs/dev-cert.pem'), keyFile = path.resolve(__dirname, '../certs/dev-key.pem'), onFailure = () => {} }) {
-    Object.assign(this, { serverExe, terrainDir, frontendDir, certFile, keyFile, onFailure });
+  constructor({ serverExe, terrainDir, frontendDir, onFailure = () => {} }) {
+    Object.assign(this, { serverExe, terrainDir, frontendDir, onFailure });
     this.stopping = false;
     this.log = '';
   }
 
   async start() {
     await validateTerrain(this.terrainDir);
-    await Promise.all([this.certFile, this.keyFile].map(file => stat(file)));
     if (this.stopping) throw new Error('起動を中止しました。');
-    this.child = spawn(this.serverExe, ['0', '--host', '127.0.0.1', '--terrain-dir', this.terrainDir, '--cert', this.certFile, '--key', this.keyFile], {
+    this.child = spawn(this.serverExe, ['0', '--host', '127.0.0.1', '--terrain-dir', this.terrainDir], {
       cwd: path.dirname(this.serverExe), windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     });
     this.child.stderr.on('data', chunk => { this.log = (this.log + chunk).slice(-8192); });
@@ -122,9 +121,6 @@ class DesktopRuntime {
       this.http.closeAllConnections(); this.http.close();
       throw new Error('起動を中止しました。');
     }
-    // Electronの証明書検証フックが、localhostかつ同梱証明書の場合だけ
-    // WebTransportを含む全てのHTTPS通信を許可する。serverCertificateHashesは
-    // 開発用証明書に厳しい鍵種別・有効期間の制約があるため渡さない。
     this.url = `http://127.0.0.1:${this.http.address().port}/?sim_port=${port}`;
     return this.url;
   }

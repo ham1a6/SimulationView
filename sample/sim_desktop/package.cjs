@@ -15,11 +15,9 @@ async function main() {
   const terrain = terrainDirectory({ isPackaged: false });
   await validateTerrain(terrain);
   const frontend = path.join(__dirname, 'out/frontend');
-  const certDir = path.resolve(__dirname, '../certs');
   // 入力の不足はコピー開始前に検出する。
   await fs.access(serverExe);
   await fs.access(path.join(frontend, 'index.html'));
-  await Promise.all(['dev-cert.pem', 'dev-key.pem'].map(name => fs.access(path.join(certDir, name))));
   const electronDist = path.dirname(require('electron'));
   const output = path.join(__dirname, 'out', `Sim3dView-${process.platform}-${process.arch}-${Date.now()}`);
   await fs.cp(electronDist, output, { recursive: true });
@@ -32,7 +30,6 @@ async function main() {
     await fs.copyFile(path.join(__dirname, name), path.join(appDir, name));
   }
   await fs.cp(frontend, path.join(appDir, 'frontend'), { recursive: true });
-  await fs.cp(certDir, path.join(output, 'resources/certs'), { recursive: true });
   await bundleTerrain(terrain, path.join(output, 'resources'));
   await fs.copyFile(serverExe, path.join(serverDir, layout.server));
   if (process.platform === 'linux') {

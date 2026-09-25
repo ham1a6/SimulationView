@@ -1,6 +1,6 @@
 #pragma once
 
-// WebTransport 上で送る固定長バイナリプロトコル。
+// WebSocket 上で送る固定長バイナリプロトコル。
 //
 // C++ の可変長型(std::string/std::vector 等)をメモリコピーして送ることは ABI・ポインタを
 // 送ってしまうため禁止する。ここには数値と固定長配列だけから成る標準レイアウト型だけを置く。
@@ -37,7 +37,7 @@ enum class CommandErrorCode : std::uint8_t {
     OriginOutsideTerrain = 3,
 };
 
-// ストリームはメッセージ境界を保持しないため、データグラム・信頼ストリームの双方に
+// WebSocketはメッセージ境界を保持するが、メッセージIDとサイズを明示するため
 // 同一ヘッダを付ける。payload_size はヘッダを除くバイト数。
 struct FrameHeader {
     MessageId message_id;

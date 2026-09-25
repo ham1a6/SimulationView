@@ -1,4 +1,4 @@
-//! WebTransport用の固定長バイナリプロトコル。C++の`webtransport_protocol.hpp`と同じlittle endian配置を読む。
+//! WebSocket用の固定長バイナリプロトコル。C++の`webtransport_protocol.hpp`と同じlittle endian配置を読む。
 
 use std::fmt;
 

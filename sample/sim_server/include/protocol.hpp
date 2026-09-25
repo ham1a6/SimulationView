@@ -1,7 +1,7 @@
 #pragma once
 
 // シミュレーション内部で使う値オブジェクト。
-// WebTransportのワイヤ形式は webtransport_protocol.hpp が唯一の定義である。
+// WebSocketのワイヤ形式は webtransport_protocol.hpp が唯一の定義である。
 
 #include <cstdint>
 #include <string>
@@ -50,7 +50,7 @@ struct CommandError {
 };
 
 // シミュレータアプリケーション自体の状態を表す表示用文字列(状態変化時+接続直後)。
-// フロント側のシミュレーションステータスパネルは、WebTransport接続が確立している間は
+// フロント側のシミュレーションステータスパネルは、WebSocket接続が確立している間は
 // この文字列をそのまま表示する(接続そのものの状態はConnectionStatusとして
 // フロント側が自前で計算する、別レイヤーの情報)。
 struct AppStatus {
