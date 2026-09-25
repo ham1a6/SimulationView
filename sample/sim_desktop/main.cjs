@@ -2,6 +2,8 @@
 
 const { app, BrowserWindow, dialog, Menu } = require('electron');
 const path = require('node:path');
+const { readFile } = require('node:fs/promises');
+const { X509Certificate } = require('node:crypto');
 const { DesktopRuntime } = require('./runtime.cjs');
 const { terrainDirectory } = require('./terrain.cjs');
 const { platformLayout, developmentServer } = require('./platform.cjs');
@@ -12,6 +14,14 @@ let window;
 let quitting = false;
 let stopped = false;
 let failed = false;
+
+async function certificateFingerprint256(file) {
+  return new X509Certificate(await readFile(file)).fingerprint256;
+}
+
+function isLoopback(hostname) {
+  return hostname === '127.0.0.1' || hostname === '::1' || hostname === 'localhost';
+}
 function fail(error) {
   if (quitting || failed) return;
   failed = true;
@@ -26,10 +36,12 @@ async function start() {
   const serverExe = process.env.SIM3DVIEW_SERVER_EXE || (app.isPackaged
     ? path.join(process.resourcesPath, 'server', platformLayout().server)
     : developmentServer());
+  const certFile = process.env.SIM3DVIEW_CERT_FILE || (app.isPackaged ? path.join(process.resourcesPath, 'certs', 'dev-cert.pem') : path.join(__dirname, '../certs/dev-cert.pem'));
+  const keyFile = process.env.SIM3DVIEW_KEY_FILE || (app.isPackaged ? path.join(process.resourcesPath, 'certs', 'dev-key.pem') : path.join(__dirname, '../certs/dev-key.pem'));
+  const localCertificateFingerprint = await certificateFingerprint256(certFile);
   runtime = new DesktopRuntime({
     serverExe: path.resolve(serverExe), terrainDir,
-    certFile: process.env.SIM3DVIEW_CERT_FILE || (app.isPackaged ? path.join(process.resourcesPath, 'certs', 'dev-cert.pem') : path.join(__dirname, '../certs/dev-cert.pem')),
-    keyFile: process.env.SIM3DVIEW_KEY_FILE || (app.isPackaged ? path.join(process.resourcesPath, 'certs', 'dev-key.pem') : path.join(__dirname, '../certs/dev-key.pem')),
+    certFile, keyFile,
     frontendDir: app.isPackaged ? path.join(__dirname, 'frontend') : path.join(__dirname, 'out/frontend'),
     onFailure: fail,
   });
@@ -47,6 +59,16 @@ async function start() {
   });
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  // 地形fetchもWebTransportと同じ自己署名証明書を使う。ループバックかつ同梱証明書と
+  // SHA-256が一致するときだけ、Chromiumの通常検証による失敗を上書きして受理する。
+  window.webContents.session.setCertificateVerifyProc((request, callback) => {
+    try {
+      const fingerprint = new X509Certificate(request.certificate.data).fingerprint256;
+      callback(isLoopback(request.hostname) && fingerprint === localCertificateFingerprint ? 0 : -3);
+    } catch {
+      callback(-3);
+    }
+  });
   window.webContents.on('render-process-gone', (_event, details) => fail(new Error(`描画プロセスが終了しました: ${details.reason}`)));
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: 'ファイル', submenu: [
