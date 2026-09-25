@@ -106,10 +106,9 @@ class DesktopRuntime {
         const lines = pending.split(/\r?\n/);
         pending = lines.pop().slice(-8192);
         for (const line of lines) {
-          const match = /^SIM3DVIEW_READY ([0-9]+) ([A-Za-z0-9_-]+)$/.exec(line);
+          const match = /^SIM3DVIEW_READY ([0-9]+)(?: [A-Za-z0-9_-]+)?$/.exec(line);
           if (!ready && match && Number(match[1]) > 0 && Number(match[1]) <= 65535) {
             ready = true;
-            this.certificateHash = match[2];
             clearTimeout(timer);
             resolve(Number(match[1]));
           }
@@ -123,7 +122,10 @@ class DesktopRuntime {
       this.http.closeAllConnections(); this.http.close();
       throw new Error('起動を中止しました。');
     }
-    this.url = `http://127.0.0.1:${this.http.address().port}/?sim_port=${port}&wt_cert_hash=${this.certificateHash}`;
+    // Electronの証明書検証フックが、localhostかつ同梱証明書の場合だけ
+    // WebTransportを含む全てのHTTPS通信を許可する。serverCertificateHashesは
+    // 開発用証明書に厳しい鍵種別・有効期間の制約があるため渡さない。
+    this.url = `http://127.0.0.1:${this.http.address().port}/?sim_port=${port}`;
     return this.url;
   }
 
