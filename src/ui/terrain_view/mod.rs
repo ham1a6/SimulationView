@@ -18,6 +18,7 @@ mod frame;
 mod frame_request;
 mod input;
 mod labels;
+mod loading;
 mod lod_driver;
 mod models;
 mod overlay;
@@ -31,7 +32,7 @@ use std::rc::Rc;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
-use self::{frame::*, overlay::*, picking::*, state::*};
+use self::{frame::*, loading::*, overlay::*, picking::*, state::*};
 use crate::terrain::camera::{CameraPreset, OrbitCamera, ViewMode};
 use crate::terrain::capture::CaptureState;
 use crate::terrain::draw_tool::DrawToolState;
@@ -52,7 +53,7 @@ type PendingHover = Rc<RefCell<Option<(web_sys::HtmlCanvasElement, (f64, f64))>>
 #[component]
 pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let canvas_ref: NodeRef<leptos::html::Canvas> = NodeRef::new();
-    let status = RwSignal::new("地形データを読み込み中...".to_string());
+    let init_status = RwSignal::new(InitStatus::Pending);
     let origin_state = use_context::<OriginState>().expect("OriginState context not found");
     let terrain_store = use_context::<TerrainStore>().expect("TerrainStore context not found");
     let radar_markers =
@@ -138,7 +139,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                             canvas.clone(),
                             terrain_store.get_untracked(),
                             origin_state,
-                            status,
+                            init_status,
                         );
                     }
                 }
@@ -157,7 +158,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             let Some(canvas) = canvas_ref.get_untracked() else {
                 return;
             };
-            try_init(state.clone(), canvas, Some(data), origin_state, status);
+            try_init(state.clone(), canvas, Some(data), origin_state, init_status);
         });
     }
 
@@ -527,10 +528,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                     {move || if view_mode.get() == ViewMode::ThreeD { "2D表示に切替" } else { "3D表示に切替" }}
                 </button>
             </div>
-            {move || {
-                let s = status.get();
-                (!s.is_empty()).then(|| view! { <p class="placeholder map-status">{s}</p> })
-            }}
+            <MapStatus init=init_status store=terrain_store/>
         </div>
     }
 }

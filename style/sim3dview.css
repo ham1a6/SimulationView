@@ -559,6 +559,67 @@
     z-index: 1;
 }
 
+/* 地形の読み込み中のプログレスバー(ui::terrain_view::loading)。割合が分からない間
+   (索引の到着前・取得後の描画準備中)は`.indeterminate`で左右に流れるバーにする。
+   描画準備中はメッシュ構築でメインスレッドが塞がるので、コンポジタで動くtransformで動かす。 */
+.map-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.4rem;
+    width: min(20rem, 80%);
+    padding: 0.75rem 1rem;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--fg);
+    font-size: 0.85rem;
+}
+
+.map-loading-bar {
+    position: relative;
+    width: 100%;
+    height: 6px;
+    overflow: hidden;
+    border-radius: 3px;
+    background: var(--border);
+}
+
+.map-loading-fill {
+    height: 100%;
+    background: var(--accent);
+    transition: width 0.2s ease-out;
+}
+
+.map-loading-bar.indeterminate .map-loading-fill {
+    position: absolute;
+    left: 0;
+    width: 35%;
+    transition: none;
+    animation: map-loading-slide 1.2s ease-in-out infinite;
+}
+
+/* translateXの%は自身(バーの35%)の幅基準。-100%で左端の外、100/35≒286%で右端の外。 */
+@keyframes map-loading-slide {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(286%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .map-loading-bar.indeterminate .map-loading-fill {
+        animation: none;
+        width: 100%;
+        opacity: 0.5;
+    }
+}
+
+.map-loading-detail {
+    min-height: 1em;
+    color: #999;
+    font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+}
+
 /* 汎用フローティングパネル(ui::floating_panel::FloatingPanel)。
    ui::origin_dialog::OriginDialog / ui::coverage_altitude_dialog::CoverageAltitudeDialogが
    これを使う。呼び出し側が独自のフローティングウインドウを作る際にも流用できる。 */

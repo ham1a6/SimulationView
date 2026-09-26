@@ -11,6 +11,8 @@ use leptos::prelude::*;
 use super::fetch;
 use super::loader::TerrainData;
 
+pub use super::fetch::TerrainLoadProgress;
+
 // Rc<TerrainData>はSend/Syncではないため、既定のSyncStorageではなくLocalStorageを使う
 // (wasm32-unknown-unknownはシングルスレッドなので安全。ws.rsのWsConnectionと同じ理由)。
 #[derive(Clone, Copy)]
@@ -20,6 +22,8 @@ pub struct TerrainStore {
     base_url: RwSignal<String>,
     data: RwSignal<Option<Rc<TerrainData>>, LocalStorage>,
     loading: RwSignal<bool>,
+    /// 起動時の取得の進み具合(読み込み中の表示用)。
+    progress: RwSignal<TerrainLoadProgress>,
     pub error: RwSignal<Option<String>>,
 }
 
@@ -29,6 +33,7 @@ impl TerrainStore {
             base_url: RwSignal::new(base_url.into()),
             data: RwSignal::new_local(None),
             loading: RwSignal::new(false),
+            progress: RwSignal::new(TerrainLoadProgress::default()),
             error: RwSignal::new(None),
         }
     }
@@ -42,6 +47,12 @@ impl TerrainStore {
         self.data.get_untracked()
     }
 
+    /// 起動時の取得(`base.bin`の受信バイト数)の進み具合をリアクティブに読む。
+    /// 取得が終わったかどうかは`get()`が`Some`かで判断する。
+    pub fn progress(&self) -> TerrainLoadProgress {
+        self.progress.get()
+    }
+
     /// まだ取得していなければ地形データの取得を開始する。
     /// 中央の地図・側面図の両方から呼ばれるが、取得は1回だけ実行される。
     pub fn ensure_loaded(&self) {
@@ -52,7 +63,8 @@ impl TerrainStore {
         let this = *self;
         let base_url = self.base_url.get_untracked();
         wasm_bindgen_futures::spawn_local(async move {
-            match fetch::load_terrain(&base_url).await {
+            let on_progress = move |p| this.progress.set(p);
+            match fetch::load_terrain(&base_url, on_progress).await {
                 Ok(data) => this.data.set(Some(Rc::new(data))),
                 Err(e) => {
                     log::error!("[terrain] {e}");

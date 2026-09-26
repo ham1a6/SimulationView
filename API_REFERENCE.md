@@ -77,7 +77,7 @@ CSSの読み込みとテーマ設定は[README](README.md)の「最小構成の�
 
 | モジュール | 主なAPI | 利用契約 |
 |---|---|---|
-| [`terrain::store`](src/terrain/store.rs) | `TerrainStore::new`, `ensure_loaded`, `get`, `get_untracked`, `error` | 取得中・取得済みなら`ensure_loaded()`は何もしない。失敗は`error: RwSignal<Option<String>>`へ通知 |
+| [`terrain::store`](src/terrain/store.rs) | `TerrainStore::new`, `ensure_loaded`, `get`, `get_untracked`, `progress`, `error`, `TerrainLoadProgress` | 取得中・取得済みなら`ensure_loaded()`は何もしない。`progress()`は起動時取得(`base.bin`)の受信バイト数・全体(不明なら`None`)をリアクティブに返す。失敗は`error: RwSignal<Option<String>>`へ通知 |
 | [`terrain::origin`](src/terrain/origin.rs) | `Origin { lat_deg, lon_deg }`, `OriginState` | 緯度・経度は度。受信した確定原点を`.0.set(Some(origin))`で反映 |
 | [`terrain::recenter`](src/terrain/recenter.rs) | `RecenterRequestState::request`, `request_at` | `request()`は原点、`request_at(lat, lon)`は指定位置を見る。原点自体は変更しない |
 | [`terrain::origin_pick`](src/terrain/origin_pick.rs) | `OriginPickState` | `active`でクリック指定を開始し、`on_pick`で緯度経度を受け取る |

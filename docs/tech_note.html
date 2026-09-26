@@ -3398,7 +3398,7 @@ log = <span class="str">"0.4"</span></pre>
       <h3>手順6: 起動する</h3>
       <pre class="code"><span class="fname">あなたのアプリのディレクトリで</span>trunk serve      # Windowsでは先に $env:NO_COLOR = "true" が必要な場合があります(README.md参照)</pre>
       <p>
-        画面に「地形データを読み込み中...」が出て、取得が終わると地形が現れます。ブラウザのコンソールに
+        画面に「地形データを読み込み中... N%」のプログレスバーが出て、取得が終わると地形が現れます。ブラウザのコンソールに
         <code>[terrain]</code>で始まるログが出ていれば、取得・初期化の失敗理由がそこに書かれます(22節)。
       </p>
 
@@ -4185,7 +4185,7 @@ real = [v <span class="kw">for</span> v <span class="kw">in</span> grid0 <span c
         <tbody>
           <tr><td>起動時に<code>… context not found</code>でパニック</td><td>必須contextの<code>provide_context</code>忘れ</td><td>14節の表で、使う部品の●を全部渡す</td></tr>
           <tr><td>canvasが真っ黒/潰れている</td><td>親要素に高さがない。または、ブラウザのペインが非表示で<code>ResizeObserver</code>が発火していない</td><td>親に高さを与える。動作確認はペインを<strong>表示した状態</strong>で行う</td></tr>
-          <tr><td>「地形データを読み込み中...」のまま</td><td>URL違い(404)、CORSエラー、<code>base.bin</code>のサイズ不一致、<code>tile_levels</code>が2要素未満</td><td>ブラウザのコンソールとネットワークタブを見る。<code>[terrain]</code>ログに理由が出る</td></tr>
+          <tr><td>「地形データの取得に失敗しました: …」、またはプログレスバーが進まない</td><td>URL違い(404)、CORSエラー、<code>base.bin</code>のサイズ不一致、<code>tile_levels</code>が2要素未満。バーが止まったままならサーバーが応答を返し切っていない</td><td>ブラウザのコンソールとネットワークタブを見る。<code>[terrain]</code>ログに理由が出る</td></tr>
           <tr><td>「地形描画エラー: …」</td><td>GPU描画(wgpu)の初期化に失敗した</td><td>コンソールのメッセージを確認。GPU描画が使えるブラウザ・環境で試す</td></tr>
           <tr><td>起動して数秒は、遠くの地形が粗い(角ばる)</td><td>起動直後は全タイルのL0(約1.85km)で描き、L1のグリッドが届いたタイルから切り替えるため(全タイルで、同じPC上のサーバーなら約3秒。回線が遅いと転送量ぶん長くなる)</td><td>少し待つ。続くなら、ネットワークタブで<code>tiles/L1/</code>の取得(390個)が進んでいるか確認する</td></tr>
           <tr><td>ズームやドラッグが重い</td><td>常駐する頂点が約2,500万(GPUメモリ約1.2GB)と多く、GPUに余裕がない</td><td><code>DETAIL_VERTEX_BUDGET</code>を下げる(14.9)。まず1,500万台(下限L1の約1,520万+少し)まで</td></tr>
@@ -4624,7 +4624,7 @@ button.label = is_hole ? <span class="str">""</span> : (<span class="str">"B"</s
       <ul>
         <li><code>TerrainView</code>は<strong>親の大きさいっぱい</strong>に広がる。親(<code>.center-panel</code>)に<code>position: relative</code>と高さを与えておく。</li>
         <li>必須のcontextは<code>TerrainStore</code>・<code>OriginState</code>・<code>RadarMarkersState</code>の3つ。<code>RecenterRequestState</code>・<code>HillshadeState</code>・<code>OriginPickState</code>は<strong>任意</strong>(なければその機能が無いだけ。30節)。</li>
-        <li>読み込み中は「地形データを読み込み中...」と出て(<code>.map-status</code>)、描画に失敗すると「地形描画エラー: …」に変わる。</li>
+        <li>読み込み中は「地形データを読み込み中... N%」のプログレスバー(<code>.map-status.map-loading</code>)が出て、取得に失敗すると「地形データの取得に失敗しました: …」、描画に失敗すると「地形描画エラー: …」に変わる。</li>
       </ul>
 
       <h3>26.2 マウス操作</h3>

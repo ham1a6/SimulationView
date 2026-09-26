@@ -61,6 +61,10 @@ features = [
     "MediaRecorderOptions",
     "MediaStream",
     "Url",
+    # 起動時の地形データ(base.bin)を少しずつ読んで進捗を出す。terrain::fetch。
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "ReadableStreamReadResult",
 ]
 
 [dev-dependencies]

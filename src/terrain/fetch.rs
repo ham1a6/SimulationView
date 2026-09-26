@@ -3,6 +3,8 @@
 //! 細かいレベルはカメラに近いチャンクだけ、必要に応じて取得する(`fetch_tile_level`・`fetch_chunk_grid`。
 //! `terrain::lod`が必要なレベルを決め、`ui::terrain_view`が呼ぶ)。
 
+use std::cell::Cell;
+
 use serde::de::DeserializeOwned;
 
 use super::loader::{grid_len, TerrainData, TerrainMetadata, TileIndex, TileKey};
@@ -27,10 +29,11 @@ fn decode_i16_le(bytes: &[u8]) -> Vec<i16> {
         .collect()
 }
 
-pub(crate) async fn fetch_binary(
+/// GETを送り、成功(2xx)の応答を返す。`range`は両端を含むバイト範囲。
+async fn send_get(
     url: &str,
     range: Option<(usize, usize)>,
-) -> Result<Vec<u8>, String> {
+) -> Result<gloo_net::http::Response, String> {
     let mut request = gloo_net::http::Request::get(url);
     if let Some((start, end)) = range {
         // Rangeは単純な`bytes=start-end`ならCORSのプリフライトなしで送れる。
@@ -43,6 +46,14 @@ pub(crate) async fn fetch_binary(
     if !response.ok() {
         return Err(format!("{url} fetch failed: HTTP {}", response.status()));
     }
+    Ok(response)
+}
+
+pub(crate) async fn fetch_binary(
+    url: &str,
+    range: Option<(usize, usize)>,
+) -> Result<Vec<u8>, String> {
+    let response = send_get(url, range).await?;
     let status = response.status();
     let body = response
         .binary()
@@ -58,18 +69,108 @@ pub(crate) async fn fetch_binary(
     }
 }
 
+/// `url`の全体を、本文のストリームを少しずつ読みながら取得する。読むたびに、それまでに受け取った
+/// (展開後の)バイト数を`on_received`へ渡す。`Content-Length`は圧縮(gzip)後のサイズで展開後の
+/// 大きさと一致しないので、全体の大きさは呼び出し側が別に知っている前提にする(`load_terrain`参照)。
+async fn fetch_binary_streamed(
+    url: &str,
+    mut on_received: impl FnMut(usize),
+) -> Result<Vec<u8>, String> {
+    use wasm_bindgen::JsCast;
+
+    let response = send_get(url, None).await?;
+    let Some(stream) = response.body() else {
+        // 本文のストリームが無い(空の応答)なら、まとめて読むのと同じ。
+        return response
+            .binary()
+            .await
+            .map_err(|e| format!("{url} read failed: {e}"));
+    };
+    let read_failed = |e: wasm_bindgen::JsValue| format!("{url} read failed: {e:?}");
+    let reader = web_sys::ReadableStreamDefaultReader::new(&stream).map_err(read_failed)?;
+    let mut body = Vec::new();
+    loop {
+        let chunk: web_sys::ReadableStreamReadResult =
+            wasm_bindgen_futures::JsFuture::from(reader.read())
+                .await
+                .map_err(read_failed)?
+                .unchecked_into();
+        if chunk.get_done().unwrap_or(false) {
+            return Ok(body);
+        }
+        let bytes = js_sys::Uint8Array::new(&chunk.get_value());
+        let start = body.len();
+        body.resize(start + bytes.length() as usize, 0);
+        bytes.copy_to(&mut body[start..]);
+        on_received(body.len());
+    }
+}
+
+/// 起動時の取得(`load_terrain`)の進み具合。`TerrainStore::progress`で読む。
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TerrainLoadProgress {
+    /// `base.bin`のうち受け取った(展開後の)バイト数。
+    pub received_bytes: usize,
+    /// `base.bin`全体の大きさ。`metadata.json`と`tile_index.json`が届くまでは分からないので`None`。
+    pub total_bytes: Option<usize>,
+}
+
+impl TerrainLoadProgress {
+    /// 0.0〜1.0の割合。全体の大きさがまだ分からなければ`None`。
+    pub fn fraction(&self) -> Option<f64> {
+        let total = self.total_bytes?;
+        if total == 0 {
+            return Some(1.0);
+        }
+        Some((self.received_bytes as f64 / total as f64).min(1.0))
+    }
+}
+
+/// `base.bin`の総バイト数(`タイル数 × (N₀+1)² × 2`。DETAILED_DESIGN.md 9.1節)。
+fn base_bin_len(metadata: &TerrainMetadata, index: &TileIndex) -> Option<usize> {
+    let n0 = *metadata.tile_levels.first()? as usize;
+    Some(index.tile_count() * grid_len(n0) * 2)
+}
+
 /// 起動時の取得: metadata.json・tile_index.json・base.bin(全タイルの最粗レベル)。
 /// 3つとも他の結果に依存せず取得できる(検証にだけ互いの値を使う)ので、高遅延回線での
 /// ラウンドトリップを減らすため同時に発行して待つ。
+/// 進み具合は、容量のほとんどを占める`base.bin`の受信バイト数として`on_progress`へ通知する
+/// (全体の大きさは先に届く`metadata.json`・`tile_index.json`から計算する)。
 /// `base_url`はスキーム+ホスト+ルートパス(例: `"http://localhost:9001/terrain"`)。
 /// 末尾にスラッシュを付けない。
-pub async fn load_terrain(base_url: &str) -> Result<TerrainData, String> {
+pub async fn load_terrain(
+    base_url: &str,
+    on_progress: impl Fn(TerrainLoadProgress),
+) -> Result<TerrainData, String> {
     let base_bin_url = format!("{base_url}/base.bin");
-    let (metadata, index, bytes) = futures_util::join!(
-        fetch_json::<TerrainMetadata>(base_url, "metadata.json"),
-        fetch_json::<TileIndex>(base_url, "tile_index.json"),
-        fetch_binary(&base_bin_url, None),
+    // join!の各futureは同じタスク内で交互に進むだけなので、Cellで共有してよい。
+    let received_bytes = Cell::new(0);
+    let total_bytes = Cell::new(None);
+    let report = || {
+        on_progress(TerrainLoadProgress {
+            received_bytes: received_bytes.get(),
+            total_bytes: total_bytes.get(),
+        })
+    };
+    let (metadata_and_index, bytes) = futures_util::join!(
+        async {
+            let (metadata, index) = futures_util::join!(
+                fetch_json::<TerrainMetadata>(base_url, "metadata.json"),
+                fetch_json::<TileIndex>(base_url, "tile_index.json"),
+            );
+            if let (Ok(metadata), Ok(index)) = (&metadata, &index) {
+                total_bytes.set(base_bin_len(metadata, index));
+                report();
+            }
+            (metadata, index)
+        },
+        fetch_binary_streamed(&base_bin_url, |received| {
+            received_bytes.set(received);
+            report();
+        }),
     );
+    let (metadata, index) = metadata_and_index;
     let metadata = metadata?;
     let index = index?;
     let bytes = bytes?;
@@ -87,7 +188,7 @@ pub async fn load_terrain(base_url: &str) -> Result<TerrainData, String> {
         );
     }
 
-    let expected_len = index.tile_count() * grid_len(metadata.tile_levels[0] as usize) * 2;
+    let expected_len = base_bin_len(&metadata, &index).unwrap_or_default();
     if bytes.len() != expected_len {
         return Err(format!(
             "base.bin size mismatch: got {} bytes, expected {}",
@@ -167,6 +268,20 @@ mod tests {
         assert_eq!(tile_name((35, 138)), "N035E138");
         assert_eq!(tile_name((-1, -5)), "S001W005");
         assert_eq!(tile_name((0, 0)), "N000E000");
+    }
+
+    #[test]
+    fn progress_fraction_needs_total_and_is_clamped() {
+        let progress = |received_bytes, total_bytes| TerrainLoadProgress {
+            received_bytes,
+            total_bytes,
+        };
+        assert_eq!(progress(100, None).fraction(), None);
+        assert_eq!(progress(0, Some(200)).fraction(), Some(0.0));
+        assert_eq!(progress(50, Some(200)).fraction(), Some(0.25));
+        // 展開後のサイズが想定より大きい応答(後でサイズ検証のエラーになる)でも100%を超えない。
+        assert_eq!(progress(300, Some(200)).fraction(), Some(1.0));
+        assert_eq!(progress(0, Some(0)).fraction(), Some(1.0));
     }
 
     #[test]

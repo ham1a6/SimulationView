@@ -6,7 +6,9 @@ use std::rc::Rc;
 
 use leptos::prelude::*;
 
-use super::{labels::*, lod_driver::*, models::update_models, overlay::*, state::*};
+use super::{
+    labels::*, loading::InitStatus, lod_driver::*, models::update_models, overlay::*, state::*,
+};
 use crate::terrain::geodesy::EnuTransform;
 use crate::terrain::heightmap;
 use crate::terrain::loader::{TerrainData, WHOLE_TILE};
@@ -23,7 +25,7 @@ pub(super) fn try_init(
     canvas: web_sys::HtmlCanvasElement,
     data: Option<Rc<TerrainData>>,
     origin_state: OriginState,
-    status: RwSignal<String>,
+    status: RwSignal<InitStatus>,
 ) {
     let width = canvas.width();
     let height = canvas.height();
@@ -81,7 +83,7 @@ pub(super) fn try_init(
                 // signalの更新で購読しているEffectが同期的に走っても`state`を借用し直せるよう、
                 // 借用を手放してから更新する。
                 drop(s);
-                status.set(String::new());
+                status.set(InitStatus::Ready);
                 rebuild_markers(&state);
                 rebuild_drawings(&state);
                 rebuild_tracks(&state);
@@ -89,7 +91,7 @@ pub(super) fn try_init(
             }
             Err(e) => {
                 log::error!("[terrain] {e}");
-                status.set(format!("地形描画エラー: {e}"));
+                status.set(InitStatus::Failed(e));
                 state.borrow_mut().initializing = false;
             }
         }

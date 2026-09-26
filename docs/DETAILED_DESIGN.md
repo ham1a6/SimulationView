@@ -922,7 +922,7 @@ record_bytes = (n+1)² × 2
 | 関数 | 動作 |
 |---|---|
 | `fetch_json::<T>(base_url, file)` | `{base}/{file}`をJSONとして`T`へ(`metadata.json`→`TerrainMetadata`、`tile_index.json`→`TileIndex`) |
-| `load_terrain(base_url)` | `metadata.json`・`tile_index.json`・`base.bin`を**同時に取得**(`futures_util::join!`。高遅延回線でのラウンドトリップを減らすため、3つとも他の結果に依存せず発行できる)、全部揃ってから9.1の検証→サイズ検証→`TerrainData::new(...)` |
+| `load_terrain(base_url, on_progress)` | `metadata.json`・`tile_index.json`・`base.bin`を**同時に取得**(`futures_util::join!`。高遅延回線でのラウンドトリップを減らすため、3つとも他の結果に依存せず発行できる)、全部揃ってから9.1の検証→サイズ検証→`TerrainData::new(...)`。`base.bin`は本文の`ReadableStream`を読みながら受信済み(展開後)バイト数を、全体の大きさ(`metadata.json`・`tile_index.json`の到着後に9.1の総バイト数式で計算)とともに`TerrainLoadProgress`で`on_progress`へ通知する。`Content-Length`はgzip後のサイズで展開後と一致しないので使わない |
 | `fetch_tile_level(terrain, key, level)` | `{terrain.base_url}/tiles/L{level}/{名前}.bin`全体。期待長=`chunk_count*(chunk_cells+1)²*2`、不一致は`Err` |
 | `fetch_chunk_grid(terrain, key, level, chunk)` | 同ファイルからRangeでチャンク1個分(`start=chunk*record_bytes`)。長さ不一致は`Err` |
 | `tile_name(key)` | 9.1の名前 |
@@ -1379,19 +1379,19 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 | `OriginDialogState` / `CoverageAltitudeDialogState`(いずれも`RwSignal<bool>`) | 各ダイアログ使用時 | `ui::*_dialog` | 開閉 |
 
 必須contextが無いと`expect("… context not found")`でpanicする(`TerrainView`/`LosView`/`CrossSectionView`/`OriginDialog`)。任意のものは後付けのオプション機能で、未提供でも従来どおり動く。
-`TerrainStore { base_url, data: RwSignal<Option<Rc<TerrainData>>, LocalStorage>, loading, error }`: `get()`(リアクティブ)、`get_untracked()`、`ensure_loaded()`(`data`か`loading`があれば何もしない。無ければ`load_terrain`を`spawn_local`し、失敗は`log::error`+`error`へ)。
+`TerrainStore { base_url, data: RwSignal<Option<Rc<TerrainData>>, LocalStorage>, loading, progress, error }`: `get()`(リアクティブ)、`get_untracked()`、`progress()`(リアクティブ。`TerrainLoadProgress { received_bytes, total_bytes: Option }`、`fraction()`は0〜1に丸め、全体不明なら`None`)、`ensure_loaded()`(`data`か`loading`があれば何もしない。無ければ`load_terrain`を`spawn_local`し、進捗は`progress`へ、失敗は`log::error`+`error`へ)。
 
-**地図コンポーネント `ui::terrain_view::TerrainView(preset)`**: ファイルは`mod.rs`(コンポーネント・イベント・Effect)・`state.rs`・`frame.rs`・`lod_driver.rs`・`overlay.rs`・`labels.rs`・`picking.rs`。
+**地図コンポーネント `ui::terrain_view::TerrainView(preset)`**: ファイルは`mod.rs`(コンポーネント・イベント・Effect)・`state.rs`・`frame.rs`・`loading.rs`(初期化完了までの状態表示)・`lod_driver.rs`・`overlay.rs`・`labels.rs`・`picking.rs`。
 
 - **`ViewState`**(`Rc<RefCell<..>>`。GPUを含むので`Send`でない): `renderer`・`terrain`・`mesh_origin`(現在GPUにあるメッシュの原点)・`camera: OrbitCamera`・`target_up`(注視点の地表標高)・
   `interaction: InteractionState`(`DragTracker`と入力状態)・`radar_markers`/`drawings`/`tracks`・`labels`・`pick_anchors`・`hillshade`・`lod: LodState`。
   `LodState`は`resident: HashMap<TileKey, TileLayout>`(いまGPUにある状態)・`loading`/`failed: HashSet<FetchKey>`(取得中/再試行の上限に達し恒久的に諦めた)・
   `retry_counts: HashMap<FetchKey, u8>`(`failed`へ移る前の失敗回数)・`retry_after: HashMap<FetchKey, f64>`(バックオフの再試行可能時刻。`js_sys::Date::now()`基準)・予約フラグをまとめる。
   `FetchKey = (TileKey, level, Option<chunk>)`(`None`=タイル1ファイル(level≤2))
-- **DOM**: `div.terrain-view > canvas.terrain-canvas`+原点指定/図形作成のヒントバー(`.origin-pick-hint`)+`.terrain-track-labels`(航跡ラベルの層)+`.terrain-view-controls`(2D/3D切替ボタン)+`.map-status`(状態文言。初期は「地形データを読み込み中...」)
+- **DOM**: `div.terrain-view > canvas.terrain-canvas`+原点指定/図形作成のヒントバー(`.origin-pick-hint`)+`.terrain-track-labels`(航跡ラベルの層)+`.terrain-view-controls`(2D/3D切替ボタン)+`.map-status`(初期化完了までの状態表示。`InitStatus::Pending`の間は`.map-loading`のプログレスバーで、取得中は「地形データを読み込み中... N%」と受信MB、割合が分からない間(索引の到着前)と取得後のレンダラー準備中(「地形を表示する準備中...」)は`.indeterminate`の流れるバー。`TerrainStore.error`があれば取得失敗の文言、`InitStatus::Failed`なら「地形描画エラー: …」。`Ready`で消える)
 - **初期化 `try_init`**: canvasのサイズ確定(ResizeObserver)と地形データ取得(`TerrainStore`)は非同期かつ独立に完了するので、両方から呼び、揃った時点で初期化する(`canvas`が0サイズ・`data`なし・初期化済み/中は何もしない)。
-  原点=`OriginState`または`default_origin`、`target_up = sample_heightmap(origin)`。`TerrainRenderer::new`(失敗は`status="地形描画エラー: {e}"`)→**全タイルを`build_whole_tile_mesh`でレベル0のメッシュとして`set_mesh((lat,lon,WHOLE_TILE))`**、`resident[tile]=Whole`、
-  `set_hillshade`・`set_ellipsoid_origin`、初回`render`。借用を`drop`してから`status`を空にし、`rebuild_markers/drawings/tracks`・`render_now`
+  原点=`OriginState`または`default_origin`、`target_up = sample_heightmap(origin)`。`TerrainRenderer::new`(失敗は`status=InitStatus::Failed(e)`)→**全タイルを`build_whole_tile_mesh`でレベル0のメッシュとして`set_mesh((lat,lon,WHOLE_TILE))`**、`resident[tile]=Whole`、
+  `set_hillshade`・`set_ellipsoid_origin`、初回`render`。借用を`drop`してから`status=InitStatus::Ready`にし、`rebuild_markers/drawings/tracks`・`render_now`
 - **描画・LODの予約**: `render_frame`は`FrameRequest`で重複要求をまとめ、`requestAnimationFrame`を1つだけ予約する(**LODは予約しない**。航跡の高頻度更新用)。コールバックは`Weak`で状態を保持し、破棄済みなら描かない。予約失敗時は予約フラグを解除して次回要求で再試行できるようにする。実行時にも予約フラグを解除し、`draw_frame`で`keep_camera_above_ground`(`camera.keep_above_ground(|e,n| ground_at_enu(..).up)`)→`update_models`→`renderer.render`→`update_labels`。フェード継続中は借用を解放して同じ経路で次フレームを予約する。`render_now`は次の入力に衝突補正を反映するため即座に`keep_camera_above_ground`を実行し、`render_frame`→`schedule_lod`を予約する。スクリーンショット保存時だけは`draw_frame`を即時実行し、未反映の入力を含めて保存する。
 - **Effect**(番号はコード上の`Effect N`):
 
@@ -1510,7 +1510,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 アプリは`index.html`(Trunk)で`<link data-trunk rel="css" href="../../style/sim3dview.css" />`を読み込む(相対パスは自分のCargo.tomlからの位置に合わせる)。
 
 **実機確認の手順(Browserペイン)**: UIの動作確認はBrowserペインを**表示した状態**で行う(非表示だとResizeObserverが発火しない)。プライベートIP宛はブロックされるので`http://localhost:8081`。
-初回に「地形データを読み込み中...」→地形が出る(全タイルがレベル0→約20秒でレベル1→近い順に細かく)。3Dのドラッグ回転・ホイールズーム・Shift+ドラッグで注視点移動・地面の下にもぐらない。2D切替で北が上・ドラッグでパン。
+初回に「地形データを読み込み中... N%」のプログレスバー→地形が出る(全タイルがレベル0→約20秒でレベル1→近い順に細かく)。3Dのドラッグ回転・ホイールズーム・Shift+ドラッグで注視点移動・地面の下にもぐらない。2D切替で北が上・ドラッグでパン。
 右クリック(メニュー未提供)で観測点が追加され、3Dでドーム・2Dで塗り+輪郭が出て、見通しタブの極座標図が更新される。海・データ範囲外は水色の水域で、水平線付近で地球の丸みの向こうの地形が水面越しに透けない。
 **判断を1枚のスクリーンショットだけで下さない**(同じ操作を複数回再現する)。
 
