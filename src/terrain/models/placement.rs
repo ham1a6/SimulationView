@@ -32,7 +32,9 @@ const ORTHO_EQUIVALENT_FOV_Y_DEG: f32 = 50.0;
 /// トラック1つの、モデルを置くための情報(トラックが更新されるたびに作り直す)。
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ModelPlacement {
+    /// トラックのID。
     pub id: TrackId,
+    /// 種別(どのモデルを使うかを決める)。
     pub kind: SymbolKind,
     /// 所属の色(rgb)。
     pub tint: [f32; 3],
@@ -40,8 +42,11 @@ pub(crate) struct ModelPlacement {
     pub position: [f32; 3],
     /// その地点の東・北・上(同じENU座標系の成分)。
     pub frame: [[f32; 3]; 3],
+    /// ヘディング(度、北から時計回り)。
     pub heading_deg: f32,
+    /// ピッチ(度、機首上げが正)。
     pub pitch_deg: f32,
+    /// ロール(度、右翼が下がるのが正)。
     pub roll_deg: f32,
 }
 
@@ -74,9 +79,13 @@ pub(crate) fn attitude(
     pitch_deg: f32,
     roll_deg: f32,
 ) -> Mat3 {
+    // 機体座標のベクトルに、右から順に作用する: まずロール(前方軸y回り。右翼が下がる向きが正になる)、
+    // 次にピッチ(右軸x回り。機首が上がる向きが正)、最後にヘディング(上軸z回り。北から時計回りが正なので、
+    // 右手系の回転角としては符号を反転する)。結果は地点の(東, 北, 上)での成分。
     let local = Mat3::from_rotation_z(-heading_deg.to_radians())
         * Mat3::from_rotation_x(pitch_deg.to_radians())
         * Mat3::from_rotation_y(roll_deg.to_radians());
+    // 地点の東・北・上を列に並べた行列で、メッシュ原点のENU座標の成分へ直す。
     Mat3::from_cols(
         Vec3::from(frame[0]),
         Vec3::from(frame[1]),
@@ -92,12 +101,14 @@ pub(crate) fn instance_matrix(
     source: &ModelSource,
     extra_scale: f32,
 ) -> Mat4 {
+    // yaw_offset(モデルの前が時計回りにずれている分)を、機体座標のz回りに反時計回り(正の角)で戻してから姿勢を掛ける。
     let rotation = attitude(
         placement.frame,
         placement.heading_deg,
         placement.pitch_deg,
         placement.roll_deg,
     ) * Mat3::from_rotation_z(source.yaw_offset_deg.to_radians());
+    // 頂点には右から作用する: 拡大縮小 → 回転 → 基準点の位置へ平行移動。
     Mat4::from_translation(Vec3::from(placement.position))
         * Mat4::from_mat3(rotation)
         * Mat4::from_scale(Vec3::splat(source.scale * extra_scale))
@@ -105,15 +116,20 @@ pub(crate) fn instance_matrix(
 
 /// 画面の大きさの見積もりに使う、カメラの情報。
 pub(crate) struct ViewMetrics {
+    /// 視点の位置(ENU座標)。
     eye: Vec3,
+    /// 視線の向き(単位ベクトル。視点から注視点へ)。
     forward: Vec3,
+    /// 描画先の高さ(px。0除算を避けるため1以上)。
     viewport_height_px: f32,
     /// 正射影のとき、画面の縦幅が表す長さ(メートル)。透視投影なら`None`。
     ortho_view_height_m: Option<f32>,
+    /// 縦の視野角の半分のtan(正射影では`ORTHO_EQUIVALENT_FOV_Y_DEG`の値)。
     tan_half_fov_y: f32,
 }
 
 impl ViewMetrics {
+    /// カメラと描画先の高さから作る(フレームごとに1回)。
     pub(crate) fn new(camera: &Camera, viewport_height_px: f32) -> Self {
         let (ortho_view_height_m, tan_half_fov_y) = match camera.projection {
             Projection::Perspective { fov_y_radians } => (None, (fov_y_radians * 0.5).tan()),
@@ -134,6 +150,7 @@ impl ViewMetrics {
     /// 点`position`のカメラからの奥行き(視線方向の距離。メートル)。正射影は、同じ縦幅が映る透視投影の距離に換算する。
     pub(crate) fn depth_m(&self, position: Vec3) -> f32 {
         match self.ortho_view_height_m {
+            // 透視投影で縦幅hが映る距離dは h = 2·d·tan(画角/2) から d = h/(2·tan)。位置には依らない。
             Some(height) => height / (2.0 * self.tan_half_fov_y),
             None => (position - self.eye).dot(self.forward),
         }
@@ -141,6 +158,7 @@ impl ViewMetrics {
 
     /// 奥行き`depth_m`の位置で、1メートルが画面で何pxになるか。
     pub(crate) fn pixels_per_meter(&self, depth_m: f32) -> f32 {
+        // 奥行きdで画面の縦幅が表す長さ 2·d·tan(画角/2) を、画面の高さ(px)で割った逆数。
         self.viewport_height_px / (2.0 * depth_m.max(1e-3) * self.tan_half_fov_y)
     }
 }
@@ -148,12 +166,15 @@ impl ViewMetrics {
 /// 表示方式の設定(`ModelsState`のシグナルの値のコピー)。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct DisplaySettings {
+    /// 表示方式。
     pub mode: ModelDisplayMode,
+    /// `SwitchToSymbol`の切り替え距離(メートル)。
     pub switch_distance_m: f32,
+    /// `MinScreenSize`の最小の大きさ(px)。
     pub min_screen_px: f32,
 }
 
-/// トラック1つをどう描くか。
+/// トラック1つをどう描くか。`Symbol`はシンボル(画面サイズ固定の2Dの図形)で描く。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum Representation {
     Symbol,
@@ -188,6 +209,7 @@ pub(crate) fn choose_representation(
             }
         }
         ModelDisplayMode::MinScreenSize => {
+            // 外接球の直径が画面で何pxか。最小サイズに足りない分だけ拡大する(実寸より小さくはしない)。
             let size_px = 2.0 * radius_m * metrics.pixels_per_meter(depth_m);
             let scale = (settings.min_screen_px / size_px.max(1e-9)).clamp(1.0, MAX_MIN_SIZE_SCALE);
             Representation::Model { scale }
@@ -218,6 +240,7 @@ pub(crate) fn plan_models(
     if settings.mode == ModelDisplayMode::Off {
         return plan;
     }
+    // モデル未登録の種別・まだ読み込めていないモデルのトラックは、計画に入れない(=シンボルで描く)。
     for placement in placements {
         let Some(source) = sources.get(&placement.kind) else {
             continue;
@@ -236,6 +259,7 @@ pub(crate) fn plan_models(
         ) else {
             continue;
         };
+        // 同じモデル(URL)のインスタンスをまとめて、1回の描画で何機も描けるようにする。
         let [r, g, b] = placement.tint;
         plan.instances
             .entry(source.url.clone())

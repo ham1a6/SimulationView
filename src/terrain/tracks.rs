@@ -23,6 +23,7 @@ use super::drawing_geometry::{append_line_strip, height_of, triangulate, BuildCo
 use super::render_bias::TRACK_M;
 use super::vertex::DrawVertex;
 
+/// トラックの識別子(アプリが決める。受信のたびに同じ実体には同じ値を使う)。
 pub type TrackId = u64;
 
 /// シンボルの種別(形が変わる)。3Dモデル(`terrain::models`)を割り当てる単位でもある。
@@ -32,10 +33,13 @@ pub enum SymbolKind {
     Unknown,
     /// 固定翼機。
     Aircraft,
+    /// 回転翼機(胴体と交差したローター)。
     Helicopter,
+    /// 艦船(船首のとがった船体)。
     Ship,
     /// 地上車両。
     Vehicle,
+    /// ミサイル(細い弾体と安定翼)。
     Missile,
 }
 
@@ -56,6 +60,7 @@ impl SymbolKind {
 /// 所属(色が変わる)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Affiliation {
+    /// 不明(黄)。
     Unknown,
     /// 友軍(青)。
     Friendly,
@@ -92,11 +97,15 @@ impl Affiliation {
 pub struct Track {
     /// トラックの識別子(受信のたびに同じ実体は同じIDにする。航跡・ラベルの対応づけに使う)。
     pub id: TrackId,
+    /// 種別(シンボルの形・割り当てる3Dモデル)。
     pub kind: SymbolKind,
+    /// 所属(シンボル・航跡・ラベルの色)。
     pub affiliation: Affiliation,
     /// 表示名(コールサイン等)。
     pub label: String,
+    /// 現在位置の緯度(度)。
     pub lat_deg: f64,
+    /// 現在位置の経度(度)。
     pub lon_deg: f64,
     /// 海抜(`Msl`)か地表から(`AboveGround`。地上車両など、地形の高さがサーバー側にないとき)。
     pub altitude: Altitude,
@@ -113,7 +122,9 @@ pub struct Track {
 /// トラックと、その航跡(過去の位置。現在位置は含まない)。
 #[derive(Debug, Clone, PartialEq)]
 pub struct TrackEntry {
+    /// 最新の状態。
     pub track: Track,
+    /// 過去の位置(緯度, 経度, 高度)を古い順に。`TRAIL_MAX_POINTS`個まで。
     pub trail: Vec<(f64, f64, Altitude)>,
 }
 
@@ -124,6 +135,7 @@ const TRAIL_MIN_STEP_M: f64 = 250.0;
 
 /// 緯度経度の2点間のおおよその水平距離(メートル)。航跡の間引き用なので近似(等距円筒)で十分。
 fn approx_distance_m(lat0: f64, lon0: f64, lat1: f64, lon1: f64) -> f64 {
+    // 緯度1度≒111,320m、経度1度はそれにcos(緯度)を掛けた長さとみなす。
     let north = (lat1 - lat0) * 111_320.0;
     let east = (lon1 - lon0) * 111_320.0 * lat0.to_radians().cos();
     east.hypot(north)
@@ -135,6 +147,7 @@ fn advance_trail(previous: Option<TrackEntry>) -> Vec<(f64, f64, Altitude)> {
     let Some(previous) = previous else {
         return Vec::new();
     };
+    // 航跡に足すのは「前回の現在位置」(今回の現在位置はシンボルの位置として別に描き、次の`set`で航跡に入る)。
     let mut trail = previous.trail;
     let last = previous.track;
     let far_enough = trail.last().is_none_or(|&(lat, lon, _)| {
@@ -153,6 +166,7 @@ fn advance_trail(previous: Option<TrackEntry>) -> Vec<(f64, f64, Altitude)> {
 /// (`TracksState::new()`)。
 #[derive(Clone, Copy)]
 pub struct TracksState {
+    /// トラックと航跡の一覧(`set`で渡した順)。
     pub entries: RwSignal<Vec<TrackEntry>>,
     /// ラベル(名前・高度・速度)を出すか。
     pub show_labels: RwSignal<bool>,
@@ -166,6 +180,7 @@ pub struct TracksState {
 }
 
 impl TracksState {
+    /// トラックなし・ラベル/航跡/高度線をすべて表示・選択なしで作る。
     pub fn new() -> Self {
         Self {
             entries: RwSignal::new(Vec::new()),
@@ -206,6 +221,7 @@ impl TracksState {
         let selected = self.selected.get_untracked();
         let selected_remains = selected.is_none_or(|id| tracks.iter().any(|t| t.id == id));
         self.entries.update(|entries| {
+            // 前回の一覧をIDで引けるようにしてから空にし、今回の順で詰め直す(今回に無いIDはここで捨てる)。
             let mut previous: HashMap<TrackId, TrackEntry> =
                 entries.drain(..).map(|e| (e.track.id, e)).collect();
             for track in tracks {
@@ -239,16 +255,23 @@ impl Default for TracksState {
 const SYMBOL_SIZE_PX: f32 = 30.0;
 /// 縁取り(暗色)の大きさの倍率。
 const SYMBOL_OUTLINE_SCALE: f32 = 1.3;
+/// 縁取りの色(ほぼ黒、わずかに透ける)。
 const SYMBOL_OUTLINE_COLOR: [f32; 4] = [0.04, 0.04, 0.07, 0.9];
 /// 高度線を出す、地表からの最小の高さ(メートル)。これより低いトラックは線を出さない。
 const ALTITUDE_LINE_MIN_M: f64 = 30.0;
+/// 高度線の太さ(画面のpx)。
 const ALTITUDE_LINE_WIDTH_PX: f32 = 1.0;
+/// 航跡の線の太さ(画面のpx)。
 const TRAIL_WIDTH_PX: f32 = 1.5;
+/// 航跡・高度線の不透明度(所属の色を半透明にして、シンボルより控えめにする)。
 const LINE_ALPHA: f32 = 0.55;
-/// 選択中のシンボルの強調の輪(画面のpx。縁取り→白の輪の順)。
+/// 選択中のシンボルの強調の輪(画面のpx。縁取り→白の輪の順)。外側の縁取りの外径。
 const SELECT_RING_OUTER_PX: f32 = 26.0;
+/// 白の輪の内径(縁取りはこれより1px内側まで)。
 const SELECT_RING_INNER_PX: f32 = 21.0;
+/// 白の輪の幅(px)。
 const SELECT_RING_BAND_PX: f32 = 3.0;
+/// 輪の円周の分割数。
 const SELECT_RING_SEGMENTS: usize = 40;
 /// シンボルの当たり判定の半径(画面のpx。シンボルの縁取りより少し大きい)。
 pub(crate) const PICK_RADIUS_PX: f32 = 20.0;
@@ -268,6 +291,7 @@ fn glyph(kind: SymbolKind) -> Vec<Vec<[f64; 2]>> {
         );
         points
     }
+    /// 軸に沿った矩形(左下(x0, y0)〜右上(x1, y1))。
     fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Vec<[f64; 2]> {
         vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
     }
@@ -326,7 +350,8 @@ fn glyph(kind: SymbolKind) -> Vec<Vec<[f64; 2]>> {
     }
 }
 
-/// シンボル1個ぶんの三角形を`out`に追加する(向きつきビルボード)。
+/// シンボル1個ぶんの三角形を`out`に追加する(向きつきビルボード)。`triangles`は`glyph`の座標(±1程度)の
+/// 三角形で、`scale_px`倍して画面のpxにする。画面上の回転はシェーダーが`heading_rad`から求める。
 fn push_symbol(
     out: &mut Vec<DrawVertex>,
     anchor: [f32; 3],
@@ -352,9 +377,13 @@ pub(crate) struct TrackLabel {
     pub id: TrackId,
     /// 選択中か(ラベルを強調する)。
     pub selected: bool,
+    /// シンボルの位置(ENU座標。ラベルはここを画面へ射影した点から少しずらして置く)。
     pub position: [f32; 3],
+    /// 1行目: 表示名。
     pub name: String,
+    /// 2行目: 高度・速度(`label_detail`)。
     pub detail: String,
+    /// 文字色(所属の色、RGB)。
     pub color: [f32; 3],
 }
 
@@ -363,6 +392,7 @@ pub(crate) struct TrackLabel {
 pub(crate) struct TrackOptions<'a> {
     /// 強調の輪を付けるトラック。
     pub selected: Option<TrackId>,
+    /// 航跡を描くか。
     pub trails: bool,
     /// 高度線(3Dのみ。2D=真上から見た地図では縦の線が点になるので出さない)。
     pub altitude_lines: bool,
@@ -375,6 +405,7 @@ pub(crate) struct TrackOptions<'a> {
 pub(crate) struct TrackGeometry {
     /// 描画用の頂点(TriangleList。シンボル・航跡・高度線)。
     pub vertices: Vec<DrawVertex>,
+    /// 全トラックのラベル(表示設定に関係なく作る。出すかどうかは`TerrainView`が決める)。
     pub labels: Vec<TrackLabel>,
 }
 
@@ -386,10 +417,12 @@ fn push_ring(
     inner_px: f32,
     color: [f32; 4],
 ) {
+    // 半径r・i番目の円周上の点(画面のpx)。
     let at = |r: f32, i: usize| {
         let t = std::f32::consts::TAU * i as f32 / SELECT_RING_SEGMENTS as f32;
         [r * t.cos(), r * t.sin()]
     };
+    // 外周と内周の隣り合う2点ずつで作る四角形を、2つの三角形で埋める。
     for i in 0..SELECT_RING_SEGMENTS {
         let (a, b, c, d) = (
             at(outer_px, i),
@@ -418,6 +451,7 @@ pub(crate) fn pick_track(
         if clip.w <= 0.0 {
             continue;
         }
+        // 正規化デバイス座標(-1〜1、上が+y)を、canvasのpx(左上原点、下が+y)にする。
         let sx = (clip.x / clip.w + 1.0) * 0.5 * viewport_px.0;
         let sy = (1.0 - clip.y / clip.w) * 0.5 * viewport_px.1;
         let distance = (sx - point.0).hypot(sy - point.1);
@@ -428,6 +462,7 @@ pub(crate) fn pick_track(
     best.map(|(id, _)| id)
 }
 
+/// ラベルの2行目: 高度(地表基準なら「AGL」を付ける)と速度(km/h)。例: `"3000 m  720 km/h"`。
 fn label_detail(track: &Track) -> String {
     let (prefix, meters) = match track.altitude {
         Altitude::Msl(h) => ("", h),
@@ -436,7 +471,8 @@ fn label_detail(track: &Track) -> String {
     format!("{prefix}{meters:.0} m  {:.0} km/h", track.speed_mps * 3.6)
 }
 
-/// トラック一覧から、描画用の頂点とラベルを作る。
+/// トラック一覧から、描画用の頂点とラベルを作る。トラックごとに、航跡→高度線→選択の輪→シンボル
+/// (縁取り→本体)の順に頂点を積む。
 pub(crate) fn build_track_geometry(
     ctx: &BuildContext,
     entries: &[TrackEntry],
@@ -451,6 +487,7 @@ pub(crate) fn build_track_geometry(
         let track = &entry.track;
         let base = track.affiliation.color();
         let color = base.to_array();
+        // 楕円体高。地表基準のトラックは地表+高度+バイアス、海抜のトラックはそのまま。
         let height = height_of(ctx, track.lat_deg, track.lon_deg, track.altitude, TRACK_M);
         let anchor = ctx
             .mesh_transform

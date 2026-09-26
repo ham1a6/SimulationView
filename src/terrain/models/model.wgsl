@@ -4,7 +4,9 @@
 // 頂点データは`terrain::models::types::{ModelVertex, ModelInstance}`。
 
 struct DrawUniform {
+    // ENU座標→クリップ座標。
     view_proj: mat4x4<f32>,
+    // 作図用(線の太さの換算)。このシェーダーでは使わないが、同じuniformを共有するので並びを合わせて宣言する。
     viewport: vec4<f32>,
     // xyz: 光源の向き(面から光源へ向かう単位ベクトル。ENU座標)。
     light: vec4<f32>,
@@ -36,11 +38,13 @@ const AMBIENT = 0.4;
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
+    // インスタンス属性の4本のvec4を、列として行列に組み立てる(Rust側は列優先で詰めている)。
     let model = mat4x4<f32>(in.model_0, in.model_1, in.model_2, in.model_3);
     out.clip_position = u.view_proj * (model * vec4<f32>(in.position, 1.0));
     // 拡大縮小は一様なので、法線は行列の回転成分を掛けて正規化するだけでよい。
     let normal = normalize((model * vec4<f32>(in.normal, 0.0)).xyz);
     let shade = AMBIENT + (1.0 - AMBIENT) * max(dot(normal, u.light.xyz), 0.0);
+    // モデルの色に所属の色を割合tint.aで混ぜる(0ならモデルの色のまま)。不透明で描く。
     let base = mix(in.color.rgb, in.tint.rgb, in.tint.a);
     out.color = vec4<f32>(base * shade, 1.0);
     return out;

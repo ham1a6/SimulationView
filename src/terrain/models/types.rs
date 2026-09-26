@@ -8,7 +8,9 @@ use bytemuck::{Pod, Zeroable};
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Pod, Zeroable)]
 pub struct ModelVertex {
+    /// 位置(機体座標、メートル)。
     pub position: [f32; 3],
+    /// 単位法線(機体座標)。陰影に使う。
     pub normal: [f32; 3],
     /// 頂点色×マテリアルの基本色(リニア。アルファは常に1)。
     pub color: [f32; 4],
@@ -27,6 +29,7 @@ pub struct ModelInstance {
 /// 読み込み済みのモデル1つ(CPU側。GPUへの転送は`TerrainRenderer::set_model`)。
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelMesh {
+    /// 頂点(ノードの変換・マテリアルの色を焼き込み済み)。
     pub vertices: Vec<ModelVertex>,
     /// 三角形リスト(3つで1枚)。
     pub indices: Vec<u32>,

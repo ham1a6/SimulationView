@@ -20,6 +20,7 @@ const MAX_NODE_DEPTH: usize = 128;
 /// GLB(バイナリglTF)のバイト列から`ModelMesh`を作る。
 pub(crate) fn import_glb(bytes: &[u8]) -> Result<ModelMesh, String> {
     let gltf = gltf::Gltf::from_slice(bytes).map_err(|e| format!("glTFの解析に失敗: {e}"))?;
+    // バッファの添字→バイト列。GLBの埋め込みバイナリチャンク(`Bin`)だけを受け付ける。
     let mut buffers: Vec<&[u8]> = Vec::new();
     for buffer in gltf.buffers() {
         match buffer.source() {
@@ -35,6 +36,7 @@ pub(crate) fn import_glb(bytes: &[u8]) -> Result<ModelMesh, String> {
             }
         }
     }
+    // 既定のシーン(無ければ最初のシーン)のルートノードから、子を辿って全メッシュを集める。
     let scene = gltf
         .default_scene()
         .or_else(|| gltf.scenes().next())
@@ -46,9 +48,12 @@ pub(crate) fn import_glb(bytes: &[u8]) -> Result<ModelMesh, String> {
     builder.finish()
 }
 
+/// 読み込み中の全プリミティブを1つのメッシュへ継ぎ足していく入れ物。
 #[derive(Default)]
 struct Builder {
+    /// これまでに足した頂点(機体座標)。
     vertices: Vec<ModelVertex>,
+    /// これまでに足した三角形(`vertices`の添字)。
     indices: Vec<u32>,
 }
 
@@ -58,6 +63,7 @@ fn to_body(v: Vec3) -> [f32; 3] {
 }
 
 impl Builder {
+    /// ノードとその子孫を辿り、メッシュを足す。`parent`は親までの変換を掛け合わせた行列(glTFの座標のまま)。
     fn visit(
         &mut self,
         node: &gltf::Node,
@@ -68,6 +74,7 @@ impl Builder {
         if depth > MAX_NODE_DEPTH {
             return Err("ノードの入れ子が深すぎます".to_string());
         }
+        // このノードの変換(平行移動・回転・拡大縮小、または行列)を親の変換の右に掛ける。
         let world = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
         if let Some(mesh) = node.mesh() {
             for primitive in mesh.primitives() {
@@ -80,6 +87,7 @@ impl Builder {
         Ok(())
     }
 
+    /// プリミティブ1つ(三角形リストのみ。それ以外は黙って飛ばす)を、`world`で変換し機体座標にして足す。
     fn add_primitive(
         &mut self,
         primitive: &gltf::Primitive,
@@ -97,10 +105,12 @@ impl Builder {
         let normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|n| n.collect());
         let colors: Option<Vec<[f32; 4]>> =
             reader.read_colors(0).map(|c| c.into_rgba_f32().collect());
+        // インデックスが無いプリミティブは、頂点を順に3つずつ三角形とみなす。
         let mut indices: Vec<u32> = match reader.read_indices() {
             Some(i) => i.into_u32().collect(),
             None => (0..positions.len() as u32).collect(),
         };
+        // 3で割り切れない端数(三角形にならない)は捨て、範囲外を指すものは壊れたファイルとしてエラーにする。
         indices.truncate(indices.len() / 3 * 3);
         if indices.iter().any(|&i| i as usize >= positions.len()) {
             return Err("頂点の範囲外を指すインデックスがあります".to_string());
@@ -132,8 +142,10 @@ impl Builder {
                 1.0,
             ],
         };
+        // 頂点色が無ければ白(マテリアルの基本色がそのまま出る)。
         let color_of = |i: usize| colors.as_ref().map_or([1.0; 4], |c| c[i]);
 
+        // 足す頂点数は、法線ありなら頂点数、法線なしなら三角形ごとに分けるのでインデックス数。多い方で上限を見る。
         if self.vertices.len() + indices.len().max(positions.len()) > MAX_VERTICES {
             return Err(format!("頂点数が多すぎます(上限{MAX_VERTICES})"));
         }
@@ -167,6 +179,8 @@ impl Builder {
         Ok(())
     }
 
+    /// 集めた頂点・三角形から`ModelMesh`を作る。三角形が1つも無い・大きさが0や非有限ならエラー。
+    /// 半径は機体座標の原点(モデルの基準点)から最も遠い頂点までの距離。
     fn finish(self) -> Result<ModelMesh, String> {
         if self.indices.is_empty() {
             return Err("描画できる三角形メッシュがありません".to_string());

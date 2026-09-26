@@ -15,8 +15,11 @@
 //! - **モデルの作り方**: glTF 2.0のGLB。単位はメートル、前が+Z・上が+Y(glTFの規約)。原点が基準点(航空機は重心、艦船・車両は
 //!   水線・接地面が便利)。対応する内容と制限は`gltf_import`。単位・向きが違うモデルは`ModelSource`の`scale`・`yaw_offset_deg`で直す。
 
+// GLBの読み込みと、glTFの座標系から機体座標への変換。
 mod gltf_import;
+// トラックごとに「モデルで描くか」と、描くならその変換行列を決める。
 pub(crate) mod placement;
+// GPUへ渡す頂点・インスタンスと、読み込み済みのモデル。
 pub(crate) mod types;
 
 use std::collections::HashMap;
@@ -91,6 +94,8 @@ pub struct ModelsState {
 }
 
 impl ModelsState {
+    /// 既定の設定(距離で切り替え・切替距離`DEFAULT_SWITCH_DISTANCE_M`・最小サイズ`DEFAULT_MIN_SCREEN_PX`)で、
+    /// モデルは未登録の状態で作る。
     pub fn new() -> Self {
         Self {
             mode: RwSignal::new(ModelDisplayMode::SwitchToSymbol),
