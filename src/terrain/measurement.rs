@@ -1,4 +1,9 @@
-//! WGS84楕円体上の位置関係の計算(カーニー法)。
+//! WGS84楕円体上の位置関係の計算(カーニー法)。設計書9.3.1節・9.3.2節。
+//!
+//! 地形データを読まずに使える公開API: 2点間の距離と方位(`distance_and_bearing`)、経路の区間・累積距離
+//! (`measure_route`)、一定の楕円体高を飛ぶ経路の距離(`measure_route_at_height`)。
+//! 計算は`geographiclib-rs`の測地線(厳密な楕円体の解)に任せ、ここでは入力の検証・方位の正規化・
+//! 累積の集計だけを行う(作図の形を作る`geodesy`の球面近似とは別の、精度を優先した計算)。
 
 use geographiclib_rs::{Geodesic, InverseGeodesic};
 
@@ -9,6 +14,8 @@ pub use flight::{measure_route_at_height, FlightMeasurementError};
 /// カーニー法を使う。入力は有限値、緯度は-90〜90度を前提とする。
 /// 同一点・複数の最短測地線が存在する場合の方位はGeographicLibの規約値で、一意ではない。
 pub fn distance_and_bearing(lat0: f64, lon0: f64, lat1: f64, lon1: f64) -> (f64, f64) {
+    // 逆問題の戻り値は(距離s12, 始点の方位azi1, 終点の方位azi2, 補助球上の弧長a12)。
+    // 方位は-180〜180度で返るので、0以上360未満へ寄せる。
     let (distance, bearing, _, _): (f64, f64, f64, f64) =
         Geodesic::wgs84().inverse(lat0, lon0, lat1, lon1);
     (distance, bearing.rem_euclid(360.0))
@@ -28,13 +35,16 @@ pub struct RouteSegment {
 /// 入力順に隣接する地点を結ぶ経路の測定結果。閉路にする場合は始点を末尾にも渡す。
 #[derive(Debug, Clone, PartialEq)]
 pub struct RouteMeasurement {
+    /// 区間(点i→点i+1)ごとの結果。点の数-1個(0〜1点なら空)。
     pub segments: Vec<RouteSegment>,
+    /// 全区間の長さの合計(m)。最後の区間の`cumulative_distance_m`と同じ値。
     pub total_distance_m: f64,
 }
 
 /// 経路内の不正な座標。点の番号は0始まり。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InvalidRoutePoint {
+    /// 最初に見つかった不正な点の番号。
     pub index: usize,
 }
 
@@ -78,8 +88,10 @@ fn measure(points: &[(f64, f64)]) -> Result<(RouteMeasurement, Vec<f64>), Invali
         .map(|pair| {
             let (lat0, lon0) = pair[0];
             let (lat1, lon1) = pair[1];
+            // (距離, 始点の方位, 終点の方位, 補助球上の弧長(度))。
             let (distance_m, bearing, _, arc_deg): (f64, f64, f64, f64) =
                 geodesic.inverse(lat0, lon0, lat1, lon1);
+            // 弧長が0(同一点)やπ(対蹠点)に近いと、方位は定まらないか入力のわずかな差で大きく変わる。
             let angle = arc_deg.to_radians();
             let initial_bearing_deg = (angle > 1e-7 && std::f64::consts::PI - angle > 1e-7)
                 .then_some(bearing.rem_euclid(360.0));

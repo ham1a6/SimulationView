@@ -1,5 +1,6 @@
-//! メインパネル(3D地形)への右クリックで、クリックされた画面上の位置に対応する地表の
-//! 緯度経度を求めるレイキャスト(マウスピッキング)。`components/terrain_view.rs`から使う。
+//! メインパネル(3D地形)へのクリックで、クリックされた画面上の位置に対応する地表の
+//! 緯度経度を求めるレイキャスト(マウスピッキング)。`ui::terrain_view`から使う(右クリックメニューの
+//! 位置・原点指定・作図の点の指定など)。
 //! GPU側の読み戻しは行わず、CPU側で保持している標高グリッド(`heightmap::sample_heightmap`。画面に出して
 //! いる解像度レベルで引く)に対してレイを直接マーチングする
 //! (地形メッシュの三角形と厳密に一致するわけではないが、見た目上は十分な精度)。
@@ -14,7 +15,11 @@ use super::origin::Origin;
 /// 対角線で約4,000km)の遠端まで届く値にしておく。刻み幅は約1.3kmで、従来(約2.25km)以下。
 /// 視線が最高標高より上にある間は地表の評価を省略するので、ステップ数を増やしても軽い。
 const MAX_MARCH_DISTANCE: f32 = 8_000_000.0;
+/// 等間隔に進むマーチングの段数(刻み = `MAX_MARCH_DISTANCE`/この値 ≒ 1.33km)。
+/// 刻みより細い尾根は飛び越えることがある。
 const NUM_MARCH_STEPS: usize = 6000;
+/// 地表をまたいだ区間を二分法で詰める回数(1.33km/2²⁴ ≒ 0.08mmまで詰まる。実際の精度は
+/// f32の位置の丸めで決まる)。
 const NUM_BISECT_STEPS: usize = 24;
 
 /// 画面上の点(canvas内のCSSピクセル座標)から出るレイを地形(heightmap)に対して
@@ -34,8 +39,10 @@ pub fn pick_lat_lon(
         return None;
     }
     let dir = ray_dir.normalize();
+    // カメラはメッシュの原点を基準にしたENU座標にあるので、同じ原点の変換を使う。
     let transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
 
+    // レイ上の距離tの点が、その真下(ENUの鉛直)の地表より何メートル上にあるか(負なら地下)。
     let diff_at = |t: f32| -> f32 {
         let p = ray_origin + dir * t;
         p.z - ground_at_enu(data, &transform, p.x as f64, p.y as f64).2
@@ -58,6 +65,8 @@ pub fn pick_lat_lon(
             continue;
         }
         let diff = diff_at(t);
+        // 地上→地下に変わった区間(prev_t, t]に交点がある。二分法で交点に近づける
+        // (loは常に地上、hiは常に地下(または地表)の側を保つ)。
         if diff <= 0.0 {
             let mut lo = prev_t;
             let mut hi = t;
@@ -73,6 +82,7 @@ pub fn pick_lat_lon(
             // 地表の(緯度, 経度)は丸みを考慮して厳密に求める(接平面近似だと、原点から
             // 数百km以上離れた地点で数十kmずれる)。
             let (lat, lon, _) = ground_at_enu(data, &transform, hit.x as f64, hit.y as f64);
+            // データの範囲外は標高0mの海面として交差しうるが、地形の上の点ではないので採らない。
             let b = &data.metadata.geodetic_bounds;
             if lat < b.min_lat || lat > b.max_lat || lon < b.min_lon || lon > b.max_lon {
                 return None;

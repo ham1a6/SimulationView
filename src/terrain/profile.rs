@@ -7,10 +7,15 @@ use super::geodesy::EnuTransform;
 use super::heightmap::sample_heightmap;
 use super::loader::TerrainData;
 use super::origin::Origin;
+/// 断面上の1点。
 pub struct ProfilePoint {
+    /// 中心からの水平距離(メートル)。方位角の向きが正、反対が負。
     pub distance_m: f64,
+    /// その点の標高(メートル。表示中のLODのグリッドから双線形補間。海・範囲外は0)。
     pub elevation_m: f32,
+    /// その点の緯度(度)。断面上の各点の見通し判定(`terrain::los`)などに使う。
     pub lat_deg: f64,
+    /// その点の経度(度)。
     pub lon_deg: f64,
 }
 
@@ -30,12 +35,15 @@ pub(super) fn max_valid_distance(
     dir_east: f64,
     dir_north: f64,
 ) -> f64 {
+    // 原点から`distance`進んだ点がデータの矩形内か(接平面近似で緯度経度へ戻して判定する)。
     let in_bounds = |distance: f64| -> bool {
         let (lat, lon) = transform.inverse(dir_east * distance, dir_north * distance);
         let b = &data.metadata.geodetic_bounds;
         lat >= b.min_lat && lat <= b.max_lat && lon >= b.min_lon && lon <= b.max_lon
     };
 
+    // 原点(距離0)は範囲内、上限は範囲外という区間[lo, hi]を狭めていく(矩形は凸なので、
+    // 直線上で範囲内の部分は原点からひと続き)。30回で幅は1,000km/2³⁰≒1mmになる。
     let mut lo = 0.0_f64;
     let mut hi = SEARCH_UPPER_BOUND_M;
     if in_bounds(hi) {
@@ -63,11 +71,13 @@ pub fn build_profile_span(
     back_m: f64,
     forward_m: f64,
 ) -> Vec<ProfilePoint> {
+    // 中心を原点とする変換を作り、方位角(北から時計回り)を東・北の単位ベクトルにする。
     let transform = EnuTransform::new(center, &data.metadata.ellipsoid);
     let az_rad = azimuth_deg.to_radians();
     let dir_east = az_rad.sin();
     let dir_north = az_rad.cos();
 
+    // 前方・後方それぞれ、要求の長さとデータの端の近い方までにする。
     let forward = max_valid_distance(data, &transform, dir_east, dir_north).min(forward_m.max(0.0));
     let back = if back_m > 0.0 {
         max_valid_distance(data, &transform, -dir_east, -dir_north).min(back_m)
@@ -79,6 +89,7 @@ pub fn build_profile_span(
         return Vec::new();
     }
 
+    // 後方の端から前方の端まで、両端を含めて`NUM_SAMPLES`+1点を等間隔に取る。
     (0..=NUM_SAMPLES)
         .map(|i| {
             let distance = -back + total * (i as f64) / (NUM_SAMPLES as f64);

@@ -1,4 +1,9 @@
 //! 地表の測地線を一定の楕円体高へ持ち上げた飛行経路。設計書9.3.2節。
+//!
+//! 考え方: 地表の測地線上の各点を、その点の楕円体の法線方向へ高さhだけ持ち上げた曲線の長さを求める。
+//! 高さhの曲面上では、北向き・東向きの長さの伸び率がそれぞれ(1+h/M)・(1+h/N)になる
+//! (M: 子午線曲率半径、N: 卯酉線曲率半径)。地表の線素の方位αから持ち上げた線素の長さが決まるので、
+//! それを測地線に沿って数値積分する(`lifted_length`)。
 
 use geographiclib_rs::{DirectGeodesic, Geodesic};
 
@@ -49,6 +54,8 @@ pub fn measure_route_at_height(
     if !(0.0..=1_000_000.0).contains(&height_m) {
         return Err(FlightMeasurementError::InvalidHeight);
     }
+    // まず地表の経路を測る(入力の検証も兼ねる)。高さ0ならそのまま返す(積分の丸め誤差で
+    // 地表の値とずれないように)。
     let (mut route, bearings) = measure(points).map_err(FlightMeasurementError::InvalidPoint)?;
     if height_m == 0.0 {
         return Ok(route);
@@ -59,6 +66,7 @@ pub fn measure_route_at_height(
         // Noneの方位でも距離は定義できるため、GeographicLibの規約に従う逆解の方位を使う。
         segment.distance_m =
             lifted_length(&geodesic, lat, lon, bearing, segment.distance_m, height_m);
+        // 持ち上げると北・東の伸び率が違うので、飛行経路の方位は地表の方位からわずかにずれる。
         segment.initial_bearing_deg = segment.initial_bearing_deg.map(|azimuth| {
             let (north, east) = tangent_components(&geodesic, lat, azimuth, height_m);
             east.atan2(north).to_degrees().rem_euclid(360.0)
@@ -73,6 +81,7 @@ pub fn measure_route_at_height(
 /// 地表の単位接線を高度hへ持ち上げたときの北・東成分。
 /// ds_h² = ((1+h/M) cosα)² ds² + ((1+h/N) sinα)² ds²。
 fn tangent_components(geodesic: &Geodesic, lat: f64, azimuth: f64, h: f64) -> (f64, f64) {
+    // W² = 1-e²sin²φ、卯酉線曲率半径N = a/W、子午線曲率半径M = a(1-e²)/W³ = N(1-e²)/W²。
     let f = geodesic.flattening();
     let e2 = f * (2.0 - f);
     let w2 = 1.0 - e2 * lat.to_radians().sin().powi(2);
@@ -82,6 +91,8 @@ fn tangent_components(geodesic: &Geodesic, lat: f64, azimuth: f64, h: f64) -> (f
     ((1.0 + h / m) * cos_azimuth, (1.0 + h / n) * sin_azimuth)
 }
 
+/// (`lat`, `lon`)から初期方位`bearing`(度)で長さ`distance`(m)の地表の測地線を、高さ`h`へ持ち上げた
+/// 曲線の長さ。測地線上の各点の方位と緯度から線素の伸び率(`tangent_components`の長さ)を求めて積分する。
 fn lifted_length(
     geodesic: &Geodesic,
     lat: f64,
@@ -104,9 +115,11 @@ fn lifted_length(
     let step = distance / count as f64;
     let mut length = 0.0;
     for i in 0..count {
+        // 区間[i*step, (i+1)*step]の中点を中心に、[-1, 1]のガウス点を区間の半幅で伸ばして置く。
         let midpoint = (i as f64 + 0.5) * step;
         for (node, weight) in QUADRATURE {
             let s = midpoint + node * step * 0.5;
+            // 順問題で、始点から測地線に沿って距離sの点の(緯度, 経度, その点での方位)を得る。
             let (sample_lat, _, azimuth): (f64, f64, f64) = geodesic.direct(lat, lon, bearing, s);
             let (north, east) = tangent_components(geodesic, sample_lat, azimuth, h);
             length += weight * north.hypot(east) * step * 0.5;

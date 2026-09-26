@@ -25,8 +25,11 @@ use super::vertex::DrawVertex;
 /// 地図上に配置したレーダー観測点1つ分の情報。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RadarMarker {
+    /// 観測点の識別子(1から順に振る。削除しても再利用しない)。覆域の色もこれで決まる。
     pub id: u64,
+    /// 観測点の緯度(度)。
     pub lat_deg: f64,
+    /// 観測点の経度(度)。
     pub lon_deg: f64,
     /// アンテナ高(地表からのメートル)。
     pub height_m: f64,
@@ -58,8 +61,11 @@ impl RadarMarker {
 /// 1つだけ生成して渡す(`RadarMarkersState::new()`)。
 #[derive(Clone, Copy)]
 pub struct RadarMarkersState {
+    /// 観測点の一覧(追加した順)。
     pub markers: RwSignal<Vec<RadarMarker>>,
+    /// 選択中の観測点の`id`(無ければNone)。見通し図・覆域の対象になる。
     pub selected: RwSignal<Option<u64>>,
+    /// 次に追加する観測点に振る`id`。
     next_id: RwSignal<u64>,
     /// メインパネルが2D地図モードのときに覆域表示で使う、対象の海抜高度(メートル)。
     /// 個々のレーダーのパラメータ(アンテナ高・最大観測範囲)とは別に、表示側の設定
@@ -71,6 +77,7 @@ pub struct RadarMarkersState {
 }
 
 impl RadarMarkersState {
+    /// 観測点なし・覆域の高度1,000m・選択中の覆域だけを出す状態で作る。
     pub fn new() -> Self {
         Self {
             markers: RwSignal::new(Vec::new()),
@@ -108,6 +115,7 @@ impl RadarMarkersState {
         });
     }
 
+    /// IDの観測点を削除する。選択中だった場合は選択も外す。
     pub fn remove(&self, id: u64) {
         self.markers.update(|list| list.retain(|m| m.id != id));
         if self.selected.get_untracked() == Some(id) {
@@ -122,7 +130,9 @@ impl Default for RadarMarkersState {
     }
 }
 
+/// 選択中の観測点のピンの色(黄)。
 const SELECTED_MARKER_COLOR: [f32; 4] = [1.0, 0.92, 0.25, 1.0];
+/// それ以外の観測点のピンの色(橙)。
 const MARKER_COLOR: [f32; 4] = [1.0, 0.55, 0.15, 1.0];
 /// ピンの縁取りと中の点の色。
 const MARKER_OUTLINE_COLOR: [f32; 4] = [0.08, 0.08, 0.1, 1.0];
@@ -140,6 +150,7 @@ const COVERAGE_PALETTE: [([f32; 3], [f32; 3]); 6] = [
 
 /// 観測点`id`の覆域の色: (3Dドームの色, 2D覆域の塗りの色, 2D覆域の輪郭線の色)。
 pub fn coverage_colors(marker_id: u64) -> ([f32; 3], [f32; 3], [f32; 4]) {
+    // idは1始まりなので、1番目がパレットの先頭になるよう1引いてから周回させる(0は1と同じ扱い)。
     let (dome, area) = COVERAGE_PALETTE[(marker_id.max(1) as usize - 1) % COVERAGE_PALETTE.len()];
     // 輪郭線は、塗りの色を白へ寄せた不透明色。
     let [r, g, b] = area.map(|c| 0.5 * c + 0.5);
@@ -148,9 +159,13 @@ pub fn coverage_colors(marker_id: u64) -> ([f32; 3], [f32; 3], [f32; 4]) {
 
 /// ピンの頭の円の中心の高さ(先端から、画面のpx)と半径・縁取りの太さ・中の点の半径。
 const PIN_HEAD_CENTER_PX: f32 = 26.0;
+/// ピンの頭の円の半径(px)。
 const PIN_HEAD_RADIUS_PX: f32 = 10.0;
+/// 縁取りの太さ(px)。縁取りは本体より一回り大きい同じ形を、本体の下に描いて作る。
 const PIN_OUTLINE_PX: f32 = 2.5;
+/// 頭の中の点の半径(px)。
 const PIN_DOT_RADIUS_PX: f32 = 4.0;
+/// 頭の円を近似する扇形の三角形の数。
 const PIN_HEAD_SEGMENTS: usize = 24;
 
 /// 覆域ドーム(半球状の面)の緯度リング仰角(度、0以上90未満の昇順)。0°=地表付近、値が大きいほど
@@ -191,6 +206,7 @@ const COVERAGE_OUTLINE_WIDTH_PX: f32 = 2.5;
 /// ドームのリングの方位の間引き間隔(何方位おきに頂点を置くか)。`DOME_MIN_RING_STRIDE`以上で、高い(円周が短い)リングほど
 /// 大きくして、頂点の間隔が赤道側と同じくらいになるようにする。2のべき乗で、隣のリングとは整数倍になる。
 fn ring_stride(elevation_deg: f64, num_azimuths: usize) -> usize {
+    // 仰角θのリングの円周は水平のリングのcosθ倍なので、1/cosθ倍まで間引けば頂点の間隔がそろう。
     let inverse_cos = 1.0 / elevation_deg.to_radians().cos().max(1e-6);
     let mut stride = DOME_MIN_RING_STRIDE;
     // 浮動小数点の誤差(cos(60°)が0.5より少し大きい等)で、ちょうど2倍の仰角が1段手前になるのを防ぐ。
@@ -212,6 +228,8 @@ fn stitch_rings<V: Copy>(lower: &[V], upper: &[V], mut push: impl FnMut(V, V, V)
         return;
     }
     let ratio = n_lower / n_upper;
+    // 上のリングの辺(u0→u1)1本ごとに、その真下にある下のリングの`ratio`本の辺を扇状にu0へつなぎ、
+    // 最後にu0・u1と下のリングの次の頂点で三角形を1つ張る(下の辺`ratio`本+上の辺1本ぶんの三角形)。
     for j in 0..n_upper {
         let (u0, u1) = (upper[j], upper[(j + 1) % n_upper]);
         for i in 0..ratio {
@@ -232,10 +250,12 @@ fn push_tri(out: &mut Vec<DrawVertex>, anchor: [f32; 3], color: [f32; 4], points
 /// ピンの頭の中心(先端から`PIN_HEAD_CENTER_PX`上)に、半径`radius`pxの円を扇状の三角形で積む。
 fn push_head_disc(out: &mut Vec<DrawVertex>, anchor: [f32; 3], color: [f32; 4], radius: f32) {
     let center_y = PIN_HEAD_CENTER_PX;
+    // 円周上のi番目の点(画面のpx。先端を原点とした座標)。
     let circle = |i: usize| {
         let t = std::f32::consts::TAU * i as f32 / PIN_HEAD_SEGMENTS as f32;
         [radius * t.cos(), center_y + radius * t.sin()]
     };
+    // 中心から隣り合う2点への三角形で扇状に埋める。
     for i in 0..PIN_HEAD_SEGMENTS {
         push_tri(
             out,
@@ -257,7 +277,8 @@ fn push_pin_shape(
 ) {
     let center_y = PIN_HEAD_CENTER_PX;
     push_head_disc(out, anchor, color, head_radius);
-    // 先端(0,tip_y)から頭の円へ引いた接線の接点。
+    // 先端(0,tip_y)から頭の円へ引いた接線の接点。円の中心から見て、接点は先端の方向から
+    // β = acos(半径/中心と先端の距離)だけ回った位置にある(接線と半径が直交するため)。
     let beta = (head_radius / (center_y - tip_y)).acos();
     let tangent_x = head_radius * beta.sin();
     let tangent_y = center_y - head_radius * beta.cos();
@@ -285,6 +306,7 @@ fn push_marker_pin(
     let ground_elevation = sample_heightmap(data, marker.lat_deg, marker.lon_deg) as f64;
     let anchor =
         mesh_transform.transform(marker.lat_deg, marker.lon_deg, ground_elevation + MARKER_M);
+    // 縁取り: 頭を太さぶん大きくし、先端も少し下へ伸ばした同じ形(本体の先端の下にも縁が見えるように)。
     push_pin_shape(
         out,
         anchor,
@@ -353,8 +375,9 @@ pub(crate) fn start_coverage_computation(
     )
 }
 
-/// 覆域ドーム(半球状の面、TriangleList)の頂点列を作る。複数マーカーの覆域を同時に重ねると見づらいため、
-/// 呼び出し側は選択中のマーカーについてのみ作る。`rings`は`start_dome_computation`の結果。
+/// 覆域ドーム(半球状の面、TriangleList)の頂点列を、観測点1つ分作る。呼び出し側は既定では選択中の観測点
+/// についてだけ作り、`show_all_coverage`のときは全観測点について作る(色は観測点ごと)。
+/// `rings`は`start_dome_computation`の結果。
 /// `mesh_origin`は現在GPUにアップロードされている地形メッシュの原点(頂点をこの原点基準のENU座標へ変換する)。
 ///
 /// `compute_los_dome`が仰角ごとに求めるスラントレンジ(地形に遮蔽されない方角では最大観測
@@ -375,8 +398,11 @@ pub(crate) fn dome_geometry(
     if num_azimuths < 2 || rings.len() < 2 {
         return out;
     }
+    // 2つの変換を使う: 見通し計算と同じ観測点基準の変換(方位・水平距離→緯度経度)と、
+    // 描画用のメッシュの原点基準の変換(緯度経度・高さ→画面のENU座標)。
     let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
     let local_transform = EnuTransform::new(&marker.origin(), &data.metadata.ellipsoid);
+    // アンテナの海抜高度(見通し計算の`RayContext`と同じ決め方)。ドームの中心の高さになる。
     let observer_height =
         sample_heightmap(data, marker.lat_deg, marker.lon_deg) as f64 + marker.height_m;
     let (dome_color, _, _) = coverage_colors(marker.id);
@@ -395,6 +421,8 @@ pub(crate) fn dome_geometry(
                         azimuth_deg,
                         range_m,
                     } = ring.points[az_i];
+                    // スラントレンジを水平距離(r·cosθ)と高さ(r·sinθ)に分けて、空間の位置にする
+                    // (地球の丸みによる高さの低下は、描画用の変換が緯度経度から自然に含める)。
                     let (lat, lon) =
                         polar_to_geodetic(&local_transform, azimuth_deg, range_m * el_rad.cos());
                     let absolute_height = observer_height + range_m * el_rad.sin() + DOME_M;
@@ -424,6 +452,7 @@ pub(crate) fn dome_geometry(
         observer_height + avg_range + DOME_M,
     );
     let apex = TerrainVertex::unlit(apex_pos, dome_color);
+    // 最上段リングの頂点から、約`DOME_APEX_SEGMENTS`個を等間隔に選んで傘の骨にする。
     let steps: Vec<usize> = (0..top.len())
         .step_by((top.len() / DOME_APEX_SEGMENTS).max(1))
         .collect();
@@ -433,8 +462,9 @@ pub(crate) fn dome_geometry(
     out
 }
 
-/// 選択中マーカーの、指定した海抜高度での探知可能領域(2D地図モード用)の塗り(地表面に
-/// 沿って貼り付けた半透明のSurface)と、その外周の輪郭線(不透明な太い線)の頂点列を作る。
+/// 観測点1つの、指定した海抜高度での探知可能領域(2D地図モード用)の塗り(地表面に
+/// 沿って貼り付けた半透明のSurface)と、その外周の輪郭線(不透明な太い線)の頂点列を作る
+/// (どの観測点について作るかは`dome_geometry`と同じく呼び出し側が決める)。
 /// どちらも`DrawVertex`で、深度テストなしで描く(`TerrainRenderer::update_coverage_2d`)。2Dは真上からの
 /// 正射影で地形に隠れることがないので、深度テストをすると、観測点から境界への大きな三角形が
 /// 地形の起伏に埋まって、塗りが場所によって欠けて不均一になる。
@@ -475,6 +505,7 @@ pub(crate) fn coverage_2d_geometry(
     let (_, area_color, outline_color) = coverage_colors(marker.id);
     let [r, g, b] = area_color;
     let fill = [r, g, b, COVERAGE_AREA_ALPHA];
+    // 観測点から境界の隣り合う2点への三角形(ファン)で塗る。最後の点は最初の点へつないで閉じる。
     let center = position_at(marker.lat_deg, marker.lon_deg);
     let n = boundary.len();
     for i in 0..n {

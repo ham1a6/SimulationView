@@ -1,6 +1,20 @@
 //! 見通し範囲(レーダー探知可能範囲)の計算。指定したポイント(原点)から全方位角へ
 //! 地表をサンプリングし、地形による遮蔽と地球曲率(等価地球半径)を考慮した上で、
-//! 各方位角ごとの見通し限界距離を求める。`components/los_view.rs`から使う。
+//! 各方位角ごとの見通し限界距離を求める。`ui::los_view`(極座標図)・`terrain::markers`(地図に出す
+//! 覆域ドーム・2D覆域の計算の開始)・`ui::cross_section_view`(断面図の覆域)から使う。
+//! DETAILED_DESIGN.md 6.9節・9.8節。
+//!
+//! 計算の種類:
+//! - `RangeComputation`: 方位ごとに1つの距離。地表の見通し(`RangeKind::Visible`)か、
+//!   一定高度を飛ぶ対象の探知距離(`RangeKind::AtAltitude`。2Dの覆域)。
+//! - `DomeComputation`: 仰角ごとのリングのスラントレンジ(3Dの覆域ドーム)。
+//! - `is_visible`・`min_visible_altitude`: 観測点から1地点への判定(断面図用、軽量)。
+//!
+//! 共通の考え方: 観測点からの水平距離dの地点の「見かけの仰角」を
+//! `(標高 - d²/(2·R_eff) - 観測点の海抜高度) / d`(仰角の正接の近似)で表す。電波の曲がりは
+//! 等価地球半径R_effで地球の丸みに含め、以後は直線として扱う。水平の位置は、観測点を原点とする
+//! 接平面近似(`EnuTransform::inverse`)で緯度経度に戻して標高を引く。
+//! 標高は`sample_heightmap`(表示中のLODのグリッド)から引くので、結果は画面の地形と一致する。
 
 use super::geodesy::EnuTransform;
 use super::heightmap::sample_heightmap;
@@ -51,6 +65,7 @@ fn to_points(ranges: Vec<f64>, azimuth_step: usize) -> Vec<LosPoint> {
 /// 観測点から対象地点(緯度経度)までの水平距離と、東向き・北向きの単位ベクトル
 /// (距離が1m未満なら向きは(0, 0)。呼び出し側は先に距離で場合分けする)。
 fn transform_to_target(transform: &EnuTransform, lat_deg: f64, lon_deg: f64) -> (f64, f64, f64) {
+    // 対象の楕円体面上の点をENUにして、その水平成分(東, 北)を水平距離・向きとみなす。
     let pos = transform.transform(lat_deg, lon_deg, 0.0);
     let (east, north) = (pos[0] as f64, pos[1] as f64);
     let distance = east.hypot(north);
@@ -70,6 +85,7 @@ struct RayContext {
 }
 
 impl RayContext {
+    /// `origin`の地表の標高(表示中のLOD)にアンテナ高を足して、観測点の高さを決める。
     fn new(data: &TerrainData, origin: &Origin, antenna_height_m: f64) -> Self {
         let ground = sample_heightmap(data, origin.lat_deg, origin.lon_deg) as f64;
         Self {
@@ -84,6 +100,7 @@ impl RayContext {
     }
 
     /// (東, 北)向きに水平距離`d`だけ進んだ地表点の見かけの仰角。
+    /// 位置は観測点の接平面近似(`EnuTransform::inverse`)で緯度経度に戻す(観測点から離れるほど近似の誤差は増える)。
     fn angle_at(&self, data: &TerrainData, dir_east: f64, dir_north: f64, d: f64) -> f64 {
         let (lat, lon) = self.transform.inverse(dir_east * d, dir_north * d);
         self.angle_of(sample_heightmap(data, lat, lon) as f64, d)
@@ -95,11 +112,14 @@ struct TargetRay {
     ctx: RayContext,
     /// 対象地点までの水平距離(メートル)。
     distance: f64,
+    /// 対象地点への向きの東成分(単位ベクトル。距離1m未満なら0)。
     dir_east: f64,
+    /// 対象地点への向きの北成分。
     dir_north: f64,
 }
 
 impl TargetRay {
+    /// `radar`(アンテナ高`antenna_height_m`)から対象地点へのレイを用意する。
     fn new(
         data: &TerrainData,
         radar: &Origin,
@@ -184,15 +204,20 @@ pub enum RangeKind {
 /// `azimuth_step`(mil)を大きくすると、方位を間引いて計算量がその分だけ減る(出力の点数は`6400 / azimuth_step`)。
 pub struct RangeComputation {
     ctx: RayContext,
+    /// 最大観測範囲(水平距離、メートル)。
     max_range_m: f64,
     kind: RangeKind,
+    /// 方位角の刻み(mil)。`NUM_AZIMUTHS`を割り切る値。
     azimuth_step: usize,
     /// 方位(0〜`azimuth_count`-1)ごとの距離。計算済みの分だけ埋まっている。
     ranges: Vec<f64>,
+    /// 計算済みの方位の数(次に計算する方位の番号)。
     done: usize,
 }
 
 impl RangeComputation {
+    /// 計算を用意する(まだ1方位も計算しない)。観測点の高さはこの時点の地形で決める。
+    /// `azimuth_step`が`NUM_AZIMUTHS`を割り切らなければパニックする。
     pub fn new(
         data: &TerrainData,
         origin: &Origin,
@@ -226,12 +251,14 @@ impl RangeComputation {
         let ctx = &self.ctx;
         let (dir_east, dir_north) = azimuth_direction(az_i);
 
+        // 地形データの外は標高が分からないので、データの端か最大観測範囲の近い方までを調べる。
         let data_max = max_valid_distance(data, &ctx.transform, dir_east, dir_north);
         let ray_max = data_max.min(self.max_range_m);
         if ray_max <= 0.0 {
             return 0.0;
         }
 
+        // 観測点から外へ向かって等間隔に標高を引き、手前の地形の最大仰角(マスク角)を更新していく。
         let mut max_angle = f64::NEG_INFINITY;
         let mut visible_range = 0.0_f64;
         for i in 1..=SAMPLES_PER_RAY {
@@ -239,15 +266,21 @@ impl RangeComputation {
             let angle = ctx.angle_at(data, dir_east, dir_north, d);
             match self.kind {
                 RangeKind::Visible => {
+                    // マスク角以上の地表点は見える(同じ角度も見える扱い)。見える点のうち最も遠いものを残す
+                    // (尾根の陰の先で地形が高くなれば、また見える)。
                     if angle >= max_angle {
                         max_angle = angle;
                         visible_range = d;
                     }
                 }
                 RangeKind::AtAltitude(target_altitude_m) => {
+                    // この距離までの地形のマスク角(この距離の地表点も含む)を求めてから、
+                    // 同じ距離を飛ぶ対象の仰角と比べる。
                     if angle > max_angle {
                         max_angle = angle;
                     }
+                    // 一定高度の対象の必要仰角は距離とともにほぼ単調に下がり、マスク角は下がらないので、
+                    // 一度遮られたらその先も遮られる。最初に遮られたところで打ち切る。
                     if ctx.angle_of(target_altitude_m, d) >= max_angle {
                         visible_range = d;
                     } else {
@@ -362,7 +395,7 @@ pub fn min_visible_altitude(
 }
 
 /// 指定した1つの海抜高度(絶対標高、メートル)を飛ぶ対象について、全方位角の
-/// 探知可能距離(水平距離)を計算する。2D地図モード(`components/terrain_view.rs`)での
+/// 探知可能距離(水平距離)を計算する。2D地図モード(`ui::terrain_view`)での
 /// 覆域表示に使う。`compute_los_dome`が「仰角一定の直線」を仰角ごとに走査するのに対し、
 /// ここでは「高度一定の直線」を対象の高度について走査する(observer-target間の仰角の必要値は
 /// 地球曲率の効果で距離とともにほぼ単調に下がるため、`compute_los_dome`と同じ
@@ -389,6 +422,7 @@ pub fn compute_coverage_area(
 /// 見通し限界スラントレンジ。
 #[derive(Debug, Clone)]
 pub struct DomeRing {
+    /// このリングの仰角(度。0が水平)。
     pub elevation_deg: f64,
     /// 各点の`range_m`は、この仰角における観測点からのスラントレンジ(直線距離)。
     pub points: Vec<LosPoint>,
@@ -398,17 +432,25 @@ pub struct DomeRing {
 /// (`compute_los_dome`)を、少しずつ進められる形にしたもの。使い方・`azimuth_step`は`RangeComputation`と同じ。
 pub struct DomeComputation {
     ctx: RayContext,
+    /// 最大観測範囲(スラントレンジ=観測点からの直線距離、メートル)。
     max_range_m: f64,
+    /// リングの仰角(度、昇順)。
     elevation_degs: Vec<f64>,
+    /// リングの仰角の正接。見かけの仰角(正接の近似)と直接比べる、遮蔽の閾値。
     ring_tans: Vec<f64>,
+    /// リングの仰角の余弦。スラントレンジと水平距離の換算に使う。
     ring_cos: Vec<f64>,
+    /// 方位角の刻み(mil)。
     azimuth_step: usize,
     /// リングごと・方位ごとのスラントレンジ。計算済みの方位の分だけ埋まっている。
     ring_slant_ranges: Vec<Vec<f64>>,
+    /// 計算済みの方位の数。
     done: usize,
 }
 
 impl DomeComputation {
+    /// 計算を用意する。`elevation_degs`は0以上90未満の昇順(デバッグビルドでは検査する)。
+    /// `azimuth_step`が`NUM_AZIMUTHS`を割り切らなければパニックする。
     pub fn new(
         data: &TerrainData,
         origin: &Origin,
@@ -458,6 +500,8 @@ impl DomeComputation {
 
     /// 1方位(出力の番号`j`)について、全リングのスラントレンジを求めて`ring_slant_ranges`へ書く。
     fn trace(&mut self, data: &TerrainData, j: usize) {
+        // クロージャ`finalize`が`ring_slant_ranges`を書き換えつつ他のフィールドを読むので、
+        // フィールドごとに別々に借用できるよう分解しておく。
         let Self {
             ctx,
             max_range_m,
@@ -474,6 +518,7 @@ impl DomeComputation {
         // 仰角が大きいほど、同じスラントレンジ上限に対応する水平距離の上限は小さくなる
         // (horizontal = スラントレンジ * cos(仰角))。
         let horizontal_cap = |k: usize| data_max.min(*max_range_m * ring_cos[k]);
+        // 全リングで共通のサンプル位置を使うため、最も遠くまで調べるリング(=水平に近いリング)の上限で刻む。
         let ray_max = (0..num_rings).map(horizontal_cap).fold(0.0_f64, f64::max);
         if ray_max <= 0.0 {
             return;
@@ -495,6 +540,8 @@ impl DomeComputation {
             } else {
                 sample_distance(reach)
             };
+            // 水平距離をスラントレンジ(=水平距離/cos仰角)にして書く。仰角が90°近くで
+            // cosが0に近いときは割らない(`new`が90°未満に限っているので実際には起きない)。
             if d > 0.0 {
                 ring_slant_ranges[k][j] = if ring_cos[k] > 1e-6 {
                     d / ring_cos[k]
@@ -522,6 +569,7 @@ impl DomeComputation {
                 }
             }
         }
+        // 最後まで遮蔽されなかったリングは、上限まで届いたものとして確定する。
         for k in first_alive..num_rings {
             finalize(k, SAMPLES_PER_RAY);
         }
