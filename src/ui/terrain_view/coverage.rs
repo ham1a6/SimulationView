@@ -9,7 +9,9 @@
 //!   (`terrain_signature`)。範囲の外のチャンクが切り替わっても計算し直さない。
 //! - 計算は**小分けにして非同期**で進める(`ui::util::run_in_slices`)。進行中に新しい要求が来たら、古い計算は捨てる。
 //!   地形のレベルの切り替えは、続けて何度も起きるので、少し待ってから始める(`TERRAIN_DEBOUNCE_MS`)。
-//! - 計算が終わるまでは、前の覆域をそのまま出す(地形だけが変わったとき)か、消す(観測点・モード・高度が変わったとき)。
+//! - 計算が終わるまでは、**前の覆域をそのまま出す**(観測点の移動・パラメータ変更・地形変化のどれでも、
+//!   新しい結果ができるまで消さない。航跡追従の観測点(6.9節)は位置が動き続けるため、消してしまうと
+//!   再計算のたびに覆域がちらつく)。
 //!
 //! **複数の覆域を同時に出せる**(`RadarMarkersState::show_all_coverage`)。キャッシュ・計算・ジオメトリは
 //! 観測点ごと(`MarkerCoverage`)に持ち、GPUには、表示する観測点のジオメトリをつないで1つのバッファとして載せる
@@ -60,15 +62,6 @@ struct CoverageKey {
     altitude_bits: u64,
     /// 観測点の範囲の地形(`terrain_signature`)。
     terrain: u64,
-}
-
-impl CoverageKey {
-    /// 地形以外(観測点・モード・高度)が同じか。地形だけが違うなら、計算し直している間も前の覆域を出す。
-    fn same_request(&self, other: &Self) -> bool {
-        self.marker == other.marker
-            && self.mode == other.mode
-            && self.altitude_bits == other.altitude_bits
-    }
 }
 
 /// 観測点1つぶんの、最後に計算し終えた覆域。
@@ -310,15 +303,8 @@ pub(super) fn refresh_coverage(state: &Rc<RefCell<ViewState>>, terrain_changed: 
         if entry.pending.as_ref() == Some(&key) {
             continue;
         }
-        // 新しい計算を始める。地形以外(観測点・モード・高度)が変わったなら、前の覆域は正しくないので出さない。
-        // 地形だけが変わったなら、計算が終わるまで前の覆域を出しておく(ちらつかない)。
-        if entry
-            .built
-            .as_ref()
-            .is_some_and(|b| !b.key.same_request(&key))
-        {
-            entry.built = None;
-        }
+        // 新しい計算を始める。`entry.built`(前回の覆域)はここでは消さず、新しい結果ができるまでそのまま出し続ける
+        // (観測点の移動・パラメータ変更・地形変化のどれでも、計算中に一瞬消えてちらつくのを防ぐ)。
         entry.generation += 1;
         entry.pending = Some(key.clone());
         jobs.push((key, entry.generation));

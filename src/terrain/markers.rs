@@ -396,7 +396,9 @@ fn polar_to_geodetic(local: &EnuTransform, azimuth_deg: f64, horizontal_m: f64) 
     local.inverse(horizontal_m * az_rad.sin(), horizontal_m * az_rad.cos())
 }
 
-/// マーカー一覧 + 選択状態から、マーカー(ピン)の頂点列を作る。
+/// マーカー一覧 + 選択状態から、マーカー(ピン)の頂点列を作る。**航跡追従の観測点(`attached_track`が`Some`)は
+/// ピンを出さない**(航跡自体のシンボルがすでに位置を示しており、ピンは`TRACK_COVERAGE_REPOSITION_M`ごとにしか
+/// 動かないので、航跡のシンボルと二重に、しかもずれて表示されてしまうため)。
 /// `mesh_origin`は現在GPUにアップロードされている地形メッシュの原点(マーカー自体の
 /// 緯度経度とは無関係。マーカー位置をこの原点基準のENU座標へ変換するために使う)。
 pub(crate) fn build_marker_geometry(
@@ -407,7 +409,7 @@ pub(crate) fn build_marker_geometry(
 ) -> Vec<DrawVertex> {
     let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
     let mut out = Vec::new();
-    for marker in markers {
+    for marker in markers.iter().filter(|m| m.attached_track.is_none()) {
         let is_selected = selected == Some(marker.id);
         let color = if is_selected {
             SELECTED_MARKER_COLOR
@@ -620,6 +622,33 @@ mod tests {
             },
             trail: Vec::new(),
         }
+    }
+
+    #[test]
+    fn build_marker_geometry_skips_pins_for_track_attached_markers() {
+        let data = TerrainData::synthetic(30, 120, 3, 3, |_, _| 0);
+        let mesh_origin = Origin {
+            lat_deg: 31.5,
+            lon_deg: 121.5,
+        };
+        let fixed = RadarMarker {
+            id: 1,
+            lat_deg: 31.5,
+            lon_deg: 121.5,
+            height_m: 10.0,
+            max_range_m: 30_000.0,
+            attached_track: None,
+        };
+        let attached = RadarMarker {
+            attached_track: Some(7),
+            ..fixed
+        };
+        // 固定観測点だけならピンが出る。
+        let fixed_only = build_marker_geometry(&data, &mesh_origin, &[fixed], None);
+        assert!(!fixed_only.is_empty());
+        // 航跡追従の観測点だけならピンは出ない(航跡のシンボル自体が位置を示すため)。
+        let attached_only = build_marker_geometry(&data, &mesh_origin, &[attached], None);
+        assert!(attached_only.is_empty());
     }
 
     #[test]
