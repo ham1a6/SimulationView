@@ -22,7 +22,9 @@ pub(super) fn position_bounds(vertices: &[TerrainVertex]) -> ([f32; 3], [f32; 3]
 pub(super) fn is_outside_frustum(view_proj: &glam::Mat4, bounds: ([f32; 3], [f32; 3])) -> bool {
     let (min, max) = bounds;
     // 6面それぞれについて「全部の角が外側」を表すビットを、角ごとのビットとの論理積で求める。
+    // ビット0〜5 = 左・右・下・上・手前(z<0。反転Zなのでfar側)・奥(z>w。near側)の外。
     let mut all_outside = 0b11_1111u8;
+    // cornerの3ビットで、各軸の最小/最大を選んで8つの角を作る。
     for corner in 0..8 {
         let p = glam::Vec4::new(
             if corner & 1 == 0 { min[0] } else { max[0] },
@@ -39,6 +41,7 @@ pub(super) fn is_outside_frustum(view_proj: &glam::Mat4, bounds: ([f32; 3], [f32
         outside |= ((c.z < 0.0) as u8) << 4;
         outside |= ((c.z > c.w) as u8) << 5;
         all_outside &= outside;
+        // どの面についても「全部の角が外側」でなくなったら、残りの角を見るまでもなく外ではない。
         if all_outside == 0 {
             return false;
         }

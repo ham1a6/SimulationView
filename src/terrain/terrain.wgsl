@@ -1,4 +1,14 @@
+// 地形まわりの描画シェーダー(パイプラインは`renderer/pipelines.rs`・`renderer/targets.rs`)。
+// エントリポイント:
+// - vs_main / fs_main: 地形メッシュ(頂点色×陰影)。
+// - vs_fade / fs_fade: 解像度レベルを切り替え中の地形メッシュ(ディザでクロスフェード)。
+// - vs_main / fs_dome: 覆域ドーム(固定の不透明度の半透明)。
+// - vs_fullscreen / fs_water: 水域レイヤー(画素ごとに視線と楕円体の交点を求める)。
+// - vs_fullscreen / fs_downsample: スーパーサンプリングの縮小。
+// 座標はすべてENU(東, 北, 上。メートル)で、深度は反転Z(近いほど1)。
+
 struct CameraUniform {
+    // ENU座標→クリップ座標。
     view_proj: mat4x4<f32>,
     // x: 陰影(ヒルシェード)を付けるなら1、付けないなら0。y,z,wは未使用。
     shading: vec4<f32>,
@@ -17,7 +27,9 @@ struct CameraUniform {
 var<uniform> camera: CameraUniform;
 
 struct VertexInput {
+    // ENU座標(メッシュの原点基準)。
     @location(0) position: vec3<f32>,
+    // 頂点色(地形は標高の配色、ドームは覆域の色)。
     @location(1) color: vec3<f32>,
     // 単位法線のx(East)・y(North)成分(snorm16x2)。z(Up)は復元する。長さが1を超える値は
     // 「陰影を付けない」印(`TerrainVertex::UNLIT_NORMAL`。マーカー・覆域ドームなど)。
@@ -39,11 +51,14 @@ const AMBIENT = 0.35;
 // 明るく、反対側の斜面は暗くなる。
 fn hillshade(normal_xy: vec2<f32>) -> f32 {
     let xy2 = dot(normal_xy, normal_xy);
+    // 長さが1を超えるxyは単位法線ではありえない = 「陰影を付けない」印。
     if (xy2 > 1.0) {
         return 1.0;
     }
+    // 地表の法線は上向きなので、zは正の平方根で復元できる。
     let normal = vec3<f32>(normal_xy, sqrt(1.0 - xy2));
     let lambert = max(dot(normal, LIGHT_DIR), 0.0);
+    // 平地(法線が真上)の明るさで割り、平地で1になるように正規化する(標高の配色が陰影で暗くならない)。
     let flat_level = AMBIENT + (1.0 - AMBIENT) * LIGHT_DIR.z;
     return (AMBIENT + (1.0 - AMBIENT) * lambert) / flat_level;
 }
@@ -74,6 +89,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 // メッシュごとの値は、`instance_index`で引く表(`fades`)に入れる(頂点バッファ・bind groupを
 // メッシュごとに増やさない。描画側が`first_instance`に表の番号を渡す)。
 // x: 表示する画素の割合(0〜1)、y: 1なら、表示する画素を反転する(x=新しい側の割合に対する、古い側)。
+// 要素数は`renderer/fade.rs`の`MAX_FADE_ENTRIES`と同じにする。
 struct FadeTable {
     entries: array<vec4<f32>, 2048>,
 };
@@ -83,6 +99,7 @@ var<uniform> fades: FadeTable;
 struct FadeVertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) color: vec3<f32>,
+    // 表の値(x: 割合、y: 反転)。メッシュ内で一定なので補間しない。
     @location(1) @interpolate(flat) fade: vec2<f32>,
 };
 
@@ -146,12 +163,16 @@ struct WaterOutput {
 
 @fragment
 fn fs_water(in: DownsampleOutput) -> WaterOutput {
+    // この画素の視線(`Camera::screen_to_ray`と同じ式)。uv(左上0〜右下1)を正規化デバイス座標にし、
+    // 透視投影なら原点=視点・向き=前+ずれ、正射影なら原点=視点+ずれ・向き=前(perspectiveで切り替える)。
     let ndc = vec2<f32>(in.uv.x * 2.0 - 1.0, 1.0 - in.uv.y * 2.0);
     let offset = camera.right.xyz * ndc.x + camera.up.xyz * ndc.y;
     let perspective = camera.eye.w;
     let origin = camera.eye.xyz + offset * (1.0 - perspective);
     let dir = camera.forward.xyz + offset * perspective;
 
+    // 楕円体を原点中心の単位球へ写す変換は p → M·p + g。その線形部分を視線の原点と向きに掛けておく
+    // (q0 = M·origin、w = M·dir。gの項は下の係数に含める)。
     let m0 = camera.ellipsoid_m[0].xyz;
     let m1 = camera.ellipsoid_m[1].xyz;
     let m2 = camera.ellipsoid_m[2].xyz;
@@ -179,6 +200,7 @@ fn fs_water(in: DownsampleOutput) -> WaterOutput {
     }
 
     // 交点から視線に沿って奥へ`WATER_DEPTH_MARGIN_M`ずらした点の深度(反転Z: 0=遠い、1=近い)。
+    // (dirは単位ベクトルとは限らないので、メートルをtへ換算するときに長さで割る。)
     let hit = origin + dir * (t_near + WATER_DEPTH_MARGIN_M / length(dir));
     let clip = camera.view_proj * vec4<f32>(hit, 1.0);
     var out: WaterOutput;
@@ -187,7 +209,7 @@ fn fs_water(in: DownsampleOutput) -> WaterOutput {
     return out;
 }
 
-// スーパーサンプリングのダウンサンプル用(renderer.rsのdownsample_pipeline)。地形メッシュを
+// スーパーサンプリングのダウンサンプル用(renderer/targets.rsの`Downsample`)。地形メッシュを
 // 内部解像度(画面の`SUPERSAMPLE_FACTOR`倍、4倍MSAA込み)で描いた後、このシェーダーで画面
 // いっぱいの三角形を1枚描いて線形フィルタでサンプリングし、実際のcanvas解像度へ縮小する。
 // 4倍MSAAだけでは、2048×2048化後の遠景・浅い角度で細かい陸地の三角形による
@@ -198,12 +220,14 @@ fn fs_water(in: DownsampleOutput) -> WaterOutput {
 // 自動的に切り捨てる)を使っている。
 struct DownsampleOutput {
     @builtin(position) clip_position: vec4<f32>,
+    // 画面のuv(左上0,0〜右下1,1)。水域レイヤーでは画素の視線を求めるのにも使う。
     @location(0) uv: vec2<f32>,
 };
 
 @vertex
 fn vs_fullscreen(@builtin(vertex_index) vertex_index: u32) -> DownsampleOutput {
     var out: DownsampleOutput;
+    // vertex_index 0,1,2 → (x,y) = (0,0), (2,0), (0,2)。uvで[0,2]の直角三角形は画面[0,1]²を覆う。
     let x = f32((vertex_index << 1u) & 2u);
     let y = f32(vertex_index & 2u);
     out.clip_position = vec4<f32>(x * 2.0 - 1.0, 1.0 - y * 2.0, 0.0, 1.0);
@@ -211,6 +235,7 @@ fn vs_fullscreen(@builtin(vertex_index) vertex_index: u32) -> DownsampleOutput {
     return out;
 }
 
+// 縮小パスのbind group(地形のパスとは別のパイプラインなので、同じgroup 0でも中身が違う)。
 @group(0) @binding(0)
 var supersample_texture: texture_2d<f32>;
 @group(0) @binding(1)

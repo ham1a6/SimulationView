@@ -24,22 +24,29 @@ const MIN_INSTANCE_CAPACITY: usize = 16;
 
 /// モデル1つ分のGPUバッファ。
 struct ModelGpu {
+    /// `ModelVertex`の並び。
     vertex_buffer: wgpu::Buffer,
+    /// 三角形の頂点番号(u32)。
     index_buffer: wgpu::Buffer,
+    /// インデックスの数。
     num_indices: u32,
     /// インスタンスのバッファ(容量は`capacity`個。足りなくなったら大きく作り直す)。
     instance_buffer: Option<wgpu::Buffer>,
+    /// `instance_buffer`に入るインスタンスの数(0ならバッファ未作成)。
     capacity: usize,
     /// このフレームに描くインスタンスの数。
     count: u32,
 }
 
+/// 登録済みの全モデルと、その描画パイプライン。
 pub(super) struct ModelBatch {
     pipeline: wgpu::RenderPipeline,
+    /// モデルのキー(URL)→GPUバッファ。
     models: HashMap<String, ModelGpu>,
 }
 
 impl ModelBatch {
+    /// パイプラインを作る(モデルは空)。uniformは作図の絶対座標用と同じレイアウトを使う。
     pub(super) fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
@@ -109,6 +116,7 @@ impl ModelBatch {
         );
     }
 
+    /// モデルの登録を外す(GPUバッファは解放される)。
     pub(super) fn remove_model(&mut self, key: &str) {
         self.models.remove(key);
     }
@@ -126,6 +134,7 @@ impl ModelBatch {
             if list.is_empty() {
                 continue;
             }
+            // 容量が足りなければ、2のべき乗(最小`MIN_INSTANCE_CAPACITY`)に切り上げて作り直す。
             if list.len() > model.capacity {
                 model.capacity = list.len().next_power_of_two().max(MIN_INSTANCE_CAPACITY);
                 model.instance_buffer = Some(device.create_buffer(&wgpu::BufferDescriptor {
@@ -147,6 +156,7 @@ impl ModelBatch {
         self.models.values().all(|m| m.count == 0)
     }
 
+    /// インスタンスのあるモデルを、モデルごとに1回のインスタンス描画で描く。
     /// `space`は作図の絶対座標のuniform(`DrawUniform`)。
     pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, space: &UniformSlot) {
         if self.is_empty() {

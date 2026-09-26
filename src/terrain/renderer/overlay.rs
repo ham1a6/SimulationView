@@ -7,11 +7,14 @@ use crate::terrain::vertex::DrawVertex;
 pub(super) struct VertexBatch {
     /// GPUバッファのラベル。
     label: &'static str,
+    /// 頂点バッファ(容量は頂点データ以上。頂点が無ければNone)。
     buffer: Option<wgpu::Buffer>,
+    /// 描く頂点数(バッファの容量ではなく、最後に`set`した頂点の数)。
     count: u32,
 }
 
 impl VertexBatch {
+    /// 空のバッチ(バッファはまだ作らない)。
     pub(super) fn new(label: &'static str) -> Self {
         Self {
             label,
@@ -20,6 +23,8 @@ impl VertexBatch {
         }
     }
 
+    /// 頂点を差し替える。今のバッファに収まればそのまま書き込み、足りなければ2のべき乗に切り上げた
+    /// 大きさで作り直す(空なら解放する)。
     pub(super) fn set(
         &mut self,
         device: &wgpu::Device,
@@ -54,10 +59,12 @@ impl VertexBatch {
         self.count = vertices.len() as u32;
     }
 
+    /// 描くものが無いか。
     pub(super) fn is_empty(&self) -> bool {
         self.buffer.is_none()
     }
 
+    /// `pipeline`で頂点を描く(空なら何もしない)。
     /// `space`は作図の座標の種類ごとのuniform(`DrawUniform`)。
     pub(super) fn draw(
         &self,

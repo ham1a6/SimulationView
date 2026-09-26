@@ -7,12 +7,19 @@
 //! 描画先のテクスチャと縮小は`targets`、パイプラインの生成は`pipelines`、作図等の頂点バッチは`overlay`、
 //! 視錐台カリングは`frustum`。
 
+// 解像度レベルを切り替えるときのクロスフェードの状態と割合。
 mod fade;
+// メッシュを囲む直方体と、視錐台の外かの判定。
 mod frustum;
+// 3Dモデルのバッファとインスタンス描画。
 mod model_batch;
+// 作図・マーカー・航跡などの頂点列1つ分のバッファ(`VertexBatch`)。
 mod overlay;
+// シェーダーモジュールと各描画パイプラインの生成。
 mod pipelines;
+// スーパーサンプリング・MSAA・深度のテクスチャと、canvas解像度への縮小。
 mod targets;
+// uniformの構造体と、頂点属性の並び。
 mod uniforms;
 
 use std::collections::HashMap;
@@ -40,8 +47,11 @@ use super::vertex::DrawVertex;
 /// 地形メッシュ1個分のGPUバッファ(タイル全体、またはチャンク1個)。メッシュごとに頂点・
 /// インデックスを別々に持ち、解像度レベルの切り替え(`set_mesh`)を1個ずつ行えるようにしてある。
 struct MeshGpu {
+    /// `TerrainVertex`の並び(原点変更時に書き換えるのでCOPY_DSTつき)。
     vertex_buffer: wgpu::Buffer,
+    /// 三角形の頂点番号(u32)。
     index_buffer: wgpu::Buffer,
+    /// インデックスの数(三角形の数×3)。
     num_indices: u32,
     /// 頂点位置を囲む直方体(最小の角, 最大の角。ENU座標)。視錐台の外のメッシュを描かないために使う
     /// (`is_outside_frustum`)。原点変更で頂点位置が変わる(`update_mesh_vertices`)ので更新する。
@@ -59,7 +69,9 @@ impl MeshGpu {
 
 /// このフレームでクロスフェードするメッシュ1個(`fade_draws`)。`entry`は割合の表の値(`terrain.wgsl`の`FadeTable`)。
 struct FadeDraw<'a> {
+    /// 描くメッシュ(新しい側は`meshes`の中、古い側は`fades`の中にある)。
     mesh: &'a MeshGpu,
+    /// x: 割合(0〜1)、y: 0なら新しい側・1なら古い側(割合を反転して使う)。
     entry: [f32; 4],
 }
 
@@ -68,15 +80,22 @@ fn now_ms() -> f64 {
     js_sys::Date::now()
 }
 
+/// 地図1枚(canvas 1つ)のレンダラー。地形メッシュ・作図・マーカー・航跡・3Dモデルなど、描くものの
+/// GPUバッファを持ち、`render`で1フレームを描く。`ui::terrain_view`がcanvasごとに1つ作る。
 pub struct TerrainRenderer {
+    /// canvasのsurface(描画結果を表示する先)。
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
+    /// surfaceの設定(形式・大きさ・垂直同期)。`resize`で大きさを更新する。
     config: wgpu::SurfaceConfiguration,
+    /// 描画パイプラインとbind groupのレイアウト。
     pipelines: Pipelines,
+    /// 表示中の地形メッシュ(タイル全体またはチャンク)。
     meshes: HashMap<MeshKey, MeshGpu>,
     /// 解像度レベルの切り替え中のメッシュ(クロスフェード。`fade`)と、その割合の表(`terrain.wgsl`の`FadeTable`)。
     fades: Fades<MeshGpu>,
+    /// クロスフェードの割合の表を入れるuniform。
     fade_table: UniformSlot,
     /// 地形・水域・ドームのカメラ(`CameraUniform`)。
     camera: UniformSlot,
@@ -95,6 +114,7 @@ pub struct TerrainRenderer {
     // 見通し範囲の覆域ドーム(半球状の面、TriangleList)用。地形・マーカーの奥に透けて見える
     // よう、アルファブレンド有効・深度書き込み無効のパイプラインにしてある(fs_dome参照)。
     dome_vertex_buffer: Option<wgpu::Buffer>,
+    // 覆域ドームの頂点数(三角形リストなので3の倍数)。
     num_dome_vertices: u32,
     // 陰影(ヒルシェード)を付けるか(`set_hillshade`)。描画のたびにuniformへ書く。
     hillshade: bool,
@@ -152,6 +172,7 @@ async fn init_surface(
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let surface = create_canvas_surface(&instance, canvas)?;
 
+    // このcanvasへ出力できるGPUを選ぶ(複数あれば高性能側を優先)。
     let adapter = instance
         .request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
@@ -176,12 +197,15 @@ async fn init_surface(
         config.format = srgb;
     }
     config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+    // Fifo = 垂直同期(ディスプレイの更新に合わせて表示する。すべての環境で使える)。
     config.present_mode = wgpu::PresentMode::Fifo;
     surface.configure(&device, &config);
     Ok((surface, device, queue, config))
 }
 
 impl TerrainRenderer {
+    /// canvasにレンダラーを作る(GPUの取得・パイプラインの生成)。描くものは空で始まる。
+    /// canvasの`width`・`height`(内部解像度)が描画の大きさになる。WebGPUが使えない等で失敗したら`Err`。
     pub async fn new(canvas: web_sys::HtmlCanvasElement) -> Result<Self, String> {
         let (surface, device, queue, config) = init_surface(canvas).await?;
         let (width, height) = (config.width, config.height);
@@ -209,12 +233,14 @@ impl TerrainRenderer {
         );
 
         let pipelines = Pipelines::new(&device, config.format, &shader, &camera_bind_group_layout);
+        // クロスフェードの割合の表は、同時に切り替えられる最大数ぶんの大きさで作っておく。
         let fade_table = UniformSlot::new(
             &device,
             &pipelines.fade_bind_group_layout,
             "fade_table",
             MAX_FADE_ENTRIES * std::mem::size_of::<[f32; 4]>(),
         );
+        // 作図の座標の種類(絶対座標・視点空間・画面)ごとに、同じ形のuniformを1つずつ用意する。
         let draw_space = |label| {
             UniformSlot::new(
                 &device,
@@ -431,6 +457,7 @@ impl TerrainRenderer {
         }
     }
 
+    /// canvasの内部解像度が変わったときに呼ぶ(surfaceと内部の描画先テクスチャを作り直す)。
     pub fn resize(&mut self, width: u32, height: u32) {
         // 大きさが変わっていなければ何もしない(ResizeObserverやタブの再表示で同じ大きさが何度も
         // 通知されるが、そのたびにsurfaceの再設定と大きなテクスチャ3枚の作り直しをするのは無駄)。
@@ -447,6 +474,7 @@ impl TerrainRenderer {
             .rebind(&self.device, &self.targets.supersample_color_view);
     }
 
+    /// 描画先の横÷縦(カメラの射影に渡す)。
     pub fn aspect_ratio(&self) -> f32 {
         self.config.width as f32 / self.config.height.max(1) as f32
     }
@@ -464,9 +492,12 @@ impl TerrainRenderer {
         self.fades.clear();
     }
 
+    /// 1フレームを描いてcanvasへ出す。surfaceが一時的に使えないフレームは何もせず`Ok`を返す。
     pub fn render(&mut self, camera: &Camera) -> Result<(), String> {
         let now = now_ms();
+        // 時間の過ぎたクロスフェードを終わらせる(古いメッシュを捨てる)。
         self.fades.finish(now);
+        // 地形・水域のuniform: 射影、陰影のON/OFF(shading.x)、水域の視線の基底と楕円体の係数。
         let [eye, forward, right, up] = camera.water_ray_basis();
         let (ellipsoid_m, ellipsoid_g) = self.ellipsoid;
         let camera_uniform = CameraUniform {
@@ -534,6 +565,7 @@ impl TerrainRenderer {
                 label: Some("terrain_encoder"),
             });
 
+        // クロスフェードするメッシュを決め、その割合を表へ書く(表の番号=描く順番)。
         let fade_draws = self.fade_draws(camera, now);
         let entries: Vec<[f32; 4]> = fade_draws.iter().map(|d| d.entry).collect();
         if !entries.is_empty() {

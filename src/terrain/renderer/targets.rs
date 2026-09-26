@@ -69,6 +69,7 @@ pub(super) struct RenderTargets {
 }
 
 impl RenderTargets {
+    /// canvasの大きさから内部解像度(`supersample_size`)を決めて、3枚を作る。
     pub(super) fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
@@ -112,13 +113,18 @@ impl RenderTargets {
 /// 縮小のフィルタは線形(`min_filter`もLinear)で、2倍の縮小では出力の1画素が元の2x2を平均する。
 /// これがスーパーサンプリングの要なので、wgpu標準の`TextureBlitter`(縮小側がNearest固定)には置き換えない。
 pub(super) struct Downsample {
+    /// 縮小のパイプライン(深度・MSAAなし)。
     pipeline: wgpu::RenderPipeline,
+    /// binding 0 = 縮小元のテクスチャ、binding 1 = サンプラー。`rebind`で使い回す。
     bind_group_layout: wgpu::BindGroupLayout,
+    /// 線形フィルタのサンプラー(端はClampToEdge)。
     sampler: wgpu::Sampler,
+    /// いまの縮小元を束縛したbind group。
     bind_group: wgpu::BindGroup,
 }
 
 impl Downsample {
+    /// 縮小のパイプラインと、`supersample_color_view`を縮小元にしたbind groupを作る。
     pub(super) fn new(
         device: &wgpu::Device,
         shader: &wgpu::ShaderModule,
@@ -204,6 +210,7 @@ impl Downsample {
         pass.draw(0..3, 0..1);
     }
 
+    /// 縮小元のテクスチャとサンプラーを束縛したbind group。
     fn create_bind_group(
         device: &wgpu::Device,
         layout: &wgpu::BindGroupLayout,

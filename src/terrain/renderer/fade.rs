@@ -17,14 +17,18 @@ pub(super) const MAX_FADE_ENTRIES: usize = 2048;
 
 /// 開始(`start_ms`)から`now_ms`までの、新しいメッシュを表示する画素の割合(0〜1)。なめらかに始まり、なめらかに終わる。
 pub(super) fn fade_progress(start_ms: f64, now_ms: f64) -> f32 {
+    // 経過の割合t(0〜1)をsmoothstep(3t²-2t³)で曲げる(始まりと終わりの変化がゆるやかになる)。
     let t = ((now_ms - start_ms) / FADE_DURATION_MS).clamp(0.0, 1.0) as f32;
     t * t * (3.0 - 2.0 * t)
 }
 
 /// 消えていく途中の古いメッシュ。
 pub(super) struct Outgoing<T> {
+    /// 元のメッシュのキー(同じキーに新しいメッシュが出てくる途中のこともある)。
     pub key: MeshKey,
+    /// 古いメッシュの実体。ここが持っている間はGPUバッファが解放されない。
     pub mesh: T,
+    /// 消え始めた時刻(ミリ秒)。
     pub start_ms: f64,
 }
 
@@ -32,10 +36,12 @@ pub(super) struct Outgoing<T> {
 pub(super) struct Fades<T> {
     /// 出てくる途中の新しいメッシュ(`TerrainRenderer::meshes`にある)と、その開始時刻。
     incoming: HashMap<MeshKey, f64>,
+    /// 消える途中の古いメッシュ(同じキーのものが複数並ぶことはない。`cancel`で先に消すため)。
     outgoing: Vec<Outgoing<T>>,
 }
 
 impl<T> Fades<T> {
+    /// 空の一覧。
     pub(super) fn new() -> Self {
         Self {
             incoming: HashMap::new(),
@@ -70,6 +76,7 @@ impl<T> Fades<T> {
         self.push_outgoing(key, old, now_ms);
     }
 
+    /// 消える側に1つ足す。
     fn push_outgoing(&mut self, key: MeshKey, mesh: T, start_ms: f64) {
         self.outgoing.push(Outgoing {
             key,

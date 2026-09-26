@@ -12,7 +12,7 @@ use glam::camera::rh::{proj::directx, view::look_at_mat4};
 use glam::{Mat4, Vec3};
 
 /// レンズの種類。3D(自由視点)は透視投影、2D(地図モード)は真上からの正射影を使う
-/// (`ViewMode`参照)。
+/// (`ViewMode`参照)。`Perspective`の`fov_y_radians`は縦の視野角(ラジアン)。
 #[derive(Debug, Clone, Copy)]
 pub enum Projection {
     Perspective {
@@ -27,15 +27,21 @@ pub enum Projection {
 
 /// レンダラーに渡す、計算済みのカメラ(視点位置・注視点・レンズ設定)。
 pub struct Camera {
+    /// 視点の位置(ENU座標、メートル)。
     pub eye: Vec3,
+    /// 注視点(ENU座標)。視線は視点からこの点へ向かう。
     pub target: Vec3,
     /// look_atの上方向。3Dモードは常にENUのUp軸(Z)。2Dモード(真上から見下ろす)では
     /// 視線方向自体がZ軸と平行になり特異点になるため、代わりに北(Y軸)を上として使う
     /// (画面上で北が上になる、通常の地図と同じ向き)。
     pub up: Vec3,
+    /// 透視投影か正射影か。
     pub projection: Projection,
+    /// 描画先の横÷縦。
     pub aspect: f32,
+    /// 手前のクリップ面までの距離(メートル)。
     pub z_near: f32,
+    /// 奥のクリップ面までの距離(メートル)。
     pub z_far: f32,
 }
 
@@ -49,6 +55,7 @@ impl Camera {
         (forward, right, up)
     }
 
+    /// ENU座標→クリップ座標の行列(射影×ビュー)。深度は反転Z(`projection_matrix`参照)。
     pub fn view_proj_matrix(&self) -> Mat4 {
         let view = look_at_mat4(self.eye, self.target, self.up);
         self.projection_matrix() * view
@@ -60,7 +67,7 @@ impl Camera {
         // wgpuの正規化デバイス座標は深度[0,1](OpenGL流の[-1,1]ではない)なので
         // directx::perspective/orthographic(DirectX/WebGPU互換、深度[0,1])を使う。
         //
-        // **反転Z(reversed-Z)を採用**(near→深度1, far→深度0。renderer.rsのdepth_compareも
+        // **反転Z(reversed-Z)を採用**(near→深度1, far→深度0。renderer/pipelines.rsのdepth_compareも
         // Greaterに揃えてある): z_near=1m・z_far=8,000,000m(`Z_FAR`)という非常に広いレンジを
         // 通常の(near→0, far→1の)深度バッファで扱うと、遠方(見た目上はほとんどの地形が
         // 該当)でdepth値の実効精度がほぼ失われ、地形の行ごとにデプステストの勝敗が
@@ -125,6 +132,7 @@ impl Camera {
     /// 画面上の点(canvas内のCSSピクセル座標、左上原点)を通る視線をENU座標系のレイ
     /// (origin, direction)として返す。地図上での右クリック→緯度経度変換(`terrain/pick.rs`)に使う。
     pub fn screen_to_ray(&self, x: f32, y: f32, width: f32, height: f32) -> (Vec3, Vec3) {
+        // ピクセル座標(左上原点、下が+y)を正規化デバイス座標(-1〜1、上が+y)にする。
         let ndc_x = (x / width) * 2.0 - 1.0;
         let ndc_y = 1.0 - (y / height) * 2.0;
         // カメラの基底(look_atと同じ右手系)から直接レイを求める。以前は逆VP行列でnear点と
@@ -144,7 +152,7 @@ impl Camera {
 /// 視点プリセット(DETAILED_DESIGN.md 6.6節)。3Dモードの初期カメラアングルを与える
 /// (以後はズーム・回転の自由操作ができる)。当初は俯瞰・側面の2種類をワンクリックで
 /// 切り替えるボタンがあったが、「俯瞰ボタンと側面ボタンはいらない」との要望により
-/// ボタン自体を削除し(`components/terrain_view.rs`)、`Side`バリアントも不要になったため
+/// ボタン自体を削除し(`ui::terrain_view`)、`Side`バリアントも不要になったため
 /// 削除した。現在は初期表示用の`Overview`のみ。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CameraPreset {
@@ -158,7 +166,9 @@ pub enum CameraPreset {
 /// (`terrain::los::compute_coverage_area`)に切り替わる(3Dの半球ドーム表示とは別物)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewMode {
+    /// 3D(自由視点・透視投影)。
     ThreeD,
+    /// 2D(真上から・正射影・北が上)。
     TwoD,
 }
 
@@ -195,7 +205,7 @@ const ORTHO_DEPTH_RANGE_M: f32 = 1_200_000.0;
 /// 都度`to_camera()`で描画用の`Camera`(視点位置・注視点)へ変換する。
 /// DETAILED_DESIGN.md 6.5〜6.6節: 「カメラの状態(位置・角度・ズーム)はLeptosのSignalで保持し、
 /// パネルごとに独立させる」— 本構造体自体は素のRust構造体だが、
-/// `components/terrain_view.rs`側で各パネルごとに独立したインスタンスとして保持することで
+/// `ui::terrain_view`側で各パネルごとに独立したインスタンスとして保持することで
 /// この方針を満たす。
 #[derive(Debug, Clone, Copy)]
 pub struct OrbitCamera {
@@ -207,10 +217,13 @@ pub struct OrbitCamera {
     pub yaw: f32,
     /// 仰角(ラジアン、水平面から上向きが正)。
     pub pitch: f32,
+    /// 3Dの縦の視野角(ラジアン)。
     pub fov_y_radians: f32,
+    /// 3Dの手前のクリップ面(メートル)。
     pub z_near: f32,
+    /// 3Dの奥のクリップ面(メートル)。2Dは`to_camera`が別の値を使う。
     pub z_far: f32,
-    /// 2D/3D表示モード。切り替えボタン(`components/terrain_view.rs`)で直接書き換える。
+    /// 2D/3D表示モード。切り替えボタン(`ui::terrain_view`)で直接書き換える。
     pub mode: ViewMode,
 }
 
@@ -218,7 +231,7 @@ impl OrbitCamera {
     /// `target_up`: 注視点のENU上座標(メートル)。原点の実際の地表標高を渡すこと
     /// (`Vec3::ZERO`=楕円体高0mを渡すと、原点が高山の斜面にある場合に注視点が
     /// 地表よりずっと下(地中)になってしまい、ズームインした際にカメラが地面に
-    /// 埋まって真っ黒になる。`components/terrain_view.rs`参照)。
+    /// 埋まって真っ黒になる。`ui::terrain_view`参照)。
     pub fn preset(preset: CameraPreset, target_up: f32) -> Self {
         match preset {
             CameraPreset::Overview => Self {
@@ -262,14 +275,18 @@ impl OrbitCamera {
     /// yaw基準で求め、`eye()`のoffset計算と同じ基底(水平面上、yaw基準)を使うことで、
     /// yawが0とは限らない自由視点カメラでも「掴んで動かす」操作感になるようにしてある
     /// (2Dモードの`pan()`は常に北=画面上で固定なので、この変換は不要)。
-    /// `x`/`y`だけを動かし、標高(`target.z`)は呼び出し側(`components/terrain_view.rs`)が
+    /// `x`/`y`だけを動かし、標高(`target.z`)は呼び出し側(`ui::terrain_view`)が
     /// 移動先の実際の地表標高へ更新すること(camera.rs自体はheightmapを知らないため)。
     /// シミュレーション原点(`terrain::origin::OriginState`)・地形メッシュには一切触れない。
     pub fn pan_orbit_target(&mut self, dx_px: f32, dy_px: f32, canvas_height_px: f32) {
+        // 注視点の距離での1ピクセルの実寸(縦の視野が映す高さ 2·d·tan(画角/2) を画面の高さで割る)。
         let world_per_px =
             2.0 * self.distance * (self.fov_y_radians * 0.5).tan() / canvas_height_px.max(1.0);
         let delta_right = dx_px * world_per_px;
+        // 画面の下向き(dy>0)は手前向きなので、前方の移動量としては符号を反転する。
         let delta_forward = -dy_px * world_per_px;
+        // 視点は注視点から(cos yaw, sin yaw)の向きにあるので、水平の前方はその逆向き、
+        // 右は前方×上(Z)。
         let right = Vec3::new(-self.yaw.sin(), self.yaw.cos(), 0.0);
         let forward_h = Vec3::new(-self.yaw.cos(), -self.yaw.sin(), 0.0);
         let delta = right * delta_right + forward_h * delta_forward;
@@ -298,12 +315,14 @@ impl OrbitCamera {
             if eye.z >= min_z {
                 return;
             }
+            // 視点の高さ = 注視点の高さ + 距離·sin(仰角) なので、必要な高さに届く仰角のsinが直接求まる。
             let sin_pitch = (min_z - self.target.z) / self.distance;
             if sin_pitch >= MAX_PITCH.sin() {
                 break; // 仰角を上げても届かない。
             }
             self.pitch = sin_pitch.asin().max(self.pitch).clamp(MIN_PITCH, MAX_PITCH);
         }
+        // 仰角だけでは足りなかった: 視点を真上へ持ち上げた位置から、距離と仰角を逆算する。
         let eye = self.eye();
         let min_z = ground_up(eye.x, eye.y) + MIN_EYE_CLEARANCE_M;
         if eye.z < min_z {
@@ -318,6 +337,7 @@ impl OrbitCamera {
         }
     }
 
+    /// 3Dの視点の位置(注視点から距離・方位・仰角で決まる点)。
     fn eye(&self) -> Vec3 {
         // 球面座標(distance, yaw, pitch) → ENU直交座標。
         let horizontal = self.distance * self.pitch.cos();
@@ -329,6 +349,7 @@ impl OrbitCamera {
         self.target + offset
     }
 
+    /// 描画用の`Camera`にする。3Dは透視投影、2Dは注視点の真上からの正射影(縦幅=`distance`)。
     pub fn to_camera(&self, aspect: f32) -> Camera {
         match self.mode {
             ViewMode::ThreeD => Camera {
@@ -376,7 +397,7 @@ mod tests {
         clip.z / clip.w
     }
 
-    // 反転Z: 近い面が深度1、遠い面が深度0(`renderer.rs`の`depth_compare: Greater`・クリア値0.0の前提)。
+    // 反転Z: 近い面が深度1、遠い面が深度0(`renderer/pipelines.rs`の`depth_compare: Greater`・クリア値0.0の前提)。
     #[test]
     fn depth_is_reversed_for_perspective() {
         let c = cam(ViewMode::ThreeD, 400_000.0);

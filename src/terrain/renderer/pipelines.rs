@@ -43,14 +43,21 @@ pub(super) fn wgsl_module(device: &wgpu::Device, label: &str, source: &str) -> w
 
 /// パイプライン1本ぶんの、パイプラインごとに違う設定。
 pub(super) struct PipelineSpec<'a> {
+    /// デバッグ用のラベル。
     pub label: &'a str,
+    /// bind groupの並び。
     pub layout: &'a wgpu::PipelineLayout,
+    /// 頂点・フラグメントの両方をこのモジュールから取る。
     pub shader: &'a wgpu::ShaderModule,
+    /// 頂点シェーダーの関数名。
     pub vs_entry: &'a str,
+    /// フラグメントシェーダーの関数名。
     pub fs_entry: &'a str,
     /// 頂点バッファのレイアウト(添字がスロット番号)。空なら頂点バッファなし(画面いっぱいの三角形を頂点番号から作る)。
     pub buffers: &'a [Option<wgpu::VertexBufferLayout<'a>>],
+    /// 出力先のカラー形式(surfaceと同じ)。
     pub format: wgpu::TextureFormat,
+    /// 出力色の合成方法(上書き・アルファブレンドなど)。
     pub blend: wgpu::BlendState,
     /// (深度を書くか, 深度の比較)。`None`なら深度バッファなし。
     pub depth: Option<(bool, wgpu::CompareFunction)>,
@@ -58,6 +65,7 @@ pub(super) struct PipelineSpec<'a> {
     pub samples: u32,
 }
 
+/// `spec`と共通の設定からパイプラインを作る(出力先はカラー1枚)。
 pub(super) fn create_pipeline(device: &wgpu::Device, spec: &PipelineSpec) -> wgpu::RenderPipeline {
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(spec.label),
@@ -81,7 +89,7 @@ pub(super) fn create_pipeline(device: &wgpu::Device, spec: &PipelineSpec) -> wgp
         primitive: wgpu::PrimitiveState {
             // 裏面カリングは使っていない。地形は高さ場で、上から見る限り裏面はほとんど映らないので
             // 効果は小さい。有効化するなら、スカート(縁の壁)の巻き順が4辺で揃っているかを先に
-            // 確認する必要がある(揃っていないとクラックが出る。CLAUDE.mdの既知の技術的負債)。
+            // 確認する必要がある(揃っていないとクラックが出る。AGENTS.mdの既知の技術的負債)。
             // 作図の面は表裏とも見える(2D図形は裏から見ることがあり、線の帯は向きが一定でない)。
             cull_mode: None,
             ..Default::default()
@@ -110,23 +118,30 @@ pub(super) fn terrain_shader(device: &wgpu::Device) -> wgpu::ShaderModule {
 
 /// メインパスで使うパイプライン一式(縮小パスのパイプラインは`targets::Downsample`)。
 pub(super) struct Pipelines {
+    /// 地形メッシュ(不透明、深度を書く)。
     pub terrain: wgpu::RenderPipeline,
     /// 解像度レベルの切り替え中のメッシュ(クロスフェード。`fade`)。地形と同じだが、メッシュごとの割合の表
     /// (`fade_bind_group_layout`)を`instance_index`で引き、ディザで`discard`する。
     pub terrain_fade: wgpu::RenderPipeline,
     /// クロスフェードの割合の表(`terrain.wgsl`の`FadeTable`)のbind groupレイアウト。
     pub fade_bind_group_layout: wgpu::BindGroupLayout,
+    /// 水域レイヤー(画面いっぱいの三角形で、楕円体との交点を画素ごとに求める)。
     pub water: wgpu::RenderPipeline,
+    /// 覆域ドーム(半透明、深度は読むが書かない)。
     pub dome: wgpu::RenderPipeline,
     /// 作図: 不透明(深度を書く)・半透明(深度は書かずにアルファブレンド)・画面座標(深度テストなし)。
     pub draw_opaque: wgpu::RenderPipeline,
+    /// 作図・マーカー・航跡の半透明(深度テストあり・書き込みなし)。
     pub draw_blend: wgpu::RenderPipeline,
+    /// 作図の画面座標と2Dの覆域(深度テストなし。描く順で重ねる)。
     pub draw_screen: wgpu::RenderPipeline,
     /// 作図のuniform(`DrawUniform`)のbind groupレイアウト。
     pub draw_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl Pipelines {
+    /// メインパスのパイプラインをすべて作る。地形系は`terrain_shader`と`camera_bind_group_layout`(group 0)を、
+    /// 作図系は`draw.wgsl`と作図のuniformのレイアウトを使う。
     pub(super) fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
@@ -232,6 +247,8 @@ impl Pipelines {
             &DRAW_VERTEX_ATTRIBUTES,
             wgpu::VertexStepMode::Vertex,
         ))];
+        // 作図のパイプラインは深度の設定だけが違う。どれもアルファブレンドにしておく(不透明の列の色は
+        // アルファがほぼ1(`drawing_geometry::OPAQUE_ALPHA`以上)なので、上書きとほぼ同じ結果になる)。
         let draw = |label, depth| {
             create_pipeline(
                 device,
