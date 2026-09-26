@@ -1,7 +1,3 @@
 [submodule "sim_server/third_party/uWebSockets"]
 	path = sample/sim_server/third_party/uWebSockets
 	url = https://github.com/uNetworking/uWebSockets.git
-[submodule "sim_server/third_party/msgpack-cxx"]
-	path = sample/sim_server/third_party/msgpack-cxx
-	url = https://github.com/msgpack/msgpack-c.git
-	branch = cpp_master
