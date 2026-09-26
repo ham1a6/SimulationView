@@ -164,7 +164,7 @@ impl Round {
 pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
     let (terrain, origin, transform, plan) = {
         let s = state.borrow();
-        if s.interaction.drag.is_active() {
+        if s.drag.is_active() {
             drop(s);
             schedule_lod(state); // ドラッグ中は重い処理を避け、落ち着いてからやり直す。
             return;
@@ -437,8 +437,7 @@ fn after_terrain_changed(
         .get_untracked()
         .is_empty();
     if has_markers {
-        let radar_markers = state.borrow().radar_markers;
-        rebuild_markers_for_terrain(state, radar_markers);
+        rebuild_markers_for_terrain(state);
     }
     // 地表に貼り付けた作図も、地形の高さが変わったので作り直す。
     let follows_terrain = state.borrow().drawings.items.with_untracked(|list| {

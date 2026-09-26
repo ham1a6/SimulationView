@@ -13,7 +13,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
-use super::floating_panel::viewport_size;
+use super::util::viewport_size;
 use crate::terrain::tracks::TrackId;
 
 /// メニューを画面の端からこれだけ(px)離す。

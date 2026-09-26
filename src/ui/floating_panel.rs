@@ -19,6 +19,7 @@ use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
 use crate::ui::pointer_drag::DragTracker;
+use crate::ui::util::{client_xy, viewport_size};
 
 /// ドラッグ中でも、パネルのこれだけ(px)は必ず画面内に残す(タイトルバーをつかみ直せるように)。
 const KEEP_VISIBLE_X_PX: f64 = 80.0;
@@ -32,19 +33,6 @@ struct Drag {
     base: (f64, f64),
     dx_range: (f64, f64),
     dy_range: (f64, f64),
-}
-
-pub(crate) fn viewport_size() -> (f64, f64) {
-    let Some(window) = web_sys::window() else {
-        return (1024.0, 768.0);
-    };
-    let px = |v: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>, fallback: f64| {
-        v.ok().and_then(|v| v.as_f64()).unwrap_or(fallback)
-    };
-    (
-        px(window.inner_width(), 1024.0),
-        px(window.inner_height(), 768.0),
-    )
 }
 
 #[component]
@@ -67,8 +55,9 @@ pub fn FloatingPanel(
     let panel_ref: NodeRef<leptos::html::Div> = NodeRef::new();
     // ドラッグで動かした量(モーダルなら中央、ウインドウなら初期位置からの相対、px)。
     let offset = RwSignal::new((0.0_f64, 0.0_f64));
-    let drag = RwSignal::new(DragTracker::default());
-    let drag_limits = RwSignal::new(None::<Drag>);
+    // ドラッグの状態(描画には使わないので、変更を通知しない`StoredValue`に置く)。
+    let drag = StoredValue::new(DragTracker::default());
+    let drag_limits = StoredValue::new(None::<Drag>);
     let (left, top) = if modal {
         (0.0, 0.0)
     } else {
@@ -89,14 +78,9 @@ pub fn FloatingPanel(
         };
         let rect = panel.get_bounding_client_rect();
         let (vw, vh) = viewport_size();
-        drag.update(|drag| {
-            drag.begin(
-                ev.pointer_id(),
-                f64::from(ev.client_x()),
-                f64::from(ev.client_y()),
-            )
-        });
-        drag_limits.set(Some(Drag {
+        let (x, y) = client_xy(&ev);
+        drag.update_value(|drag| drag.begin(ev.pointer_id(), x, y));
+        drag_limits.set_value(Some(Drag {
             base: offset.get_untracked(),
             dx_range: (
                 KEEP_VISIBLE_X_PX - rect.right(),
@@ -112,19 +96,14 @@ pub fn FloatingPanel(
         }
     };
     let on_pointer_move = move |ev: leptos::ev::PointerEvent| {
+        let (x, y) = client_xy(&ev);
         let Some(update) = drag
-            .try_update(|drag| {
-                drag.update(
-                    ev.pointer_id(),
-                    f64::from(ev.client_x()),
-                    f64::from(ev.client_y()),
-                )
-            })
+            .try_update_value(|drag| drag.update(ev.pointer_id(), x, y))
             .flatten()
         else {
             return;
         };
-        let Some(d) = drag_limits.get_untracked() else {
+        let Some(d) = drag_limits.get_value() else {
             return;
         };
         let dx = update
@@ -138,20 +117,17 @@ pub fn FloatingPanel(
         offset.set((d.base.0 + dx, d.base.1 + dy));
     };
     let on_pointer_up = move |ev: leptos::ev::PointerEvent| {
-        drag.update(|drag| {
-            drag.end(
-                ev.pointer_id(),
-                f64::from(ev.client_x()),
-                f64::from(ev.client_y()),
-            );
+        let (x, y) = client_xy(&ev);
+        drag.update_value(|drag| {
+            drag.end(ev.pointer_id(), x, y);
         });
-        drag_limits.set(None);
+        drag_limits.set_value(None);
     };
     let on_pointer_cancel = move |ev: leptos::ev::PointerEvent| {
-        drag.update(|drag| {
+        drag.update_value(|drag| {
             drag.cancel(ev.pointer_id());
         });
-        drag_limits.set(None);
+        drag_limits.set_value(None);
     };
 
     let panel = view! {

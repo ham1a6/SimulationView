@@ -29,7 +29,7 @@ use crate::terrain::camera::ViewMode;
 use crate::terrain::loader::{TerrainData, TileKey};
 use crate::terrain::lod::TileLayout;
 use crate::terrain::los::{DomeRing, LosPoint};
-use crate::terrain::markers::{self, RadarMarker, RadarMarkersState};
+use crate::terrain::markers::{self, RadarMarker};
 use crate::terrain::mesh::TerrainVertex;
 use crate::terrain::origin::Origin;
 use crate::terrain::vertex::DrawVertex;
@@ -229,13 +229,10 @@ fn sync_gpu(s: &mut ViewState) {
 /// (終わったら自動で反映して描き直す)。表示しない観測点の進行中の計算は取り消す。
 /// `terrain_changed`は、地形のレベルの切り替えをきっかけとした呼び出しか(その場合は少し待ってから計算を始める)。
 /// 描画自体は呼び出し側で`render_now`(または`render_frame`)すること。
-pub(super) fn refresh_coverage(
-    state: &Rc<RefCell<ViewState>>,
-    radar_markers: RadarMarkersState,
-    terrain_changed: bool,
-) {
+pub(super) fn refresh_coverage(state: &Rc<RefCell<ViewState>>, terrain_changed: bool) {
     let mut guard = state.borrow_mut();
     let s = &mut *guard;
+    let radar_markers = s.radar_markers;
     let (Some(terrain), Some(mesh_origin)) = (s.terrain.clone(), s.mesh_origin) else {
         return;
     };

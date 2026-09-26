@@ -16,18 +16,19 @@ mod capture;
 mod coverage;
 mod frame;
 mod frame_request;
+mod input;
 mod labels;
 mod lod_driver;
 mod models;
 mod overlay;
 mod picking;
+mod resize;
 mod state;
 
 use std::cell::RefCell;
 use std::rc::Rc;
 
 use leptos::prelude::*;
-use wasm_bindgen::closure::Closure;
 use wasm_bindgen::JsCast;
 
 use self::{frame::*, overlay::*, picking::*, state::*};
@@ -35,13 +36,8 @@ use crate::terrain::camera::{CameraPreset, OrbitCamera, ViewMode};
 use crate::terrain::capture::CaptureState;
 use crate::terrain::draw_tool::DrawToolState;
 use crate::terrain::drawing::DrawingState;
-use crate::terrain::geodesy::EnuTransform;
-use crate::terrain::heightmap;
 use crate::terrain::hillshade::HillshadeState;
-use crate::terrain::loader::WHOLE_TILE;
-use crate::terrain::lod::TileLayout;
 use crate::terrain::markers::RadarMarkersState;
-use crate::terrain::mesh;
 use crate::terrain::models::ModelsState;
 use crate::terrain::origin::OriginState;
 use crate::terrain::origin_pick::OriginPickState;
@@ -49,6 +45,7 @@ use crate::terrain::recenter::RecenterRequestState;
 use crate::terrain::store::TerrainStore;
 use crate::terrain::tracks::TracksState;
 use crate::ui::context_menu::{ContextMenuState, MapMenuState, MapMenuTarget};
+use crate::ui::util::client_xy;
 
 type PendingHover = Rc<RefCell<Option<(web_sys::HtmlCanvasElement, (f64, f64))>>>;
 
@@ -93,7 +90,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         target_up: 0.0,
         initializing: false,
         frame_request: Default::default(),
-        interaction: InteractionState::default(),
+        drag: Default::default(),
         radar_markers,
         drawings,
         tracks,
@@ -110,17 +107,11 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     {
         let state = state.clone();
         Effect::new(move |_| {
-            let Some(canvas_el) = canvas_ref.get() else {
+            let Some(canvas) = canvas_ref.get() else {
                 return;
             };
-            let canvas: web_sys::HtmlCanvasElement = (*canvas_el)
-                .clone()
-                .dyn_into()
-                .expect("canvas node_ref should be an HtmlCanvasElement");
-
             // canvasの内部解像度(width/height)を実際のCSSサイズへ合わせ、必要なら
-            // レンダラーを初期化/リサイズする。ResizeObserverのコールバックと、
-            // 下の`visibilitychange`ハンドラの両方から呼べるよう共通化してある。
+            // レンダラーを初期化/リサイズする。
             let apply_size = {
                 let canvas = canvas.clone();
                 let state = state.clone();
@@ -148,81 +139,11 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                             terrain_store.get_untracked(),
                             origin_state,
                             status,
-                            radar_markers,
                         );
                     }
                 }
             };
-
-            let apply_size_for_resize = apply_size.clone();
-            let closure =
-                Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
-                    let Some(entry) = entries
-                        .get(0)
-                        .dyn_into::<web_sys::ResizeObserverEntry>()
-                        .ok()
-                    else {
-                        return;
-                    };
-                    let rect = entry.content_rect();
-                    let width = rect.width().round().max(0.0) as u32;
-                    let height = rect.height().round().max(0.0) as u32;
-                    apply_size_for_resize(width, height);
-                });
-
-            let observer = web_sys::ResizeObserver::new(closure.as_ref().unchecked_ref())
-                .expect("ResizeObserver::new failed");
-            observer.observe(&canvas);
-
-            // ブラウザは非表示(バックグラウンド)タブに対してResizeObserverの通知自体を
-            // スロットリング(完全停止)することがある(DEVELOPMENT_HISTORY.md「スプリッタードラッグ時の
-            // リサイズ追従」で既知)。ページが非表示のまま初回マウントされると、canvasの
-            // 内部解像度がHTML既定値(300×150)のまま一度も更新されず、その後CSSで
-            // 実際の表示サイズへ引き伸ばされることでアスペクト比が崩れ、地形の一部
-            // (特に画面端寄り・低標高の周辺部)が視野から欠けて見える不具合になっていた。
-            // ws.rsのWebSocket再接続と同じPage Visibility APIのパターンで、タブが可視に
-            // 戻った時点で実際のCSSサイズを取り直し、ズレていれば取り込み直す。
-            let canvas_for_visibility = canvas.clone();
-            let visibility_closure = Closure::<dyn FnMut()>::new(move || {
-                let hidden = web_sys::window()
-                    .and_then(|w| w.document())
-                    .map(|d| d.hidden())
-                    .unwrap_or(false);
-                if hidden {
-                    return;
-                }
-                let rect = canvas_for_visibility.get_bounding_client_rect();
-                let width = rect.width().round().max(0.0) as u32;
-                let height = rect.height().round().max(0.0) as u32;
-                if width != canvas_for_visibility.width()
-                    || height != canvas_for_visibility.height()
-                {
-                    apply_size(width, height);
-                }
-            });
-            if let Some(document) = web_sys::window().and_then(|w| w.document()) {
-                let _ = document.add_event_listener_with_callback(
-                    "visibilitychange",
-                    visibility_closure.as_ref().unchecked_ref(),
-                );
-            }
-
-            // クロージャ・observerはこのパネルの生存期間ずっと必要。パネルが破棄されるとき(このEffectの
-            // オーナーの後始末)に、observerとdocumentのリスナーを外してからクロージャごと解放する
-            // (`forget`すると、クロージャが握る`state`=GPUデバイスまでずっと解放されない)。
-            // `on_cleanup`は`Send`を要求するので、JSオブジェクトはローカル専用の`StoredValue`に入れて渡す。
-            let resources = StoredValue::new_local((closure, visibility_closure, observer));
-            on_cleanup(move || {
-                resources.with_value(|(_, visibility_closure, observer)| {
-                    observer.disconnect();
-                    if let Some(document) = web_sys::window().and_then(|w| w.document()) {
-                        let _ = document.remove_event_listener_with_callback(
-                            "visibilitychange",
-                            visibility_closure.as_ref().unchecked_ref(),
-                        );
-                    }
-                });
-            });
+            resize::observe_canvas_size(&canvas, apply_size);
         });
     }
 
@@ -233,21 +154,10 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             let Some(data) = terrain_store.get() else {
                 return;
             };
-            let Some(canvas_el) = canvas_ref.get_untracked() else {
+            let Some(canvas) = canvas_ref.get_untracked() else {
                 return;
             };
-            let canvas: web_sys::HtmlCanvasElement = (*canvas_el)
-                .clone()
-                .dyn_into()
-                .expect("canvas node_ref should be an HtmlCanvasElement");
-            try_init(
-                state.clone(),
-                canvas,
-                Some(data),
-                origin_state,
-                status,
-                radar_markers,
-            );
+            try_init(state.clone(), canvas, Some(data), origin_state, status);
         });
     }
 
@@ -255,90 +165,9 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     {
         let state = state.clone();
         Effect::new(move |_| {
-            let Some(new_origin) = origin_state.0.get() else {
-                return;
-            };
-
-            let mut s = state.borrow_mut();
-            let Some(terrain) = s.terrain.clone() else {
-                return;
-            };
-            if s.renderer.is_none() {
-                return;
+            if let Some(new_origin) = origin_state.0.get() {
+                change_origin(&state, new_origin);
             }
-            if s.mesh_origin == Some(new_origin) {
-                return;
-            }
-            let new_transform = EnuTransform::new(&new_origin, &terrain.metadata.ellipsoid);
-            // 注視点(中心点)の扱い: 原点の真上を見ていた(x=y=0)なら新しい原点に追従する。
-            // パンして別の場所を見ていたなら、ENU座標のオフセットが新しい原点基準のまま残って
-            // 表示が飛んでしまわないよう、同じ緯度経度を見続けるよう新しいENU座標へ変換し直す。
-            let follows_origin = s.camera.target.x == 0.0 && s.camera.target.y == 0.0;
-            s.target_up =
-                heightmap::sample_heightmap(&terrain, new_origin.lat_deg, new_origin.lon_deg);
-            if follows_origin {
-                // 高さも新しい原点の地表標高へ更新する(古い標高のままだと、原点移動後に
-                // ズームインした際カメラが地面に埋まって真っ黒になりうる)。
-                s.camera.target.z = s.target_up;
-            } else if let Some(old_origin) = s.mesh_origin {
-                let old_transform = EnuTransform::new(&old_origin, &terrain.metadata.ellipsoid);
-                let (lat, lon, _) = heightmap::ground_at_enu(
-                    &terrain,
-                    &old_transform,
-                    s.camera.target.x as f64,
-                    s.camera.target.y as f64,
-                );
-                let (x, y, up) = heightmap::ground_at_geodetic(&terrain, &new_transform, lat, lon);
-                s.camera.target.x = x;
-                s.camera.target.y = y;
-                s.camera.target.z = up;
-            }
-            // 常駐している全メッシュ(タイル全体・各チャンク、各自の解像度レベル)の頂点位置を、新しい原点のENU座標で
-            // 作り直してアップロードする(頂点数・並びは原点に依存しない)。
-            // `renderer`(可変)と`resident`(読み取り)を同時に借りるので、`RefMut`を素の`&mut`にして
-            // フィールドごとの借用に分ける。
-            let st = &mut *s;
-            let Some(renderer) = st.renderer.as_mut() else {
-                return;
-            };
-            // 水域レイヤー(楕円体の海抜0mの面)も新しい原点基準にする。
-            renderer.set_ellipsoid_origin(&new_transform);
-            for (&key, resident) in st.lod.resident.iter() {
-                let Some(tile) = terrain.tile(key) else {
-                    continue;
-                };
-                match resident {
-                    TileLayout::Whole => {
-                        let vertices =
-                            mesh::build_whole_tile_vertices(&terrain, tile, &new_transform);
-                        renderer.update_mesh_vertices((key.0, key.1, WHOLE_TILE), &vertices);
-                    }
-                    TileLayout::Chunks(levels) => {
-                        for (c, &level) in levels.iter().enumerate() {
-                            if let Some(vertices) = mesh::build_chunk_vertices(
-                                &terrain,
-                                tile,
-                                c,
-                                level as usize,
-                                &new_transform,
-                            ) {
-                                renderer.update_mesh_vertices((key.0, key.1, c as u8), &vertices);
-                            }
-                        }
-                    }
-                }
-            }
-            let camera = st.camera.to_camera(renderer.aspect_ratio());
-            if let Err(e) = renderer.render(&camera) {
-                log::error!("[terrain] re-render after origin change failed: {e}");
-            }
-            st.mesh_origin = Some(new_origin);
-            drop(s);
-            // マーカー・覆域リング・作図も新しい原点基準のENU座標へ再変換する。
-            rebuild_markers(&state, radar_markers);
-            rebuild_drawings(&state);
-            rebuild_tracks(&state);
-            render_now(&state);
         });
     }
 
@@ -353,7 +182,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             let _ = radar_markers.selected.get();
             let _ = radar_markers.coverage_altitude_m.get();
             let _ = radar_markers.show_all_coverage.get();
-            rebuild_markers(&state, radar_markers);
+            rebuild_markers(&state);
             render_now(&state);
         });
     }
@@ -409,33 +238,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             if count == 0 {
                 return; // 初期値0はボタン未クリックの状態なので無視する。
             }
-            let target = recenter_request.target();
-            let mut s = state.borrow_mut();
-            if s.renderer.is_none() {
-                return;
-            }
-            match (target, s.terrain.clone(), s.mesh_origin) {
-                // 右クリックメニュー等で指定した地点へ。高さはその地点の実際の地表(ENU上座標)にする
-                // (Shift+ドラッグでの移動と同じ。古い高さのままだとズームインしたときカメラが地面に埋まる)。
-                (Some((lat, lon)), Some(terrain), Some(mesh_origin)) => {
-                    let transform = EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
-                    let (east, north, up) =
-                        heightmap::ground_at_geodetic(&terrain, &transform, lat, lon);
-                    s.camera.target.x = east;
-                    s.camera.target.y = north;
-                    s.camera.target.z = up;
-                }
-                // 地形が未取得の間は動かさない。
-                (Some(_), _, _) => return,
-                // 原点へ戻す。
-                (None, _, _) => {
-                    s.camera.target.x = 0.0;
-                    s.camera.target.y = 0.0;
-                    s.camera.target.z = s.target_up;
-                }
-            }
-            drop(s);
-            render_now(&state);
+            recenter(&state, recenter_request.target());
         });
     }
 
@@ -465,13 +268,9 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             if count == 0 {
                 return; // 初期値0はボタン未クリックの状態なので無視する。
             }
-            let Some(canvas_el) = canvas_ref.get_untracked() else {
+            let Some(canvas) = canvas_ref.get_untracked() else {
                 return;
             };
-            let canvas: web_sys::HtmlCanvasElement = (*canvas_el)
-                .clone()
-                .dyn_into()
-                .expect("canvas node_ref should be an HtmlCanvasElement");
             // 通常描画は次フレームまで集約するため、保存時は最新状態を先に描く。
             draw_frame(&state);
             capture::save_screenshot(&canvas);
@@ -487,53 +286,17 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         let recording: Rc<RefCell<Option<capture::Recording>>> = Rc::new(RefCell::new(None));
         Effect::new(move |_| {
             let requested = capture.recording_requested.get();
-            let mut slot = recording.borrow_mut();
-            match (requested, slot.is_some()) {
-                (true, false) => {
-                    let Some(canvas_el) = canvas_ref.get_untracked() else {
-                        return;
-                    };
-                    let canvas: web_sys::HtmlCanvasElement = (*canvas_el)
-                        .clone()
-                        .dyn_into()
-                        .expect("canvas node_ref should be an HtmlCanvasElement");
-                    match capture::start_recording(&canvas) {
-                        Ok(rec) => {
-                            *slot = Some(rec);
-                            capture.is_recording.set(true);
-                        }
-                        Err(e) => {
-                            log::warn!("[terrain] 画面録画の開始に失敗しました: {e:?}");
-                            // 開始できなかったので要求自体を取り消し、ボタンの表示を元に戻す。
-                            capture.recording_requested.set(false);
-                            capture.is_recording.set(false);
-                        }
-                    }
-                }
-                (false, true) => {
-                    if let Some(rec) = slot.take() {
-                        rec.stop(); // 停止後、ブラウザ側で非同期にWebMがダウンロードされる。
-                    }
-                    capture.is_recording.set(false);
-                }
-                _ => {}
-            }
+            capture::sync_recording(&mut recording.borrow_mut(), capture, requested, || {
+                canvas_ref.get_untracked()
+            });
         });
     }
 
     // --- 自由視点カメラの操作(ドラッグ回転・ホイールズーム) ---
-    const ORBIT_SENSITIVITY: f32 = 0.0075;
-
     let state_pd = state.clone();
     let on_pointer_down = move |ev: leptos::ev::PointerEvent| {
-        {
-            let mut s = state_pd.borrow_mut();
-            s.interaction.drag.begin(
-                ev.pointer_id(),
-                f64::from(ev.client_x()),
-                f64::from(ev.client_y()),
-            );
-        }
+        let (x, y) = client_xy(&ev);
+        state_pd.borrow_mut().drag.begin(ev.pointer_id(), x, y);
         if let Some(target) = ev.target() {
             if let Ok(el) = target.dyn_into::<web_sys::Element>() {
                 let _ = el.set_pointer_capture(ev.pointer_id());
@@ -545,15 +308,15 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     // 次のフレームで反映する予定のカーソル位置(canvasとclient座標)。
     let hover_pending: PendingHover = Rc::new(RefCell::new(None));
     let on_pointer_move = move |ev: leptos::ev::PointerEvent| {
+        let pos = client_xy(&ev);
         // 図形の作成中は、カーソルの指す地点へ仮の図形の先端を追従させる(ドラッグ中は動かさない)。
         // 仮の図形を更新するたびに作図全体の再構築+描画が走るので、マウス移動は1フレームに1回へまとめる。
         if let Some(tool) = draw_tool.filter(|t| t.wants_hover()) {
-            if !state_pm.borrow().interaction.drag.is_active() {
+            if !state_pm.borrow().drag.is_active() {
                 if let Some(canvas) = ev
                     .target()
                     .and_then(|t| t.dyn_into::<web_sys::HtmlCanvasElement>().ok())
                 {
-                    let pos = (ev.client_x() as f64, ev.client_y() as f64);
                     let already_scheduled =
                         hover_pending.borrow_mut().replace((canvas, pos)).is_some();
                     if !already_scheduled {
@@ -561,8 +324,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                         let state = state_pm.clone();
                         request_animation_frame(move || {
                             let pending = hover_pending.borrow_mut().take();
-                            if let Some((canvas, (x, y))) = pending {
-                                if let Some((lat, lon)) = pick_at_client(&state, &canvas, x, y) {
+                            if let Some((canvas, pos)) = pending {
+                                if let Some((lat, lon)) = pick_at_client(&state, &canvas, pos) {
                                     tool.set_hover(lat, lon);
                                 }
                             }
@@ -573,64 +336,13 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         }
         let should_render = {
             let mut s = state_pm.borrow_mut();
-            if let Some(update) = s.interaction.drag.update(
-                ev.pointer_id(),
-                f64::from(ev.client_x()),
-                f64::from(ev.client_y()),
-            ) {
-                let dx = update.delta.0 as f32;
-                let dy = update.delta.1 as f32;
-                match s.camera.mode {
-                    ViewMode::ThreeD => {
-                        if ev.shift_key() {
-                            // Shift+ドラッグ: 回転ではなく注視点(中心点)を平行移動する
-                            // (「原点は変えないでね」との要望通り、OriginStateには触れない)。
-                            let canvas_h = s
-                                .renderer
-                                .as_ref()
-                                .map(|r| r.canvas_size_px().1)
-                                .unwrap_or(1)
-                                .max(1);
-                            s.camera.pan_orbit_target(dx, dy, canvas_h as f32);
-                            // 移動先の実際の地表(ENU上座標)へtarget.zを更新する(古い高さの
-                            // ままだと、原点変更時と同様にズームインした際カメラが地面に
-                            // 埋まって真っ黒になりうる)。原点から遠いほど地球の丸みで地表が
-                            // 下がるため、標高ではなく丸みを含む上座標を使う。
-                            if let (Some(terrain), Some(mesh_origin)) =
-                                (s.terrain.clone(), s.mesh_origin)
-                            {
-                                let transform =
-                                    EnuTransform::new(&mesh_origin, &terrain.metadata.ellipsoid);
-                                let (_, _, up) = heightmap::ground_at_enu(
-                                    &terrain,
-                                    &transform,
-                                    s.camera.target.x as f64,
-                                    s.camera.target.y as f64,
-                                );
-                                s.camera.target.z = up;
-                            }
-                        } else {
-                            s.camera
-                                .orbit(dx * ORBIT_SENSITIVITY, dy * ORBIT_SENSITIVITY);
-                        }
-                    }
-                    ViewMode::TwoD => {
-                        // 正射影の画面縦幅(distance)と実際のcanvas高さ(ピクセル)の比から、
-                        // 画面上のドラッグ量をワールド座標(メートル)の移動量へ変換する。
-                        let canvas_h = s
-                            .renderer
-                            .as_ref()
-                            .map(|r| r.canvas_size_px().1)
-                            .unwrap_or(1)
-                            .max(1);
-                        let world_per_px = s.camera.distance / canvas_h as f32;
-                        // 画面上は北=上(up=Vec3::Y)なので、上方向のドラッグ(dy<0)は北への移動。
-                        s.camera.pan(dx * world_per_px, -dy * world_per_px);
-                    }
+            match s.drag.update(ev.pointer_id(), pos.0, pos.1) {
+                Some(update) => {
+                    let (dx, dy) = (update.delta.0 as f32, update.delta.1 as f32);
+                    input::apply_drag(&mut s, dx, dy, ev.shift_key());
+                    true
                 }
-                true
-            } else {
-                false
+                None => false,
             }
         };
         if should_render {
@@ -640,11 +352,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
 
     let state_pc = state.clone();
     let on_pointer_cancel = move |ev: leptos::ev::PointerEvent| {
-        state_pc
-            .borrow_mut()
-            .interaction
-            .drag
-            .cancel(ev.pointer_id());
+        state_pc.borrow_mut().drag.cancel(ev.pointer_id());
     };
 
     // ドラッグではない左クリックが離されたとき:
@@ -654,14 +362,11 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     // (通常のドラッグ=回転・パンは従来通り動く)
     let state_pu = state.clone();
     let on_pointer_up = move |ev: leptos::ev::PointerEvent| {
-        let drag_end = {
-            let mut s = state_pu.borrow_mut();
-            s.interaction.drag.end(
-                ev.pointer_id(),
-                f64::from(ev.client_x()),
-                f64::from(ev.client_y()),
-            )
-        };
+        let pos = client_xy(&ev);
+        let drag_end = state_pu
+            .borrow_mut()
+            .drag
+            .end(ev.pointer_id(), pos.0, pos.1);
         if ev.button() != 0 {
             return;
         }
@@ -674,46 +379,24 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         let Ok(canvas) = target.dyn_into::<web_sys::HtmlCanvasElement>() else {
             return;
         };
-        let mode = MapClickMode::resolve(
-            origin_pick.is_some_and(|p| p.active.get_untracked()),
-            draw_tool.is_some_and(|t| t.tool.get_untracked().is_some()),
-        );
-        if mode == MapClickMode::Origin {
-            let Some(pick_state) = origin_pick else {
-                return;
-            };
+        let origin_pick = origin_pick.filter(|p| p.active.get_untracked());
+        let draw_tool = draw_tool.filter(|t| t.tool.get_untracked().is_some());
+        match (origin_pick, draw_tool) {
             // 地形データ範囲外(海の外側など)をクリックした場合は、モードを維持して指定し直せるようにする。
-            if let Some((lat, lon)) = pick_at_client(
-                &state_pu,
-                &canvas,
-                ev.client_x() as f64,
-                ev.client_y() as f64,
-            ) {
-                pick_state.active.set(false);
-                pick_state.on_pick.run((lat, lon));
+            (Some(pick_state), _) => {
+                if let Some((lat, lon)) = pick_at_client(&state_pu, &canvas, pos) {
+                    pick_state.active.set(false);
+                    pick_state.on_pick.run((lat, lon));
+                }
             }
-            return;
-        }
-        if mode == MapClickMode::Drawing {
-            let Some(tool) = draw_tool else { return };
             // 図形の作成中。地形データ範囲外のクリックは無視する(点を置き直せる)。
-            if let Some((lat, lon)) = pick_at_client(
-                &state_pu,
-                &canvas,
-                ev.client_x() as f64,
-                ev.client_y() as f64,
-            ) {
-                tool.click(lat, lon);
+            (None, Some(tool)) => {
+                if let Some((lat, lon)) = pick_at_client(&state_pu, &canvas, pos) {
+                    tool.click(lat, lon);
+                }
             }
-            return;
+            (None, None) => tracks.select(pick_track_at_client(&state_pu, &canvas, pos)),
         }
-        let picked = pick_track_at_client(
-            &state_pu,
-            &canvas,
-            ev.client_x() as f64,
-            ev.client_y() as f64,
-        );
-        tracks.select(picked);
     };
 
     let state_wheel = state.clone();
@@ -742,24 +425,23 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         let Ok(canvas) = target.dyn_into::<web_sys::HtmlCanvasElement>() else {
             return;
         };
+        let pos = client_xy(&ev);
         if let (Some(menu), Some(map_menu)) = (context_menu, map_menu) {
-            let (x, y) = (ev.client_x() as f64, ev.client_y() as f64);
-            let position = pick_at_client(&state_ctx, &canvas, x, y);
-            let track = pick_track_at_client(&state_ctx, &canvas, x, y);
+            let position = pick_at_client(&state_ctx, &canvas, pos);
+            let track = pick_track_at_client(&state_ctx, &canvas, pos);
             if track.is_some() {
                 tracks.select(track);
             }
             if position.is_some() || track.is_some() {
-                menu.show(x, y, map_menu.0.run(MapMenuTarget { position, track }));
+                menu.show(
+                    pos.0,
+                    pos.1,
+                    map_menu.0.run(MapMenuTarget { position, track }),
+                );
             }
             return;
         }
-        if let Some((lat, lon)) = pick_at_client(
-            &state_ctx,
-            &canvas,
-            ev.client_x() as f64,
-            ev.client_y() as f64,
-        ) {
+        if let Some((lat, lon)) = pick_at_client(&state_ctx, &canvas, pos) {
             radar_markers.add(lat, lon);
         }
     };
@@ -776,7 +458,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         };
         state_toggle.borrow_mut().camera.mode = new_mode;
         view_mode.set(new_mode);
-        rebuild_markers(&state_toggle, radar_markers);
+        rebuild_markers(&state_toggle);
         rebuild_tracks(&state_toggle);
         render_now(&state_toggle);
     };
@@ -789,31 +471,11 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         }
     };
 
-    // 図形の作成中のキー操作(Esc=終了、Enter=確定、Backspace=1つ戻す)。入力欄への入力は邪魔しない。
+    // 図形の作成中のキー操作(Esc=終了、Enter=確定、Backspace=1つ戻す)。
     if let Some(tool) = draw_tool {
         let keydown_handle =
             window_event_listener(leptos::ev::keydown, move |ev: web_sys::KeyboardEvent| {
-                if tool.tool.get_untracked().is_none() {
-                    return;
-                }
-                let in_form = ev
-                    .target()
-                    .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
-                    .is_some_and(|el| {
-                        matches!(el.tag_name().as_str(), "INPUT" | "TEXTAREA" | "SELECT")
-                    });
-                if in_form {
-                    return;
-                }
-                match ev.key().as_str() {
-                    "Escape" => tool.cancel(),
-                    "Enter" => tool.finish(),
-                    "Backspace" => {
-                        ev.prevent_default();
-                        tool.undo();
-                    }
-                    _ => {}
-                }
+                input::handle_draw_key(tool, &ev)
             });
         // このコンポーネントが破棄されたらリスナーを外す(外さないとwindowに残り続ける)。
         on_cleanup(move || keydown_handle.remove());

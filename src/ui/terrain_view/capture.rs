@@ -13,8 +13,11 @@
 //!   `Closure::once`はJS側から1回呼ばれた時点でRust側のメモリも自動解放されるので、
 //!   (`mod.rs`のResizeObserver用クロージャと違い)`forget()`してもリークしない。
 
+use leptos::prelude::*;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
+
+use crate::terrain::capture::CaptureState;
 
 /// 現在のcanvasの内容をPNGとしてダウンロードする("sim3dview_20260922_153012.png")。
 pub(super) fn save_screenshot(canvas: &web_sys::HtmlCanvasElement) {
@@ -49,8 +52,44 @@ impl Recording {
     }
 }
 
+/// 録画の要求(`capture.recording_requested`)に、実際の録画(`slot`)を合わせる: 要求があって録画中でなければ
+/// `canvas`の録画を始め、要求が無いのに録画中なら止める(止めるとブラウザ側で非同期にWebMがダウンロードされる)。
+/// 開始できなければ(ブラウザが未対応など)要求を取り消して、ボタンの表示を元に戻す。
+pub(super) fn sync_recording(
+    slot: &mut Option<Recording>,
+    capture: CaptureState,
+    requested: bool,
+    canvas: impl FnOnce() -> Option<web_sys::HtmlCanvasElement>,
+) {
+    match (requested, slot.is_some()) {
+        (true, false) => {
+            let Some(canvas) = canvas() else {
+                return;
+            };
+            match start_recording(&canvas) {
+                Ok(rec) => {
+                    *slot = Some(rec);
+                    capture.is_recording.set(true);
+                }
+                Err(e) => {
+                    log::warn!("[terrain] 画面録画の開始に失敗しました: {e:?}");
+                    capture.recording_requested.set(false);
+                    capture.is_recording.set(false);
+                }
+            }
+        }
+        (false, true) => {
+            if let Some(rec) = slot.take() {
+                rec.stop();
+            }
+            capture.is_recording.set(false);
+        }
+        _ => {}
+    }
+}
+
 /// 画面録画を開始する。ブラウザがMediaRecorder/captureStream未対応の場合はErr。
-pub(super) fn start_recording(canvas: &web_sys::HtmlCanvasElement) -> Result<Recording, JsValue> {
+fn start_recording(canvas: &web_sys::HtmlCanvasElement) -> Result<Recording, JsValue> {
     let stream = canvas.capture_stream()?;
 
     // コーデックの対応状況はブラウザにより異なるため、対応しているものを順に試す

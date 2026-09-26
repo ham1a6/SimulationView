@@ -1397,24 +1397,24 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 
 | # | 購読 | 処理 |
 |---|---|---|
-| 1 | `canvas_ref` | `ResizeObserver`で`apply_size`(0なら無視)→`resize`→`rebuild_drawings`(`Screen`の角が動く)→`render_now`(レンダラー無しなら`try_init`)。`visibilitychange`で`getBoundingClientRect`を取り直す(**非表示タブではResizeObserverがスロットリングされ、canvasが300×150のまま引き伸ばされるため**)。`on_cleanup`で`disconnect`・`remove_event_listener` |
+| 1 | `canvas_ref` | `resize::observe_canvas_size`: `ResizeObserver`で`apply_size`(0なら無視)→`resize`→`rebuild_drawings`(`Screen`の角が動く)→`render_now`(レンダラー無しなら`try_init`)。`visibilitychange`で`getBoundingClientRect`を取り直す(**非表示タブではResizeObserverがスロットリングされ、canvasが300×150のまま引き伸ばされるため**)。`on_cleanup`で`disconnect`・`remove_event_listener` |
 | 2 | `terrain_store.get()` | データが届いたら`try_init` |
 | 3 | `origin_state` | 原点変更(下記) |
 | 4 | `radar_markers.{markers, selected, coverage_altitude_m, show_all_coverage}` | `rebuild_markers`(覆域は非同期で計算し、終わったら自動で描き直す)→`render_now` |
 | 5 | `drawings.items` | `rebuild_drawings`→`render_now` |
 | 5b | `tracks.{entries, show_*, selected}` | `rebuild_tracks`→`render_frame`(LODは予約しない) |
-| 6 | `recenter_request.count` | `count==0`は無視。`target()`が`Some`なら`ground_at_geodetic`の(東,北,上)を`camera.target`に、`None`なら`target.xy=0`・`target.z=target_up`。**`OriginState`には触れない** |
+| 6 | `recenter_request.count` | `count==0`は無視。`frame::recenter`: `target()`が`Some`なら`ground_at_geodetic`の(東,北,上)を`camera.target`に、`None`なら`target.xy=0`・`target.z=target_up`。**`OriginState`には触れない** |
 | 7 | `hillshade.enabled` | `renderer.set_hillshade`→`render_now`(メッシュ再作成不要) |
 
-- **原点変更(Effect 3)**: 新原点がNone・未初期化・現在のメッシュ原点と同じなら何もしない。`target_up = sample_heightmap(new_origin)`。**注視点**: `target.xy==0`(原点に追従)なら`target.z = target_up`、そうでなければ(パンして別の場所を見ていた)旧原点での緯度経度を求め、新原点の`ground_at_geodetic`のENUを`target`にする(同じ場所を見続ける)。
+- **原点変更(Effect 3、`frame::change_origin`)**: 新原点がNone・未初期化・現在のメッシュ原点と同じなら何もしない。`target_up = sample_heightmap(new_origin)`。**注視点**: `target.xy==0`(原点に追従)なら`target.z = target_up`、そうでなければ(パンして別の場所を見ていた)旧原点での緯度経度を求め、新原点の`ground_at_geodetic`のENUを`target`にする(同じ場所を見続ける)。
   `set_ellipsoid_origin`→**常駐する全メッシュ**(`lod.resident`)の頂点位置を新原点で作り直して`update_mesh_vertices`(頂点数・並び・インデックスは原点非依存で不変。再取得は不要)→`render`→`mesh_origin`更新→借用を`drop`してから`rebuild_*`・`render_now`
 - **入力イベント**: 定数`ORBIT_SENSITIVITY=0.0075`、`CLICK_MAX_MOVE_PX=5`(押下位置からこれ未満の移動はドラッグでなくクリック)、ホイール係数1.12。
-  `pointerdown`=`interaction.drag.begin`+`set_pointer_capture`。`pointermove`=(図形作成中で非ドラッグなら`request_animation_frame`で1フレームに1回へまとめて`pick`→`set_hover`)/ドラッグ中は`DragTracker`の直前位置からの差分を使い、3Dで`shift`なら`pan_orbit_target`後に`target.z = ground_at_enu(target.xy).up`・そうでなければ`orbit`、2Dは`pan(dx·wpp, -dy·wpp)`。
-  `pointerup`は同じpointer IDだけを終了し、左ボタン・合計移動5px未満なら`MapClickMode`の優先順 ①原点指定中なら`pick`が`Some`で`on_pick`(範囲外はモード維持) ②図形作成ツール選択中なら`tool.click` ③それ以外は`pick_track_at_client`→`tracks.select`(**何もない所は`None`=選択解除**)を実行する。
+  `pointerdown`=`drag.begin`+`set_pointer_capture`。`pointermove`=(図形作成中で非ドラッグなら`request_animation_frame`で1フレームに1回へまとめて`pick`→`set_hover`)/ドラッグ中は`DragTracker`の直前位置からの差分を使い(`input::apply_drag`)、3Dで`shift`なら`pan_orbit_target`後に`target.z = ground_at_enu(target.xy).up`・そうでなければ`orbit`、2Dは`pan(dx·wpp, -dy·wpp)`。
+  `pointerup`は同じpointer IDだけを終了し、左ボタン・合計移動5px未満なら次の優先順で ①原点指定中なら`pick`が`Some`で`on_pick`(範囲外はモード維持) ②図形作成ツール選択中なら`tool.click` ③それ以外は`pick_track_at_client`→`tracks.select`(**何もない所は`None`=選択解除**)を実行する。
   `wheel`=`zoom`。`contextmenu`=`prevent_default`。図形作成中なら`undo`。`ContextMenuState`と`MapMenuState`の**両方**があれば`position`(pick)と`track`(pick_track。あれば先に選択)を`MapMenuTarget`にしてメニューを出す(どちらもNoneなら出さない)。どちらか無ければ従来どおり観測点を追加。
-  `dblclick`=`draw_tool.finish()`。`keydown`(window。ツール選択中のみ、`INPUT/TEXTAREA/SELECT`上は無視)=`Escape`→`cancel`、`Enter`→`finish`、`Backspace`→`undo`
+  `dblclick`=`draw_tool.finish()`。`keydown`(window。`input::handle_draw_key`。ツール選択中のみ、`INPUT/TEXTAREA/SELECT`上は無視)=`Escape`→`cancel`、`Enter`→`finish`、`Backspace`→`undo`
 - **ピッキング(`picking.rs`)**: `pick_at_client`は`getBoundingClientRect`でcanvas内座標にして`pick::pick_lat_lon`。`pick_track_at_client`はCSS pxからcanvas内部解像度へ変換して`tracks::pick_track`(`PICK_RADIUS_PX`)
-- **オーバーレイの再構築(`overlay.rs`)**: `GeometryInputs`から`BuildContext`(`ground = sample_heightmap`)を作る。`rebuild_markers`はピン(`rebuild_marker_pins`。軽い)を作り直し、覆域は`coverage::refresh_coverage`に任せる。地形のレベル切り替えからは`rebuild_markers_for_terrain`(覆域は300ms待つ)。
+- **オーバーレイの再構築(`overlay.rs`)**: `GeometryInputs`から`BuildContext`(`ground = sample_surface_height`)を作る。`rebuild_markers`はピン(`rebuild_marker_pins`。軽い)を作り直し、覆域は`coverage::refresh_coverage`に任せる。地形のレベル切り替えからは`rebuild_markers_for_terrain`(覆域は300ms待つ)。
   **`refresh_coverage`**(`coverage.rs`): 表示する観測点(選択中の1つ、`show_all_coverage`ならすべて)ごとに、観測点・モード・高度・地形(`terrain_signature`=観測点の最大観測範囲に重なるチャンクの`(tile, chunk, level)`のハッシュ)から`CoverageKey`を作る。
   キャッシュ(`CoverageCache`)が同じキーなら、`show_coverage`でジオメトリを作って`update_dome`/`update_coverage_2d`(すでに同じキー・同じメッシュ原点で載っていれば何もしない)。
   違えば、進行中に同じキーの計算があれば待ち、無ければ`generation`を増やして(古い計算を取り消し)`spawn_local`で計算する: 地形の切り替え起因なら`TERRAIN_DEBOUNCE_MS`(300ms)待ち、`run_in_slices(.., AZIMUTHS_PER_STEP=4)`で進め、

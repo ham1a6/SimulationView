@@ -1,5 +1,6 @@
 //! 最小幅を保ちながら左右の区画をリサイズする汎用部品。
 use super::pointer_drag::DragTracker;
+use super::util::client_xy;
 use leptos::prelude::*;
 
 fn fraction_after_drag(first: f64, total: f64, dx: f64, min_first: f64, min_second: f64) -> f64 {
@@ -25,8 +26,17 @@ pub fn SplitPane(
     let fraction = RwSignal::new(initial_fraction.clamp(0.001, 0.999));
     let left = NodeRef::<leptos::html::Div>::new();
     let right = NodeRef::<leptos::html::Div>::new();
-    let drag = RwSignal::new(DragTracker::default());
-    let start = RwSignal::new(None::<(f64, f64)>);
+    // ドラッグの状態と、開始時の(左区画の幅, 全体の幅)。描画には使わないので通知しない`StoredValue`に置く。
+    let drag = StoredValue::new(DragTracker::default());
+    let start = StoredValue::new(None::<(f64, f64)>);
+    let stop_drag = move |ev: leptos::ev::PointerEvent| {
+        if drag
+            .try_update_value(|d| d.cancel(ev.pointer_id()))
+            .unwrap_or(false)
+        {
+            start.set_value(None);
+        }
+    };
     let columns = move || {
         if !second_visible.get() {
             return format!("minmax({min_first}px, 1fr)");
@@ -52,7 +62,7 @@ pub fn SplitPane(
             <div class="sim3d-split-handle"
                 style:display=second_display
                 on:pointerdown=move |ev: leptos::ev::PointerEvent| {
-                    if ev.button() != 0 || start.get_untracked().is_some() { return; }
+                    if ev.button() != 0 || start.get_value().is_some() { return; }
                     let (Some(l), Some(r)) = (left.get(), right.get()) else { return; };
                     let width = l.get_bounding_client_rect().width();
                     let total = width + r.get_bounding_client_rect().width();
@@ -61,27 +71,26 @@ pub fn SplitPane(
                     let Some(el) = ev.current_target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()) else { return; };
                     if el.set_pointer_capture(ev.pointer_id()).is_err() { return; }
                     ev.prevent_default();
-                    start.set(Some((width, total)));
-                    drag.update(|d| d.begin(ev.pointer_id(), ev.client_x() as f64, ev.client_y() as f64));
+                    start.set_value(Some((width, total)));
+                    let (x, y) = client_xy(&ev);
+                    drag.update_value(|d| d.begin(ev.pointer_id(), x, y));
                 }
                 on:pointermove=move |ev: leptos::ev::PointerEvent| {
-                    let Some((width, total)) = start.get_untracked() else { return; };
-                    let update = drag.try_update(|d| d.update(ev.pointer_id(), ev.client_x() as f64, ev.client_y() as f64)).flatten();
+                    let Some((width, total)) = start.get_value() else { return; };
+                    let (x, y) = client_xy(&ev);
+                    let update = drag.try_update_value(|d| d.update(ev.pointer_id(), x, y)).flatten();
                     if let Some(update) = update {
                         fraction.set(fraction_after_drag(width, total, update.total.0, min_first, min_second));
                     }
                 }
                 on:pointerup=move |ev: leptos::ev::PointerEvent| {
-                    if drag.try_update(|d| d.end(ev.pointer_id(), ev.client_x() as f64, ev.client_y() as f64)).flatten().is_some() {
-                        start.set(None);
+                    let (x, y) = client_xy(&ev);
+                    if drag.try_update_value(|d| d.end(ev.pointer_id(), x, y)).flatten().is_some() {
+                        start.set_value(None);
                     }
                 }
-                on:pointercancel=move |ev: leptos::ev::PointerEvent| {
-                    if drag.try_update(|d| d.cancel(ev.pointer_id())).unwrap_or(false) { start.set(None); }
-                }
-                on:lostpointercapture=move |ev: leptos::ev::PointerEvent| {
-                    if drag.try_update(|d| d.cancel(ev.pointer_id())).unwrap_or(false) { start.set(None); }
-                }
+                on:pointercancel=stop_drag
+                on:lostpointercapture=stop_drag
             ></div>
             <div class="sim3d-split-content" node_ref=right style:display=second_display>{second.run()}</div>
         </div>

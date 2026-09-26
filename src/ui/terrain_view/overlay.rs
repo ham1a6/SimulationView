@@ -11,37 +11,34 @@ use crate::terrain::drawing_geometry;
 use crate::terrain::geodesy::EnuTransform;
 use crate::terrain::heightmap;
 use crate::terrain::loader::TerrainData;
-use crate::terrain::markers::{self, RadarMarkersState};
+use crate::terrain::markers;
 use crate::terrain::models::placement::build_placements;
-use crate::terrain::origin::Origin;
 use crate::terrain::tracks::{self, TrackOptions};
 
 /// レーダー観測点マーカー(ピン)・見通し範囲の覆域(3Dはドーム、2Dは塗り+輪郭線)のジオメトリを、現在の地形・原点・
 /// マーカー一覧・選択状態から作り直してGPUバッファへ反映する(覆域は非同期の計算が終わってから反映する)。原点変更時
 /// (メッシュ再構築後)・マーカー追加/削除/選択変更時に呼ぶ。描画自体は呼び出し側で
 /// `render_now`すること。
-pub(super) fn rebuild_markers(state: &Rc<RefCell<ViewState>>, radar_markers: RadarMarkersState) {
-    rebuild_marker_pins(state, radar_markers);
+pub(super) fn rebuild_markers(state: &Rc<RefCell<ViewState>>) {
+    rebuild_marker_pins(state);
     // 覆域(計算が重い)は、計算済みならジオメトリの作り直しだけ、未計算なら小分けに非同期で計算する(`coverage`)。
-    refresh_coverage(state, radar_markers, false);
+    refresh_coverage(state, false);
 }
 
 /// `rebuild_markers`と同じだが、地形のレベルが切り替わったとき用。ピンは地表の高さに合わせて作り直し、覆域は
 /// 観測点の範囲の地形が変わっていれば、少し待ってから計算し直す(切り替えは続けて何度も起きるため)。
-pub(super) fn rebuild_markers_for_terrain(
-    state: &Rc<RefCell<ViewState>>,
-    radar_markers: RadarMarkersState,
-) {
-    rebuild_marker_pins(state, radar_markers);
-    refresh_coverage(state, radar_markers, true);
+pub(super) fn rebuild_markers_for_terrain(state: &Rc<RefCell<ViewState>>) {
+    rebuild_marker_pins(state);
+    refresh_coverage(state, true);
 }
 
 /// 観測点のマーカー(ピン)のジオメトリだけを作り直す(軽い)。
-fn rebuild_marker_pins(state: &Rc<RefCell<ViewState>>, radar_markers: RadarMarkersState) {
+fn rebuild_marker_pins(state: &Rc<RefCell<ViewState>>) {
     let mut s = state.borrow_mut();
     let (Some(terrain), Some(mesh_origin)) = (s.terrain.clone(), s.mesh_origin) else {
         return;
     };
+    let radar_markers = s.radar_markers;
     let Some(renderer) = s.renderer.as_mut() else {
         return;
     };
@@ -64,12 +61,15 @@ struct GeometryInputs {
 }
 
 impl GeometryInputs {
-    fn new(terrain: &Rc<TerrainData>, mesh_origin: &Origin, (width, height): (u32, u32)) -> Self {
-        Self {
-            terrain: terrain.clone(),
-            transform: EnuTransform::new(mesh_origin, &terrain.metadata.ellipsoid),
+    /// `ViewState`の地形・メッシュの原点・canvasの大きさから作る。どれかがまだ無ければNone。
+    fn of(s: &ViewState) -> Option<Self> {
+        let (terrain, transform) = s.mesh_frame()?;
+        let (width, height) = s.renderer.as_ref()?.canvas_size_px();
+        Some(Self {
+            terrain,
+            transform,
             viewport_px: (width as f32, height as f32),
-        }
+        })
     }
 
     fn with_context<R>(&self, f: impl FnOnce(&drawing_geometry::BuildContext) -> R) -> R {
@@ -91,14 +91,13 @@ impl GeometryInputs {
 /// (画面座標の角の位置が変わる)のときに呼ぶ。描画自体は呼び出し側で`render_now`すること。
 pub(super) fn rebuild_drawings(state: &Rc<RefCell<ViewState>>) {
     let mut s = state.borrow_mut();
-    let (Some(terrain), Some(mesh_origin)) = (s.terrain.clone(), s.mesh_origin) else {
+    let Some(inputs) = GeometryInputs::of(&s) else {
         return;
     };
     let drawings = s.drawings;
     let Some(renderer) = s.renderer.as_mut() else {
         return;
     };
-    let inputs = GeometryInputs::new(&terrain, &mesh_origin, renderer.canvas_size_px());
     let batches = inputs.with_context(|ctx| {
         drawings
             .items
@@ -112,11 +111,10 @@ pub(super) fn rebuild_drawings(state: &Rc<RefCell<ViewState>>) {
 /// 描画自体は呼び出し側で`render_frame`(または`render_now`)すること。
 pub(super) fn rebuild_tracks(state: &Rc<RefCell<ViewState>>) {
     let mut s = state.borrow_mut();
-    let (Some(terrain), Some(mesh_origin), mode) =
-        (s.terrain.clone(), s.mesh_origin, s.camera.mode)
-    else {
+    let Some(inputs) = GeometryInputs::of(&s) else {
         return;
     };
+    let mode = s.camera.mode;
     let tracks_state = s.tracks;
     let layer = label_layer(&s);
     // 3Dモデルで描いているトラックは、シンボルを描かない(`terrain::models`)。
@@ -125,7 +123,6 @@ pub(super) fn rebuild_tracks(state: &Rc<RefCell<ViewState>>) {
         let Some(renderer) = s.renderer.as_mut() else {
             return;
         };
-        let inputs = GeometryInputs::new(&terrain, &mesh_origin, renderer.canvas_size_px());
         let options = TrackOptions {
             selected: tracks_state.selected.get_untracked(),
             trails: tracks_state.show_trails.get_untracked(),

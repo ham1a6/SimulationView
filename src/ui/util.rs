@@ -23,6 +23,25 @@ pub fn copy_to_clipboard(text: &str) {
     }
 }
 
+/// マウス・ポインターのイベントの画面座標(client座標、CSSピクセル)。
+pub(crate) fn client_xy(ev: &web_sys::MouseEvent) -> (f64, f64) {
+    (f64::from(ev.client_x()), f64::from(ev.client_y()))
+}
+
+/// ブラウザのウインドウの内側の大きさ(CSSピクセル)。取れなければ1024x768。
+pub(crate) fn viewport_size() -> (f64, f64) {
+    let Some(window) = web_sys::window() else {
+        return (1024.0, 768.0);
+    };
+    let px = |v: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>, fallback: f64| {
+        v.ok().and_then(|v| v.as_f64()).unwrap_or(fallback)
+    };
+    (
+        px(window.inner_width(), 1024.0),
+        px(window.inner_height(), 768.0),
+    )
+}
+
 /// 小分けの計算で、1回に続けて進める時間(ミリ秒)。これを超えたら、画面の描画・入力に処理を譲る。
 const SLICE_BUDGET_MS: f64 = 8.0;
 

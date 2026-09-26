@@ -10,6 +10,7 @@ use super::frame_request::FrameRequest;
 use super::models::ModelsView;
 use crate::terrain::camera::OrbitCamera;
 use crate::terrain::drawing::DrawingState;
+use crate::terrain::geodesy::EnuTransform;
 use crate::terrain::hillshade::HillshadeState;
 use crate::terrain::loader::{TerrainData, TileKey};
 use crate::terrain::lod::TileLayout;
@@ -18,11 +19,6 @@ use crate::terrain::origin::Origin;
 use crate::terrain::renderer::TerrainRenderer;
 use crate::terrain::tracks::{TrackId, TrackLabel, TracksState};
 use crate::ui::pointer_drag::DragTracker;
-
-#[derive(Default)]
-pub(super) struct InteractionState {
-    pub(super) drag: DragTracker,
-}
 
 #[derive(Default)]
 pub(super) struct LodState {
@@ -59,7 +55,8 @@ pub(super) struct ViewState {
     pub(super) target_up: f32,
     pub(super) initializing: bool,
     pub(super) frame_request: FrameRequest,
-    pub(super) interaction: InteractionState,
+    /// canvas上のドラッグ(カメラの回転・移動)。
+    pub(super) drag: DragTracker,
     pub(super) radar_markers: RadarMarkersState,
     /// 作図(図形・線)の一覧(`terrain::drawing`)。
     pub(super) drawings: DrawingState,
@@ -78,6 +75,24 @@ pub(super) struct ViewState {
     pub(super) lod: LodState,
     /// 覆域(3Dドーム・2D領域)の計算結果のキャッシュと、進行中の計算(`coverage`)。
     pub(super) coverage: CoverageState,
+}
+
+impl ViewState {
+    /// 地形と、いまGPUにあるメッシュの原点のENU変換。どちらかがまだ無ければNone。
+    pub(super) fn mesh_frame(&self) -> Option<(Rc<TerrainData>, EnuTransform)> {
+        let (terrain, origin) = (self.terrain.clone()?, self.mesh_origin?);
+        let transform = EnuTransform::new(&origin, &terrain.metadata.ellipsoid);
+        Some((terrain, transform))
+    }
+
+    /// canvasの内部解像度の縦幅(ピクセル。レンダラーが無ければ1)。
+    pub(super) fn canvas_height_px(&self) -> u32 {
+        self.renderer
+            .as_ref()
+            .map(|r| r.canvas_size_px().1)
+            .unwrap_or(1)
+            .max(1)
+    }
 }
 
 /// 画面に重ねている航跡ラベル1つ分(HTML要素と、その元のデータ)。
