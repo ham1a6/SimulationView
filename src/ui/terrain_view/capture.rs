@@ -12,13 +12,20 @@
 //!   タイミングで録画全体を1つの`Blob`として1回だけ発火する(`onstop`は使わずこれだけで足りる)。
 //!   `Closure::once`はJS側から1回呼ばれた時点でRust側のメモリも自動解放されるので、
 //!   `forget()`してもリークしない(`resize.rs`のResizeObserver用クロージャのように何度も呼ばれるものは
-//!   `forget()`せず、後始末で解放している)。
+//!   `forget()`せず、後始末で解放している)。ただし呼ばれないと解放されないので、`forget()`するのは
+//!   コールバックの登録(`toBlob`・`MediaRecorder.start()`)が成功したときだけにする。
+//! - ダウンロード用のオブジェクトURLは、`click()`の直後ではなく`DOWNLOAD_URL_REVOKE_DELAY_MS`後に
+//!   解放する(ダウンロードの開始は非同期なので、すぐ解放するとブラウザによっては失敗しうる)。
 
 use leptos::prelude::*;
 use wasm_bindgen::closure::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
 use crate::terrain::capture::CaptureState;
+
+/// ダウンロード用のオブジェクトURLを解放するまでの待ち時間(ミリ秒)。ブラウザがBlobを読み始めるのに
+/// 十分な余裕を取る(その間はBlobのメモリが残る)。
+const DOWNLOAD_URL_REVOKE_DELAY_MS: u32 = 40_000;
 
 /// 現在のcanvasの内容をPNGとしてダウンロードする("sim3dview_20260922_153012.png")。
 pub(super) fn save_screenshot(canvas: &web_sys::HtmlCanvasElement) {
@@ -35,7 +42,9 @@ pub(super) fn save_screenshot(canvas: &web_sys::HtmlCanvasElement) {
         .to_blob_with_type(callback.as_ref().unchecked_ref(), "image/png")
         .is_err()
     {
+        // コールバックは呼ばれないので、ここで`callback`をdropして解放する。
         log::warn!("[capture] HTMLCanvasElement.toBlob の呼び出しに失敗しました");
+        return;
     }
     // `Closure::once`なので、toBlobのコールバックが呼ばれた時点で解放される。
     callback.forget();
@@ -127,9 +136,13 @@ fn start_recording(canvas: &web_sys::HtmlCanvasElement) -> Result<Recording, JsV
         }
     });
     recorder.set_ondataavailable(Some(ondataavailable.as_ref().unchecked_ref()));
+    if let Err(e) = recorder.start() {
+        // 録画は始まらず`ondataavailable`も呼ばれないので、登録を外してクロージャを解放する。
+        recorder.set_ondataavailable(None);
+        return Err(e);
+    }
+    // 始まったら`stop()`で1回だけ呼ばれる(`Closure::once`なので、そのとき解放される)。
     ondataavailable.forget();
-
-    recorder.start()?;
     Ok(Recording { recorder })
 }
 
@@ -151,8 +164,11 @@ fn trigger_download(blob: &web_sys::Blob, filename: &str) {
         body.remove_child(&anchor).ok()?;
         Some(())
     })();
-    // `click()`でダウンロードが始まればURLは不要なので、すぐ解放する。
-    let _ = web_sys::Url::revoke_object_url(&url);
+    // ダウンロードの開始は非同期なので、少し待ってから解放する。
+    wasm_bindgen_futures::spawn_local(async move {
+        gloo_timers::future::TimeoutFuture::new(DOWNLOAD_URL_REVOKE_DELAY_MS).await;
+        let _ = web_sys::Url::revoke_object_url(&url);
+    });
 }
 
 /// ファイル名に使うタイムスタンプ("20260922_153012")。

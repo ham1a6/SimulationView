@@ -763,7 +763,7 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 | 実処理 | `ui::terrain_view::capture`(非公開) | `HTMLCanvasElement`のtoBlob・captureStream、`MediaRecorder`、ダウンロードのDOM操作 |
 
 **スクリーンショット**: `CaptureState::request_screenshot()`で要求カウンタを1増やす(`recenter_request.count`と同じ「0は未クリック、増えたら実行」の約束)。
-`TerrainView`のEffectがそれを見て、canvasの`toBlob("image/png")`結果を`sim3dview_YYYYMMDD_HHMMSS.png`として`<a download>`要素をその場で作ってクリックすることでダウンロードさせる。
+`TerrainView`のEffectがそれを見て、canvasの`toBlob("image/png")`結果を`sim3dview_YYYYMMDD_HHMMSS.png`として`<a download>`要素をその場で作ってクリックすることでダウンロードさせる。オブジェクトURLはダウンロードの開始(非同期)を待つため40秒後に解放する(`DOWNLOAD_URL_REVOKE_DELAY_MS`)。`toBlob`・`MediaRecorder.start()`の呼び出しが失敗したときはコールバックを`forget`せず解放する。
 
 **画面録画**: `CaptureState::toggle_recording()`で`recording_requested`(bool)を反転させる。`TerrainView`のEffectはこの値と「今実際に録画中か」の食い違いを見て、
 開始時は`HTMLCanvasElement.captureStream()`(引数なし=canvasが実際に描画されるたびにフレームが入る。地形は常時アニメーションせず操作時だけ再描画するため、固定fps指定より効率が良い)の`MediaStream`を
@@ -952,7 +952,7 @@ record_bytes = (n+1)² × 2
 
 ### 9.3 測地(`terrain::geodesy`)と標高サンプリング(`terrain::heightmap`)
 
-式は3.2節。`Ellipsoid::WGS84 = { a_m: 6378137.0, inv_f: 298.257222101 }`。`EnuTransform::new(&Origin, &Ellipsoid)`が**原点ごとに1回だけ**前計算するもの: `a`, `e2`, `origin_ecef`,
+式は3.2節。`Ellipsoid::WGS84 = { a_m: 6378137.0, inv_f: 298.257223563 }`(地形の座標変換は`metadata.json`の`ellipsoid`を使い、この定数は地形データを読む前の計算とテスト用)。`EnuTransform::new(&Origin, &Ellipsoid)`が**原点ごとに1回だけ**前計算するもの: `a`, `e2`, `origin_ecef`,
 `enu_from_ecef: DMat3`(行が東・北・上の単位ベクトル。glamは列優先なので`from_cols((-sinλ0, -sinφ0cosλ0, cosφ0cosλ0), (cosλ0, -sinφ0sinλ0, cosφ0sinλ0), (0, cosφ0, sinφ0))`)、`meridian_radius = a(1-e2)/w³`、`parallel_radius = a/w·cosφ0`(`w=sqrt(1-e2 sin²φ0)`)。
 
 | メソッド | 仕様 |
@@ -1408,7 +1408,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 
 - **原点変更(Effect 3、`frame::change_origin`)**: 新原点がNone・未初期化・現在のメッシュ原点と同じなら何もしない。`target_up = sample_heightmap(new_origin)`。**注視点**: `target.xy==0`(原点に追従)なら`target.z = target_up`、そうでなければ(パンして別の場所を見ていた)旧原点での緯度経度を求め、新原点の`ground_at_geodetic`のENUを`target`にする(同じ場所を見続ける)。
   `set_ellipsoid_origin`→**常駐する全メッシュ**(`lod.resident`)の頂点位置を新原点で作り直して`update_mesh_vertices`(頂点数・並び・インデックスは原点非依存で不変。再取得は不要)→`render`→`mesh_origin`更新→借用を`drop`してから`rebuild_*`・`render_now`
-- **入力イベント**: 定数`ORBIT_SENSITIVITY=0.0075`、`CLICK_MAX_MOVE_PX=5`(押下位置からこれ未満の移動はドラッグでなくクリック)、ホイール係数1.12。
+- **入力イベント**: 定数`ORBIT_SENSITIVITY=0.0075`、`CLICK_MAX_MOVE_PX=5`(押下位置からこれ未満の移動はドラッグでなくクリック)、ホイールは1ノッチ(`deltaMode=0`で`deltaY=100`、`deltaMode=1`で3行)ごとに距離を1.12倍し、量に比例させる(トラックパッドの小さな値は1ノッチの一部。1イベントあたり±3ノッチで頭打ち。縦の量が0の横スクロールではズームしない。`input::wheel_zoom_factor`)。
   `pointerdown`=`drag.begin`+`set_pointer_capture`。`pointermove`=(図形作成中で非ドラッグなら`request_animation_frame`で1フレームに1回へまとめて`pick`→`set_hover`)/ドラッグ中は`DragTracker`の直前位置からの差分を使い(`input::apply_drag`)、3Dで`shift`なら`pan_orbit_target`後に`target.z = ground_at_enu(target.xy).up`・そうでなければ`orbit`、2Dは`pan(dx·wpp, -dy·wpp)`。
   `pointerup`は同じpointer IDだけを終了し、左ボタン・合計移動5px未満なら次の優先順で ①原点指定中なら`pick`が`Some`で`on_pick`(範囲外はモード維持) ②図形作成ツール選択中なら`tool.click` ③それ以外は`pick_track_at_client`→`tracks.select`(**何もない所は`None`=選択解除**)を実行する。
   `wheel`=`zoom`。`contextmenu`=`prevent_default`。図形作成中なら`undo`。`ContextMenuState`と`MapMenuState`の**両方**があれば`position`(pick)と`track`(pick_track。あれば先に選択)を`MapMenuTarget`にしてメニューを出す(どちらもNoneなら出さない)。どちらか無ければ従来どおり観測点を追加。
