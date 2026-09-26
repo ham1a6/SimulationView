@@ -4136,7 +4136,7 @@ flowchart TD
       <div class="callout">
         <div class="label">💡 まだ重ければ</div>
         <p>
-          開発ビルド(<code>trunk serve</code>。最適化なし)は、リリースビルドより計算が数倍遅いです。さらに軽くするなら、<code>[profile.dev.package.sim3dview] opt-level</code>の引き上げ、
+          最適化なしのビルドは、リリースビルドより計算が数倍遅いです(サンプルは<code>sample/Cargo.toml</code>の<code>[profile.dev.package."*"] opt-level = 3</code>で、<code>trunk serve</code>でもライブラリと依存を最適化済み)。さらに軽くするなら、
           <code>SAMPLES_PER_RAY</code>(1000)の見直し、覆域の計算結果の永続化(観測点の一覧はlocalStorageに保存されない)が候補です。
         </p>
       </div>

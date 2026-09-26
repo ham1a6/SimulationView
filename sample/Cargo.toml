@@ -2,5 +2,17 @@
 resolver = "2"
 members = ["sim_frontend"]
 
+# `trunk serve`(devプロファイル)でも、ライブラリ`sim3dview`と依存crate(wgpu・leptos等)は最適化して動かす。
+# 最適化なしだと地形のメッシュ生成が約10倍遅く(ネイティブ実測で1頂点約36→約410ns)、起動後に地形が
+# そろうまでが大きく延びる。依存の最適化で遅くなるのは初回のフルビルド(数分)だけで、以後は差分ビルド
+# なので`sim_frontend`の編集サイクルは変わらない。`sim_frontend`自身は最適化なしのまま。
+[profile.dev.package."*"]
+opt-level = 3
+
 [profile.release]
 opt-level = "s"
+
+# リリースでも、計算の重いライブラリだけは速度優先にする(依存は"s"のままでwasmを小さく保つ)。
+# メッシュ生成はネイティブ実測で"s"より約1.3〜1.6倍速い。
+[profile.release.package.sim3dview]
+opt-level = 3
