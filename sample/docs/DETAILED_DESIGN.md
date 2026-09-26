@@ -14,6 +14,7 @@
 `sample/Cargo.toml` は `sim_frontend` の独立ワークスペース。ルートのライブラリを `path = "../.."` で参照する。
 Cargo.lock・target・Trunk設定・ElectronのNode依存と配布出力は `sample/` 内に置く。
 C++サーバー・モデル生成・ライセンス生成もこのディレクトリで管理する。
+ルートの `.gitmodules` はGitの仕様で必要なサブモジュール登録のみ保持する。
 
 ビルドプロファイル(`sample/Cargo.toml`):
 
@@ -23,7 +24,6 @@ C++サーバー・モデル生成・ライセンス生成もこのディレク�
 | dev | それ以外(`"*"`=`sim3dview`とwgpu・leptos等の依存) | 3 | 最適化なしでは地形のメッシュ生成が約10倍遅く、起動後に地形がそろうまでが大きく延びる |
 | release(`trunk build --release`) | 全体 | `"s"` | wasmを小さく保つ |
 | release | `sim3dview` | 3 | メッシュ生成・覆域計算など計算の重いライブラリだけ速度優先 |
-ルートの `.gitmodules` はGitの仕様で必要なサブモジュール登録のみ保持する。
 
 
 ## 1. 地形入力データ
