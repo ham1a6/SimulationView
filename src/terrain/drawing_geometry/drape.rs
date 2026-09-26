@@ -1,9 +1,20 @@
 //! 地表貼り付け図形と表示LODの三角形を交差させる。設計書9.11節。
 //! 点サンプリングによる細分化では山頂を見落とすため、地形の面そのものを切り抜く。
+//!
+//! 計算はすべて経度・緯度の平面([経度, 緯度]の2次元)で行う:
+//! - 塗り: 図形の輪郭を三角形に分け、その三角形ごとに、重なる地形の三角形
+//!   (`TerrainData::visit_surface_triangles`)を図形の三角形で切り抜く(`clip_triangle`)。
+//!   切り抜いた多角形の頂点の高さは、地形の三角形の頂点(GPUへ渡すのと同じf32の位置)から
+//!   補間する(`mapper`)ので、画面に描かれている地形の面にぴったり沿う。
+//! - 線: 輪郭の各辺を、地形の三角形ごとに、その三角形の内側にある区間へ切り分けて出す。
+//!
+//! 地形の三角形は、経度・緯度の平面で反時計回り(内側が`orient`の正の側)で渡される前提。
 
 use super::*;
 use crate::terrain::loader::{GeodeticBounds, TerrainData};
 
+/// 点列([経度, 緯度])を囲む矩形。端がちょうど地形のセルの境界に乗っても隣のセルを取りこぼさないよう、
+/// わずかに広げる。
 fn bounds(points: &[[f64; 2]]) -> GeodeticBounds {
     GeodeticBounds {
         min_lon: points.iter().map(|p| p[0]).fold(f64::INFINITY, f64::min) - 1e-10,
@@ -22,7 +33,11 @@ fn bounds(points: &[[f64; 2]]) -> GeodeticBounds {
 }
 
 /// 凸三角形で切り抜く。出力頂点は常に入力の地形三角形の内部にある。
+///
+/// 地形の三角形`surface`を、図形の三角形`shape`の3辺それぞれの内側の半平面で順に切っていく
+/// (Sutherland–Hodgman法)。結果は凸多角形(最大6頂点。空なら重なりなし)。
 fn clip_triangle(surface: [[f64; 2]; 3], mut shape: [[f64; 2]; 3]) -> Vec<[f64; 2]> {
+    // 図形の三角形を反時計回りにそろえ、各辺の左側(`orient`が正)を内側にする。
     if orient(shape[0], shape[1], shape[2]) < 0.0 {
         shape.swap(1, 2);
     }
@@ -33,11 +48,13 @@ fn clip_triangle(surface: [[f64; 2]; 3], mut shape: [[f64; 2]; 3]) -> Vec<[f64; 
         if poly.is_empty() {
             break;
         }
+        // 多角形の各辺p→qについて: 境界をまたぐなら交点を、qが内側ならqを出す。
         let mut p = *poly.last().unwrap();
         let mut dp = orient(a, b, p);
         for &q in &poly {
             let dq = orient(a, b, q);
             if (dp >= 0.0) != (dq >= 0.0) {
+                // 符号付きの距離dp・dqの比で、辺p→q上の交点の位置が決まる。
                 next.push(mix(p, q, dp / (dp - dq)));
             }
             if dq >= 0.0 {
@@ -53,15 +70,22 @@ fn clip_triangle(surface: [[f64; 2]; 3], mut shape: [[f64; 2]; 3]) -> Vec<[f64; 
 
 /// 地形の三角形と同じf32頂点を補間し、ENUの上方向へ持ち上げる。
 /// 切り抜いた点を再度標高サンプリングすると、別のLODを引くので禁止する。
+///
+/// `tri`は地形の三角形の頂点([経度, 緯度, 標高])。返す関数は、三角形内の点([経度, 緯度])を
+/// 重心座標で補間したENUの位置に、`height`(地表からの高さ)と`DRAWING_M`を上座標へ足したものにする。
 fn mapper<'a>(
     ctx: &'a BuildContext,
     tri: [[f64; 3]; 3],
     height: f64,
 ) -> impl Fn([f64; 2]) -> [f32; 3] + 'a {
     let xy = tri.map(|p| [p[0], p[1]]);
+    // 地形メッシュと同じく`transform`(f32に丸める)で頂点を作る。丸めた値どうしを補間することで、
+    // GPUが描く地形の面と同じ位置になる。
     let xyz = tri.map(|p| ctx.mesh_transform.transform(p[1], p[0], p[2]));
+    // 三角形の符号付き面積の2倍(重心座標の分母)。
     let area = orient(xy[0], xy[1], xy[2]);
     move |p| {
+        // 各頂点の重み = 向かい側の辺と点pで作る三角形の面積の割合。
         let weights = [
             orient(xy[1], xy[2], p) / area,
             orient(xy[2], xy[0], p) / area,
@@ -74,6 +98,7 @@ fn mapper<'a>(
     }
 }
 
+/// 地表に貼り付ける2D図形(`frame`は`World`・`AboveGround(height)`)を、表示中の地形の面に重ねて出す。
 pub(super) fn emit(
     sink: &mut Sink,
     ctx: &BuildContext,
@@ -92,6 +117,7 @@ pub(super) fn emit(
     else {
         return;
     };
+    // 図形のローカル座標(メートル)を[経度, 緯度]にする。
     let geodetic = |p: [f64; 2]| {
         let (lat, lon) = from_local(*lat_deg, *lon_deg, p, *radius_m);
         [lon, lat]
@@ -114,6 +140,7 @@ pub(super) fn emit(
                 if poly.len() < 3 {
                     return;
                 }
+                // 切り抜いた凸多角形を、最初の頂点からの扇で三角形にする(面積0の三角形は出さない)。
                 let map = mapper(ctx, surface, height);
                 for i in 1..poly.len() - 1 {
                     if orient(poly[0], poly[i], poly[i + 1]).abs() > 1e-18 {
@@ -132,18 +159,22 @@ pub(super) fn emit(
         for outline in &geom.outlines {
             for (a, b) in segments(&outline.points, outline.closed) {
                 let (a, b) = (geodetic(a), geodetic(b));
+                // 辺a→bのうち、各地形三角形の内側にある区間[lo, hi](0〜1の割合)と、その両端の位置。
                 let mut pieces = Vec::new();
                 terrain.visit_surface_triangles(bounds(&[a, b]), |surface| {
                     let xy = surface.map(|p| [p[0], p[1]]);
+                    // 三角形の3辺それぞれの内側の半平面で、線分のパラメータ区間を狭める。
                     let (mut lo, mut hi): (f64, f64) = (0.0, 1.0);
                     for edge in 0..3 {
                         let p = xy[edge];
                         let q = xy[(edge + 1) % 3];
                         let da = orient(p, q, a);
                         let db = orient(p, q, b);
+                        // 両端とも外側なら、この三角形とは重ならない。
                         if da < 0.0 && db < 0.0 {
                             return;
                         }
+                        // 境界をまたぐ: 外→内なら入る位置(loを上げる)、内→外なら出る位置(hiを下げる)。
                         if (da < 0.0) != (db < 0.0) {
                             let t = da / (da - db);
                             if da < 0.0 {

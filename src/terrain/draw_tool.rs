@@ -26,18 +26,28 @@ const MIN_POINT_SPACING_M: f64 = 1.0;
 /// 作れる図形の種類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolKind {
+    /// 円(中心→円周の2クリック)。
     Circle,
+    /// 東西・南北に沿った矩形(対角の2クリック)。
     Rect,
+    /// 多角形(3点以上、確定操作で終わる)。
     Polygon,
+    /// 扇形(中心→開始側の縁→終了側の縁の3クリック)。
     Sector,
+    /// 折れ線(2点以上、確定操作で終わる)。
     Polyline,
+    /// 球(中心→表面の2クリック)。
     Sphere,
+    /// 直方体(底面の対角の2クリック)。
     Cuboid,
+    /// 円柱(底面の中心→円周の2クリック)。
     Cylinder,
+    /// 円錐(底面の中心→円周の2クリック)。
     Cone,
 }
 
 impl ToolKind {
+    /// 全ツール(作図エディタのボタンの並び順)。
     pub const ALL: [ToolKind; 9] = [
         Self::Circle,
         Self::Rect,
@@ -50,6 +60,7 @@ impl ToolKind {
         Self::Cone,
     ];
 
+    /// 画面に出す名前(ボタン・図形の既定の名前に使う)。
     pub fn label(self) -> &'static str {
         match self {
             Self::Circle => "円",
@@ -116,8 +127,10 @@ impl ToolKind {
 // クリックした点(緯度, 経度)から図形を作る(状態を持たない計算)
 // ---------------------------------------------------------------------------------------------
 
+/// (緯度, 経度)(度)。
 type LatLon = (f64, f64);
 
+/// 緯度`lat_deg`での、球面近似の半径(平均曲率半径)。
 fn radius_at(lat_deg: f64) -> f64 {
     // 地形データのellipsoidを持たないので、WGS84を使う(厳密に同じでなくても見た目に差は出ない)。
     Ellipsoid::WGS84.mean_radius(lat_deg)
@@ -133,6 +146,7 @@ fn offset(from: LatLon, east: f64, north: f64) -> LatLon {
     from_local(from.0, from.1, [east, north], radius_at(from.0))
 }
 
+/// 2点間の距離(メートル。球面の大円距離)。
 fn distance(a: LatLon, b: LatLon) -> f64 {
     let l = local(a, b);
     l[0].hypot(l[1])
@@ -161,6 +175,8 @@ pub fn build_shape(kind: ToolKind, pts: &[LatLon], altitude: Altitude) -> Option
         ToolKind::Sphere => {
             let [c, e, ..] = pts else { return None };
             let radius = sized(distance(*c, *e))?;
+            // 球の位置は中心なので、地表基準なら半径だけ上げて底を地表に接するようにする
+            // (海抜指定はその高さを中心とする)。
             let alt = match altitude {
                 Altitude::AboveGround(offset) => Altitude::AboveGround(offset + radius),
                 msl => msl,
@@ -174,6 +190,7 @@ pub fn build_shape(kind: ToolKind, pts: &[LatLon], altitude: Altitude) -> Option
             let [c, e, ..] = pts else { return None };
             let radius = sized(distance(*c, *e))?;
             let base_center = at(*c, altitude);
+            // クリックでは高さを指定できないので、既定は直径と同じ高さ(後で数値編集で変えられる)。
             let height = radius * 2.0;
             Some(if kind == ToolKind::Cylinder {
                 Shape::Cylinder {
@@ -191,6 +208,8 @@ pub fn build_shape(kind: ToolKind, pts: &[LatLon], altitude: Altitude) -> Option
         }
         ToolKind::Rect | ToolKind::Cuboid => {
             let [a, b, ..] = pts else { return None };
+            // 1つ目の角から見た対角の角の[東, 北]が、そのまま幅・奥行きになる(向きは東西・南北に固定)。
+            // 中心は2つの角の中点。直方体の高さは、クリックでは指定できないので幅と奥行きの平均にする。
             let [dx, dy] = local(*a, *b);
             let (width, depth) = (sized(dx.abs())?, sized(dy.abs())?);
             let center = at(offset(*a, dx / 2.0, dy / 2.0), altitude);
@@ -211,8 +230,10 @@ pub fn build_shape(kind: ToolKind, pts: &[LatLon], altitude: Altitude) -> Option
         }
         ToolKind::Sector => {
             let [c, a, b, ..] = pts else { return None };
+            // 半径は2点目までの距離。3点目は方位だけに使うが、中心に近すぎると方位が定まらないので弾く。
             let radius = sized(distance(*c, *a))?;
             sized(distance(*c, *b))?;
+            // 開始方位から時計回りに終了方位まで(1度未満の扇は作らない)。
             let start_deg = bearing_deg(*c, *a);
             let sweep = (bearing_deg(*c, *b) - start_deg).rem_euclid(360.0);
             (sweep >= 1.0).then_some(Shape::Sector {
@@ -274,6 +295,7 @@ fn highlight_shape(shape: &Shape) -> Shape {
     shape
 }
 
+/// 選択の枠の見た目(塗りなしの黄色い4pxの線)。
 fn highlight_style() -> Style {
     Style::stroked(Color::YELLOW, 4.0)
 }
@@ -285,10 +307,13 @@ fn highlight_style() -> Style {
 /// このエディタで作った図形1つ分の情報(図形自体は`DrawingState`にある)。
 #[derive(Debug, Clone, PartialEq)]
 pub struct UserShape {
+    /// `DrawingState`の中の図形のID。
     pub id: DrawingId,
+    /// 一覧に出す名前(既定は「円 1」のように種類+通し番号。変更できる)。
     pub name: String,
 }
 
+/// localStorageに保存する図形1つ分(JSON)。
 #[derive(Serialize, Deserialize)]
 struct SavedShape {
     name: String,
@@ -297,17 +322,22 @@ struct SavedShape {
     visible: bool,
 }
 
+/// localStorageに保存する内容全体(JSON)。
 #[derive(Serialize, Deserialize)]
 struct SavedFile {
+    /// 保存形式の版。`SAVE_VERSION`と違えば読み込まない。
     version: u32,
+    /// 作った順の図形。
     shapes: Vec<SavedShape>,
 }
 
+/// 保存形式の版。`Shape`・`Style`のシリアライズ形式を互換性なく変えたら上げる。
 const SAVE_VERSION: u32 = 1;
 
 /// 作図エディタの状態。`Copy`なので、そのままクロージャへ持ち込める。
 #[derive(Clone, Copy)]
 pub struct DrawToolState {
+    /// 図形を実際に置く作図の一覧(`TerrainView`が描くものと同じ)。
     pub drawings: DrawingState,
     /// 選んでいるツール(`None`なら地図のクリックは作図に使わない)。
     pub tool: RwSignal<Option<ToolKind>>,
@@ -332,6 +362,7 @@ pub struct DrawToolState {
 }
 
 impl DrawToolState {
+    /// `drawings`の上に作図ツールを作る(ツール未選択・図形なし)。保存・復元は`persist`で有効にする。
     pub fn new(drawings: DrawingState) -> Self {
         Self {
             drawings,
@@ -356,6 +387,7 @@ impl DrawToolState {
     /// 作った図形をブラウザのlocalStorage(`key`)へ保存し、次回起動時に復元する。
     /// 作成直後(コンポーネント内)で1度だけ呼ぶこと。
     pub fn persist(self, key: &'static str) -> Self {
+        // 起動時: 保存があれば、同じ版のものだけ作った図形として戻す(読めなければ警告して空のまま)。
         if let Some(json) = read_storage(key) {
             match serde_json::from_str::<SavedFile>(&json) {
                 Ok(file) if file.version == SAVE_VERSION => {
@@ -371,6 +403,9 @@ impl DrawToolState {
                 Err(e) => log::warn!("[draw_tool] 保存された図形を読み込めない: {e}"),
             }
         }
+        // 以後: 作った図形の一覧・中身が変わるたびにJSONを作り直し、前回と違うときだけ書く
+        // (Effectの戻り値を次回の`prev`として受け取り、同じ内容の書き込みを省く)。
+        // 仮の図形・選択の枠は`shapes`に入っていないので保存されない。
         Effect::new(move |prev: Option<String>| {
             let shapes = self.shapes.get();
             let saved = self.drawings.items.with(|items| {
@@ -430,6 +465,7 @@ impl DrawToolState {
         self.refresh_draft();
     }
 
+    /// ツールを選んでいるか(リアクティブに読む)。
     pub fn is_active(&self) -> bool {
         self.tool.get().is_some()
     }
@@ -468,6 +504,7 @@ impl DrawToolState {
         };
         let p = (lat_deg, lon_deg);
         let mut pts = self.points.get_untracked();
+        // ダブルクリック(確定)の1回目・2回目がどちらもクリックとして届くので、同じ場所の2回目は無視する。
         if pts
             .last()
             .is_some_and(|last| distance(*last, p) < MIN_POINT_SPACING_M)
@@ -475,6 +512,7 @@ impl DrawToolState {
             return;
         }
         pts.push(p);
+        // 決まった数の点が揃ったら確定する(多角形・折れ線は`finish`まで続ける)。
         if kind.fixed_points() == Some(pts.len()) {
             match build_shape(kind, &pts, self.new_altitude.get_untracked()) {
                 Some(shape) => {
@@ -527,6 +565,7 @@ impl DrawToolState {
         }
     }
 
+    /// 作り終えた図形を、種類+通し番号の名前で一覧に加えて選択する。
     fn commit(&self, kind: ToolKind, shape: Shape) {
         let serial = self.serial.get_untracked() + 1;
         self.serial.set(serial);
@@ -538,6 +577,7 @@ impl DrawToolState {
         self.select(Some(id));
     }
 
+    /// 図形を`drawings`へ置き、このエディタで作った図形の一覧にも加える。
     fn add_user_shape(&self, name: String, shape: Shape, style: Style) -> DrawingId {
         let id = self.drawings.add(shape, style);
         self.shapes.update(|list| list.push(UserShape { id, name }));
@@ -578,6 +618,7 @@ impl DrawToolState {
         else {
             return;
         };
+        // 図形の全ての位置を同じだけ東・北へずらす(形は変えない)。
         let shift = characteristic_size_m(&shape) * 0.5;
         for p in shape.positions_mut() {
             if let Position::World {
@@ -591,6 +632,7 @@ impl DrawToolState {
         self.select(Some(new_id));
     }
 
+    /// 図形の名前を変える(一覧に無ければ何もしない)。
     pub fn rename(&self, id: DrawingId, name: String) {
         self.shapes.update(|list| {
             if let Some(u) = list.iter_mut().find(|u| u.id == id) {
@@ -599,6 +641,7 @@ impl DrawToolState {
         });
     }
 
+    /// 図形を消す(選択中なら選択も外す)。
     pub fn remove(&self, id: DrawingId) {
         self.drawings.remove(id);
         self.shapes.update(|list| list.retain(|u| u.id != id));
@@ -618,6 +661,7 @@ impl DrawToolState {
 
     // ---- 仮の図形・選択の枠(`drawings`の中の1要素を、あれば更新・無ければ追加・不要なら削除する) ----
 
+    /// 作成中の仮の図形を、いまのツール・置いた点・カーソル位置に合わせて作り直す(点が無ければ消す)。
     fn refresh_draft(&self) {
         let shape = self.tool.get_untracked().and_then(|kind| {
             let pts = self.points.get_untracked();
@@ -637,6 +681,7 @@ impl DrawToolState {
         Self::sync_temp(self.drawings, self.draft, shape, style);
     }
 
+    /// 選択の枠を、選択中の図形に合わせて作り直す(選択なしなら消す)。
     fn refresh_highlight(&self) {
         let shape = self.selected.get_untracked().and_then(|id| {
             self.drawings
@@ -645,6 +690,8 @@ impl DrawToolState {
         Self::sync_temp(self.drawings, self.highlight, shape, highlight_style());
     }
 
+    /// `slot`が指す`drawings`の中の一時的な図形を、`shape`に合わせる(あれば同じIDのまま更新・
+    /// 無ければ追加してIDを`slot`へ記録・`shape`がNoneなら削除)。
     fn sync_temp(
         drawings: DrawingState,
         slot: RwSignal<Option<DrawingId>>,
@@ -666,14 +713,17 @@ impl DrawToolState {
     }
 }
 
+/// ブラウザのlocalStorage(使えない環境・プライベートブラウズでの拒否などはNone)。
 fn storage() -> Option<web_sys::Storage> {
     web_sys::window()?.local_storage().ok().flatten()
 }
 
+/// `key`の値(無い・読めなければNone)。
 fn read_storage(key: &str) -> Option<String> {
     storage()?.get_item(key).ok().flatten()
 }
 
+/// `key`へ書く。容量超過などで書けなければ警告だけ出す(作図自体は続けられる)。
 fn write_storage(key: &str, value: &str) {
     if let Some(storage) = storage() {
         if storage.set_item(key, value).is_err() {

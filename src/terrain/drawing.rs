@@ -20,29 +20,42 @@
 use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
+/// 作図要素の識別子(`DrawingState::add`が1から順に振る。削除しても再利用しない)。
 pub type DrawingId = u64;
 
 /// 色(各成分0〜1、アルファは非乗算)。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Color {
+    /// 赤(0〜1)。
     pub r: f32,
+    /// 緑(0〜1)。
     pub g: f32,
+    /// 青(0〜1)。
     pub b: f32,
+    /// 不透明度(0=透明〜1=不透明)。
     pub a: f32,
 }
 
 impl Color {
+    /// 白。
     pub const WHITE: Self = Self::rgb(1.0, 1.0, 1.0);
+    /// 黒。
     pub const BLACK: Self = Self::rgb(0.0, 0.0, 0.0);
+    /// 赤(純色ではなく少し明るくした値。以下の色も同様に純色から調整した値)。
     pub const RED: Self = Self::rgb(1.0, 0.2, 0.2);
+    /// 緑。
     pub const GREEN: Self = Self::rgb(0.2, 0.9, 0.3);
+    /// 青。
     pub const BLUE: Self = Self::rgb(0.2, 0.5, 1.0);
+    /// 黄。
     pub const YELLOW: Self = Self::rgb(1.0, 0.9, 0.2);
 
+    /// 不透明度つきの色。
     pub const fn rgba(r: f32, g: f32, b: f32, a: f32) -> Self {
         Self { r, g, b, a }
     }
 
+    /// 不透明な色。
     pub const fn rgb(r: f32, g: f32, b: f32) -> Self {
         Self::rgba(r, g, b, 1.0)
     }
@@ -52,6 +65,7 @@ impl Color {
         Self { a, ..self }
     }
 
+    /// 頂点へ入れる形([r, g, b, a])。
     pub(crate) fn to_array(self) -> [f32; 4] {
         [self.r, self.g, self.b, self.a]
     }
@@ -65,7 +79,9 @@ impl Color {
 /// どちらも`None`なら何も描かない。アルファが1未満の色は半透明で描く。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Style {
+    /// 塗りの色(Noneなら塗らない)。
     pub fill: Option<Color>,
+    /// 線・輪郭線の色(Noneなら線を描かない)。
     pub stroke: Option<Color>,
     /// 線・輪郭線の太さ(画面のピクセル)。拡大・縮小しても太さは変わらない。
     pub stroke_width_px: f32,
@@ -90,6 +106,7 @@ impl Style {
         }
     }
 
+    /// 塗りと線・輪郭線の両方。
     pub const fn fill_and_stroke(fill: Color, stroke: Color, width_px: f32) -> Self {
         Self {
             fill: Some(fill),
@@ -139,27 +156,35 @@ impl Altitude {
 /// `Position::Screen`の基準になる画面の角。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Corner {
+    /// 左上の角。
     TopLeft,
+    /// 右上の角。
     TopRight,
+    /// 左下の角。
     BottomLeft,
+    /// 右下の角。
     BottomRight,
+    /// 画面の中央。
     Center,
 }
 
 /// 図形を置く位置。種類ごとの意味はモジュールの説明を参照。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Position {
+    /// 地球上の位置(緯度・経度は度)と高度。
     World {
         lat_deg: f64,
         lon_deg: f64,
         altitude: Altitude,
     },
     /// `corner`から見て右へ`x_px`・下へ`y_px`(画面の向き。右下の角なら負の値で内側へ寄る)。
+    /// canvasの大きさが変わっても、角からの距離は保たれる。
     Screen {
         corner: Corner,
         x_px: f64,
         y_px: f64,
     },
+    /// カメラから見た位置(メートル): 画面の右へ`right_m`、上へ`up_m`、視線の前方へ`forward_m`。
     View {
         right_m: f64,
         up_m: f64,
@@ -168,6 +193,7 @@ pub enum Position {
 }
 
 impl Position {
+    /// `Position::World`を作る。
     pub const fn world(lat_deg: f64, lon_deg: f64, altitude: Altitude) -> Self {
         Self::World {
             lat_deg,
@@ -176,10 +202,12 @@ impl Position {
         }
     }
 
+    /// `Position::Screen`を作る。
     pub const fn screen(corner: Corner, x_px: f64, y_px: f64) -> Self {
         Self::Screen { corner, x_px, y_px }
     }
 
+    /// `Position::View`を作る。
     pub const fn view(right_m: f64, up_m: f64, forward_m: f64) -> Self {
         Self::View {
             right_m,
@@ -188,6 +216,7 @@ impl Position {
         }
     }
 
+    /// この位置の座標の種類。
     pub fn space(&self) -> Space {
         match self {
             Self::World { .. } => Space::World,
@@ -200,8 +229,11 @@ impl Position {
 /// 図形が属する座標の種類(`Position`の3種類に対応する)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Space {
+    /// 地球上に固定(`Position::World`)。
     World,
+    /// カメラに固定・遠近法あり(`Position::View`)。
     View,
+    /// 画面に固定(`Position::Screen`)。
     Screen,
 }
 
@@ -273,6 +305,7 @@ impl Shape {
         Ok(space)
     }
 
+    /// 3D図形(球・直方体・円柱・円錐)か。
     pub fn is_solid(&self) -> bool {
         matches!(
             self,
@@ -325,8 +358,11 @@ impl Shape {
 /// 1つの作図要素(図形+見た目)。
 #[derive(Debug, Clone, PartialEq)]
 pub struct Drawing {
+    /// 識別子(`DrawingState::add`が振る)。
     pub id: DrawingId,
+    /// 形と位置。
     pub shape: Shape,
+    /// 色・線の太さ。
     pub style: Style,
     /// falseなら描かない(一覧には残る)。
     pub visible: bool,
@@ -336,11 +372,14 @@ pub struct Drawing {
 /// (`DrawingState::new()`)。
 #[derive(Clone, Copy)]
 pub struct DrawingState {
+    /// 作図の一覧(追加した順。後ろほど手前に描く)。
     pub items: RwSignal<Vec<Drawing>>,
+    /// 次に追加する図形に振るID。
     next_id: RwSignal<u64>,
 }
 
 impl DrawingState {
+    /// 空の一覧で作る。
     pub fn new() -> Self {
         Self {
             items: RwSignal::new(Vec::new()),
@@ -388,10 +427,12 @@ impl DrawingState {
         untrack(|| self.with(id, f))
     }
 
+    /// IDの図形を削除する(無ければ何もしない)。
     pub fn remove(&self, id: DrawingId) {
         self.items.update(|list| list.retain(|d| d.id != id));
     }
 
+    /// すべての図形を削除する(IDの採番は続きから)。
     pub fn clear(&self) {
         self.items.update(|list| list.clear());
     }

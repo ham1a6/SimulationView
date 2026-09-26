@@ -20,10 +20,12 @@ use super::geodesy::{destination, from_local, to_local, Ellipsoid, EnuTransform}
 use super::origin::Origin;
 use super::render_bias::DRAWING_M;
 use super::vertex::DrawVertex;
+// 地表に貼り付ける図形を、表示中の地形の三角形で切り抜いて重ねる処理(`drape::emit`)。
 mod drape;
-/// 座標の種類ごとの頂点列。アルファがこの値以上の色は不透明として`opaque`に入れる。
+/// アルファがこの値以上の色は不透明として`Batch::opaque`に入れる(1.0ちょうどでなくても不透明扱い)。
 const OPAQUE_ALPHA: f32 = 0.999;
 
+/// 座標の種類1つ分の頂点列(不透明と半透明に分ける)。
 #[derive(Default)]
 pub struct Batch {
     /// 不透明(深度を書いて描く)。
@@ -32,9 +34,12 @@ pub struct Batch {
     pub blend: Vec<DrawVertex>,
 }
 
+/// 一覧全体の頂点列。レンダラーはこの単位でバッファへ上げる。
 #[derive(Default)]
 pub struct DrawingBatches {
+    /// `World`の図形(ENU座標。地形と同じ奥行きで描く)。
     pub world: Batch,
+    /// `View`の図形(視点空間の座標。地形の手前に描く)。
     pub view: Batch,
     /// 画面座標の頂点列。追加順に重ねて描く(深度なし)。
     pub screen: Vec<DrawVertex>,
@@ -43,9 +48,11 @@ pub struct DrawingBatches {
 /// ジオメトリ生成に必要な、地形・座標変換・画面サイズ。
 pub struct BuildContext<'a> {
     /// 地表貼り付け図形を表示中の地形三角形へ直接重ねるためのグリッド。
+    /// Noneなら、`ground`の標高で細かく分割して近似する(単体テストなど)。
     pub terrain: Option<&'a super::loader::TerrainData>,
     /// 現在GPUにある地形メッシュの原点のENU変換(`World`の出力座標)。
     pub mesh_transform: &'a EnuTransform,
+    /// 図形の形を作るときの楕円体(平均曲率半径・局所ENUの計算に使う)。
     pub ellipsoid: &'a Ellipsoid,
     /// (緯度, 経度)の地表標高(メートル)。地形データの範囲外・海は0を返すこと。
     pub ground: &'a dyn Fn(f64, f64) -> f64,
@@ -76,11 +83,14 @@ pub fn build(ctx: &BuildContext, drawings: &[Drawing]) -> DrawingBatches {
 
 /// 頂点の出力先。色のアルファに応じて不透明/半透明の列を選ぶ(`Screen`は1列)。
 enum Sink<'a> {
+    /// `World`・`View`: アルファで不透明/半透明に振り分ける。
     Split(&'a mut Batch),
+    /// `Screen`: 重なりを追加順にするため、すべて1列に入れる。
     Single(&'a mut Vec<DrawVertex>),
 }
 
 impl Sink<'_> {
+    /// アルファ`alpha`の色の頂点を入れる列。
     fn list(&mut self, alpha: f32) -> &mut Vec<DrawVertex> {
         match self {
             Sink::Split(batch) => {
@@ -95,6 +105,7 @@ impl Sink<'_> {
     }
 }
 
+/// 図形1つを、種類に応じた形(2D図形・3D図形・折れ線)にして`sink`へ出す。
 fn build_one(ctx: &BuildContext, shape: &Shape, style: &Style, sink: &mut Sink) {
     // 2D図形: 基準点に置いたローカル座標の形(`geom(基準点の変換, 分割の細かさ)`)を出力する。
     let mut emit_2d = |pos: &Position, geom: &dyn Fn(&Frame2d, Steps) -> Geom2d| {
@@ -121,6 +132,8 @@ fn build_one(ctx: &BuildContext, shape: &Shape, style: &Style, sink: &mut Sink) 
         } => emit_2d(center, &|_, steps| {
             rect_geom(*width, *height, *rotation_deg, steps)
         }),
+        // 多角形は先頭の点を基準点にし、全点をその基準点から見たローカル座標にしてから形を作る
+        // (`validate`で1点以上あることは保証済み)。
         Shape::Polygon { points } => emit_2d(&points[0], &|frame, steps| {
             let local: Vec<[f64; 2]> = points.iter().map(|p| frame.local_of(ctx, p)).collect();
             polygon_geom(&local, steps)
@@ -169,6 +182,7 @@ fn build_one(ctx: &BuildContext, shape: &Shape, style: &Style, sink: &mut Sink) 
 // 頂点の出力(面・太い線)
 // ---------------------------------------------------------------------------------------------
 
+/// 塗りの三角形を1つ出す。`normals`を渡すと頂点ごとの法線で陰影を付ける(3D図形の面)。
 fn push_triangle(
     sink: &mut Sink,
     color: [f32; 4],
@@ -211,9 +225,11 @@ pub(crate) fn append_line_strip(
         return;
     }
     for (a, b) in segments(points, closed) {
+        // 長さ0の線分は向きが決まらないので飛ばす。
         if a == b {
             continue;
         }
+        // 1本の線分 = 4頂点(a側の左右・b側の左右)の四角形を、2つの三角形(6頂点)で出す。
         let a_plus = DrawVertex::line(a, b, color, width_px, 1.0);
         let a_minus = DrawVertex::line(a, b, color, width_px, -1.0);
         let b_plus = DrawVertex::line(b, a, color, width_px, -1.0);
@@ -248,6 +264,7 @@ pub(crate) fn height_of(
     }
 }
 
+/// `Position::Screen`を、canvasの左上を原点とするピクセル座標(右・下が正)にする。
 fn resolve_screen(ctx: &BuildContext, corner: Corner, x_px: f64, y_px: f64) -> [f64; 2] {
     let (w, h) = (ctx.viewport_px.0 as f64, ctx.viewport_px.1 as f64);
     let (ox, oy) = match corner {
@@ -269,11 +286,14 @@ fn resolve_screen(ctx: &BuildContext, corner: Corner, x_px: f64, y_px: f64) -> [
 struct Geom2d {
     /// 塗りの三角形(3点ずつ)。
     fill: Vec<[f64; 2]>,
+    /// 輪郭線(1つの図形で複数持てるが、今の図形はどれも1本)。
     outlines: Vec<Outline>,
 }
 
+/// 輪郭線1本(ローカル座標の点列)。
 struct Outline {
     points: Vec<[f64; 2]>,
+    /// 最後の点から最初の点へもつなぐか。
     closed: bool,
 }
 
@@ -297,6 +317,7 @@ const STEPS_GROUND: Steps = Steps {
     fill: 20.0,
     arc: 20.0,
 };
+/// 分割しない(`View`・`Screen`は平面のまま描けるので)。
 const STEPS_NONE: Steps = Steps {
     fill: f64::INFINITY,
     arc: f64::INFINITY,
@@ -305,14 +326,20 @@ const STEPS_NONE: Steps = Steps {
 /// 1つの図形の塗りの三角形数の目安の上限。大きな地表貼り付け図形で頂点数が増え過ぎないよう、
 /// 面積から分割の細かさの下限を決める。
 const MAX_FILL_TRIANGLES: f64 = 50_000.0;
+/// 円周1周の分割数の下限(小さな円でも角ばって見えないように)。
 const MIN_CIRCLE_SEGMENTS: usize = 48;
+/// 円周1周の分割数の上限。
 const MAX_CIRCLE_SEGMENTS: usize = 720;
 /// 塗りの分割数・辺の分割数の上限(異常な入力で頂点数が爆発しないための保険)。
 const MAX_GRID_CELLS: usize = 512;
+/// 辺1本を分割する数の上限。
 const MAX_EDGE_PARTS: usize = 2000;
 /// 多角形の塗りの三角形を細分化した後の、頂点数の上限。
 const MAX_REFINED_VERTICES: usize = 300_000;
 
+/// 面積`area`の図形の塗りに使う、三角形の辺の長さの目安。`fill`(細かさの上限)を基本に、
+/// 三角形の数が`MAX_FILL_TRIANGLES`程度に収まるよう粗くする(辺sの直角三角形の面積はs²/2なので、
+/// 面積/(s²/2) ≤ 上限 となる s = √(2·面積/上限) 以上にする)。
 fn effective_fill_step(area: f64, fill: f64) -> f64 {
     fill.max((2.0 * area / MAX_FILL_TRIANGLES).sqrt())
 }
@@ -323,6 +350,7 @@ fn rotate_cw(p: [f64; 2], deg: f64) -> [f64; 2] {
     [p[0] * c + p[1] * s, -p[0] * s + p[1] * c]
 }
 
+/// 2点間の距離。
 fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
 }
@@ -332,11 +360,12 @@ fn mix(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
     std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
 }
 
+/// 2点の中点。
 fn midpoint(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
 }
 
-/// 三角形を、辺の中点で4つに分ける。
+/// 三角形を、辺の中点で4つに分ける(角の3つと中央の1つ。どれも元と同じ向き)。
 fn subdivide([a, b, c]: [[f64; 2]; 3]) -> [[[f64; 2]; 3]; 4] {
     let (ab, bc, ca) = (midpoint(a, b), midpoint(b, c), midpoint(c, a));
     [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]
@@ -365,24 +394,30 @@ fn sector_geom(radius: f64, start_deg: f64, end_deg: f64, steps: Steps) -> Geom2
     if radius.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return geom;
     }
+    // 開く角度(sweep)。差が360度以上なら円、それ以外は0〜360に寄せる(終わりが始まりより小さい
+    // 指定でも、始まりから時計回りに終わりまで)。
     let raw = end_deg - start_deg;
     let full = raw >= 360.0 - 1e-9;
     let sweep = if full { 360.0 } else { raw.rem_euclid(360.0) };
     if sweep < 1e-9 {
         return geom;
     }
+    // 弧の1区間の長さ。分割の上限に加え、半径の0.09倍(中心角約5度)以下にして小さな円でも滑らかにする。
     let arc = steps.arc.min(radius * 0.09);
     let full_segments =
         ((TAU * radius / arc).ceil() as usize).clamp(MIN_CIRCLE_SEGMENTS, MAX_CIRCLE_SEGMENTS);
     let n = ((full_segments as f64 * sweep / 360.0).ceil() as usize).max(1);
+    // 半径方向のリング数(塗りの三角形の大きさを`effective_fill_step`程度にする)。
     let area = 0.5 * radius * radius * sweep.to_radians();
     let rings =
         ((radius / effective_fill_step(area, steps.fill)).ceil() as usize).clamp(1, MAX_GRID_CELLS);
 
+    // 半径r・i番目の方位の点。方位は上(y)から時計回りなので、x=r·sinθ・y=r·cosθ。
     let at = |r: f64, i: usize| {
         let theta = (start_deg + sweep * i as f64 / n as f64).to_radians();
         [r * theta.sin(), r * theta.cos()]
     };
+    // 中心のリングは扇状の三角形、その外側のリングは台形を2つの三角形で埋める。
     for k in 1..=rings {
         let (r0, r1) = (
             radius * (k - 1) as f64 / rings as f64,
@@ -417,14 +452,18 @@ fn sector_geom(radius: f64, start_deg: f64, end_deg: f64, steps: Steps) -> Geom2
     geom
 }
 
+/// 中心が原点の矩形(幅`width`・高さ`height`)を、`rotation_deg`だけ時計回りに回した形。
+/// 塗りは格子に分けた小さな四角形の三角形。幅・高さが正でなければ空。
 fn rect_geom(width: f64, height: f64, rotation_deg: f64, steps: Steps) -> Geom2d {
     let mut geom = Geom2d::default();
+    // NaNも弾くため、否定の形で比べる。
     if !(width > 0.0 && height > 0.0) {
         return geom;
     }
     let s = effective_fill_step(width * height, steps.fill);
     let nx = ((width / s).ceil() as usize).clamp(1, MAX_GRID_CELLS);
     let ny = ((height / s).ceil() as usize).clamp(1, MAX_GRID_CELLS);
+    // 格子点(ix, iy)を、回転してローカル座標にしたもの。
     let p = |ix: usize, iy: usize| {
         rotate_cw(
             [
@@ -452,6 +491,7 @@ fn rect_geom(width: f64, height: f64, rotation_deg: f64, steps: Steps) -> Geom2d
 fn polygon_geom(points: &[[f64; 2]], steps: Steps) -> Geom2d {
     let mut geom = Geom2d::default();
     let mut poly: Vec<[f64; 2]> = points.to_vec();
+    // 始点を末尾にも入れて閉じた入力は、重複した点を除く(輪郭は`closed`で閉じる)。
     if poly.len() > 1 && poly.first() == poly.last() {
         poly.pop();
     }
@@ -474,6 +514,7 @@ fn polygon_geom(points: &[[f64; 2]], steps: Steps) -> Geom2d {
     geom
 }
 
+/// 多角形の符号付き面積(靴ひも公式)。反時計回りなら正、時計回りなら負。
 pub(crate) fn signed_area(poly: &[[f64; 2]]) -> f64 {
     let n = poly.len();
     (0..n)
@@ -482,6 +523,7 @@ pub(crate) fn signed_area(poly: &[[f64; 2]]) -> f64 {
         * 0.5
 }
 
+/// 2次元ベクトルの外積(z成分)。
 fn cross2(a: [f64; 2], b: [f64; 2]) -> f64 {
     a[0] * b[1] - a[1] * b[0]
 }
@@ -498,6 +540,8 @@ pub(crate) fn triangulate(poly: &[[f64; 2]]) -> Vec<[f64; 2]> {
     if poly.len() < 3 {
         return Vec::new();
     }
+    // earcutは座標を平らに並べた配列([x0, y0, x1, y1, …])・穴の開始位置(なし)・次元数(2)を受け取り、
+    // 三角形の頂点番号を3つずつ返す。
     let flat: Vec<f64> = poly.iter().flatten().copied().collect();
     let Ok(indices) = earcutr::earcut(&flat, &[], 2) else {
         return Vec::new();
@@ -523,6 +567,8 @@ fn refine_triangles(tris: Vec<[f64; 2]>, max_edge: f64) -> Vec<[f64; 2]> {
     if !max_edge.is_finite() {
         return tris;
     }
+    // 再帰の代わりにスタックで深さ優先に分ける。頂点数が上限に届きそうなら、それ以上は分けずに出す
+    // (形は保たれ、細かさだけが粗くなる)。
     let mut stack: Vec<[[f64; 2]; 3]> = tris.as_chunks::<3>().0.to_vec();
     let mut out: Vec<[f64; 2]> = Vec::new();
     while let Some([a, b, c]) = stack.pop() {
@@ -537,7 +583,11 @@ fn refine_triangles(tris: Vec<[f64; 2]>, max_edge: f64) -> Vec<[f64; 2]> {
 }
 
 /// 2D図形の置き場所(基準点)と、ローカル座標→出力座標の変換。
+/// `View`は基準点の視点空間の位置(メートル)で、図形はカメラに正対する平面(前方の距離一定)に置く。
+/// `Screen`は基準点の画面座標(左上原点のピクセル)。
 enum Frame2d {
+    /// 基準点の緯度経度・その緯度の平均曲率半径(球面近似の半径)・高度。
+    /// ローカル座標(メートル)は基準点からの方位・距離とみなす。
     World {
         lat_deg: f64,
         lon_deg: f64,
@@ -570,6 +620,8 @@ impl Frame2d {
                     radius_m: ctx.ellipsoid.mean_radius(lat_deg),
                     altitude,
                 };
+                // 海抜の面は丸みに沿う程度に、地表貼り付けは地形に沿うよう細かく分ける。ただし地形データが
+                // あるときの塗りは`drape`が地形の三角形で切り抜くので、ここでは分けない。
                 let steps = match altitude {
                     Altitude::Msl(_) => STEPS_FLAT,
                     Altitude::AboveGround(_) if ctx.terrain.is_some() => Steps {
@@ -618,6 +670,7 @@ impl Frame2d {
             (Self::View { right, up, .. }, Position::View { right_m, up_m, .. }) => {
                 [right_m - right, up_m - up]
             }
+            // 画面座標は下向きが正なので、ローカル座標(上が正)にするときyの符号を反転する。
             (Self::Screen { x, y }, Position::Screen { corner, x_px, y_px }) => {
                 let [px, py] = resolve_screen(ctx, corner, x_px, y_px);
                 [px - x, y - py]
@@ -626,8 +679,10 @@ impl Frame2d {
         }
     }
 
+    /// ローカル座標`p`を出力の座標(`World`はメッシュ原点のENU、`View`は視点空間、`Screen`はピクセル)にする。
     fn map(&self, ctx: &BuildContext, p: [f64; 2]) -> [f32; 3] {
         match self {
+            // 方位・距離から緯度経度へ戻し、その地点の高さ(地表基準なら地表+高さ+バイアス)でENUへ。
             Self::World {
                 lat_deg,
                 lon_deg,
@@ -641,6 +696,7 @@ impl Frame2d {
                     height_of(ctx, lat, lon, *altitude, DRAWING_M),
                 )
             }
+            // 視点空間はカメラの前方が-z。
             Self::View { right, up, forward } => {
                 [(right + p[0]) as f32, (up + p[1]) as f32, -*forward as f32]
             }
@@ -649,6 +705,9 @@ impl Frame2d {
     }
 }
 
+/// 2D図形の形(`geom`)を出力座標にして、塗りと輪郭線を出す。
+/// 地表に貼り付ける`World`の図形は、地形データがあれば`drape`で地形の三角形に重ね、
+/// 無ければ`refine_ground_geom`で高さのずれが大きい所を細かく分けて近似する。
 fn emit_geom2d(sink: &mut Sink, ctx: &BuildContext, frame: &Frame2d, geom: &Geom2d, style: &Style) {
     if let (
         Some(terrain),
@@ -697,6 +756,8 @@ fn emit_geom2d(sink: &mut Sink, ctx: &BuildContext, frame: &Frame2d, geom: &Geom
 /// 尾根をまたぐ面・線は長さだけでは精度が足りないため、高さの補間誤差でも細分化する。
 /// 深さ6・既存の頂点数上限で計算量を制限する。広域図形で上限に達した場合は近似を保つ。
 fn refine_ground_geom(ctx: &BuildContext, frame: &Frame2d, geom: &Geom2d, fill: bool) -> Geom2d {
+    // 辺(2点)や三角形(3点)の重心の、実際の高さと、頂点の高さの平均(=直線で結んだときの高さ)の差が、
+    // 地表からの持ち上げ量の1/4を超えるか。超えるなら、そのまま描くと地形に埋もれる・浮くおそれがある。
     let error = |points: &[[f64; 2]]| {
         let n = points.len() as f64;
         let center = std::array::from_fn(|k| points.iter().map(|p| p[k]).sum::<f64>() / n);
@@ -728,6 +789,8 @@ fn refine_ground_geom(ctx: &BuildContext, frame: &Frame2d, geom: &Geom2d, fill: 
             }
         }
     }
+    // 輪郭線は、辺ごとに中点で2つに分けることを繰り返す。各辺の始点だけを出し(終点は次の辺の始点)、
+    // 開いた線なら最後に終点を足す。スタックには後半→前半の順に積み、前半から取り出して順序を保つ。
     for outline in &geom.outlines {
         let mut points = Vec::new();
         let edges = segments(&outline.points, outline.closed);
@@ -763,8 +826,11 @@ fn refine_ground_geom(ctx: &BuildContext, frame: &Frame2d, geom: &Geom2d, fill: 
 
 /// `World`の折れ線の点の間を分割する長さの上限(メートル)。地表に貼り付ける点があれば細かく。
 const POLYLINE_STEP_FLAT_M: f64 = 2_000.0;
+/// 地表に貼り付ける区間の分割の長さの上限(メートル。地形の最細の約30mより細かく)。
 const POLYLINE_STEP_GROUND_M: f64 = 20.0;
 
+/// 折れ線を出す(塗りは無く、線の色が無ければ何も出さない)。`World`は大円に沿って分割し、
+/// `View`・`Screen`は点をそのまま結ぶ(平面上の直線でよいため)。
 fn emit_polyline(sink: &mut Sink, ctx: &BuildContext, points: &[Position], style: &Style) {
     let Some(stroke) = style.visible_stroke() else {
         return;
@@ -814,6 +880,7 @@ fn world_polyline(ctx: &BuildContext, points: &[Position]) -> Vec<[f32; 3]> {
     let mut out = Vec::new();
     for pair in geodetic.windows(2) {
         let ((lat0, lon0, alt0), (lat1, lon1, alt1)) = (pair[0], pair[1]);
+        // 区間の始点から見た終点の方位・距離(球面)を求め、その大円に沿って等間隔に点を置く。
         let radius = ctx.ellipsoid.mean_radius(lat0);
         let [east, north] = to_local(lat0, lon0, lat1, lon1, radius);
         let (length, bearing) = (east.hypot(north), east.atan2(north));
@@ -833,6 +900,7 @@ fn world_polyline(ctx: &BuildContext, points: &[Position]) -> Vec<[f32; 3]> {
             (false, _) => height_of(ctx, lat, lon, alt, DRAWING_M),
         };
         let (e0, e1) = (end_height(lat0, lon0, alt0), end_height(lat1, lon1, alt1));
+        // 区間の終点は次の区間の始点として出すので、ここでは始点側だけ(k = 0..parts)を出す。
         for k in 0..parts {
             let t = k as f64 / parts as f64;
             let (lat, lon) = destination(lat0, lon0, bearing, length * t, radius);
@@ -844,6 +912,7 @@ fn world_polyline(ctx: &BuildContext, points: &[Position]) -> Vec<[f32; 3]> {
             out.push(ctx.mesh_transform.transform(lat, lon, h));
         }
     }
+    // 最後の点(どの区間の始点にもならない)を足す。
     if let Some(&(lat, lon, alt)) = geodetic.last() {
         out.push(
             ctx.mesh_transform
@@ -857,14 +926,19 @@ fn world_polyline(ctx: &BuildContext, points: &[Position]) -> Vec<[f32; 3]> {
 // 3D図形: ローカル座標(x=東/右, y=北/前方, z=上)の立体(Solid)と、出力座標への変換
 // ---------------------------------------------------------------------------------------------
 
+/// 球の経度方向(方位)の分割数。
 const SPHERE_SEGMENTS: usize = 48;
+/// 球の緯度方向(極から極まで)の分割数。
 const SPHERE_RINGS: usize = 24;
+/// 円柱・円錐の円周の分割数。
 const SOLID_SEGMENTS: usize = 48;
 
 /// 立体のローカル座標での形。頂点は位置と単位法線。
 #[derive(Default)]
 struct Solid {
+    /// 頂点の(位置, 単位法線)。角で法線が変わる所は、同じ位置の頂点を面ごとに別に持つ。
     verts: Vec<([f64; 3], [f64; 3])>,
+    /// 三角形ごとに3つずつ並べた`verts`の添字。
     indices: Vec<u32>,
     /// 稜線(ワイヤーフレーム)。(点列, 閉じるか)。
     lines: Vec<(Vec<[f64; 3]>, bool)>,
@@ -894,6 +968,7 @@ impl Solid {
         }
     }
 
+    /// 4隅(順に周回する並び)の平面の四角形を、法線`normal`の2つの三角形で足す。
     fn push_quad(&mut self, corners: [[f64; 3]; 4], normal: [f64; 3]) {
         let base = self.verts.len() as u32;
         self.verts.extend(corners.map(|c| (c, normal)));
@@ -929,11 +1004,14 @@ impl Solid {
     }
 }
 
+/// 中心が原点の球(半径`radius`。正でなければ空)。緯度・経度の格子(UV球)で、法線は中心からの向き。
 fn sphere_solid(radius: f64) -> Solid {
     let mut solid = Solid::default();
+    // 0以下・NaNを弾く(比較できない・0以下なら何も作らない)。
     if radius.partial_cmp(&0.0) != Some(std::cmp::Ordering::Greater) {
         return solid;
     }
+    // phi: +zの極からの角(0〜π)、theta: 方位(0〜2π)。経度の継ぎ目は同じ位置の頂点を2回置いて閉じる。
     for i in 0..=SPHERE_RINGS {
         let phi = PI * i as f64 / SPHERE_RINGS as f64;
         for j in 0..=SPHERE_SEGMENTS {
@@ -944,6 +1022,7 @@ fn sphere_solid(radius: f64) -> Solid {
                 .push(([radius * n[0], radius * n[1], radius * n[2]], n));
         }
     }
+    // 格子の各マス(a=この段、b=1つ下の段)を2つの三角形にする。
     for i in 0..SPHERE_RINGS {
         for j in 0..SPHERE_SEGMENTS {
             let a = (i * (SPHERE_SEGMENTS + 1) + j) as u32;
@@ -969,6 +1048,7 @@ fn cuboid_solid(size: [f64; 3], heading_deg: f64) -> Solid {
     if !(size.iter().all(|&s| s > 0.0)) {
         return solid;
     }
+    // 6面を、面ごとに外向きの法線で足す(東・西・北・南・上・下の順)。
     let (hx, hy, h) = (size[0] * 0.5, size[1] * 0.5, size[2]);
     solid.push_quad(
         [[hx, -hy, 0.0], [hx, hy, 0.0], [hx, hy, h], [hx, -hy, h]],
@@ -1005,6 +1085,7 @@ fn cuboid_solid(size: [f64; 3], heading_deg: f64) -> Solid {
         [hx, hy, 0.0],
         [-hx, hy, 0.0],
     ];
+    // 稜線: 縦の4本と、底面・上面の四角形。
     let top: Vec<[f64; 3]> = bottom.iter().map(|p| [p[0], p[1], h]).collect();
     for (b, t) in bottom.iter().zip(&top) {
         solid.lines.push((vec![*b, *t], false));
@@ -1021,6 +1102,7 @@ fn cylinder_solid(radius: f64, height: f64) -> Solid {
     if !(radius > 0.0 && height > 0.0) {
         return solid;
     }
+    // 側面: 円周上の各点に底・上の2頂点を交互に置く(法線は水平に外向き)。
     for j in 0..=SOLID_SEGMENTS {
         let t = TAU * j as f64 / SOLID_SEGMENTS as f64;
         let (c, s) = (t.cos(), t.sin());
@@ -1067,6 +1149,8 @@ fn cone_solid(radius: f64, height: f64) -> Solid {
             .verts
             .push(([radius * t.cos(), radius * t.sin(), 0.0], side_normal(t)));
     }
+    // 頂点(apex)は1点だが法線は向きごとに違うので、区間ごとに、区間の中央の方位の法線を持つ頂点を置く
+    // (1つの頂点にまとめると、先端付近の陰影が平均されて平らに見える)。
     for j in 0..segments {
         let mid = TAU * (j as f64 + 0.5) / SOLID_SEGMENTS as f64;
         let apex = solid.verts.len() as u32;
@@ -1080,11 +1164,14 @@ fn cone_solid(radius: f64, height: f64) -> Solid {
 }
 
 /// 3D図形の置き場所と、ローカル座標(位置・法線)→出力座標の変換。
+/// `View`は視点空間の位置(メートル)で、立体はローカルのx=右、y=前方、z=上として置く。
 enum Frame3d {
     /// 位置における局所ENU(この位置を通る鉛直線が+z)から測地座標を経てメッシュ原点のENUへ。
     /// 地球の丸みで遠方ほど局所の上向きが傾くのを、厳密に扱う。
     World {
+        /// 位置を原点とする局所ENUの変換。
         local: EnuTransform,
+        /// 立体の底(ローカルのz=0)の楕円体高(メートル)。
         base_height: f64,
     },
     View {
@@ -1095,6 +1182,7 @@ enum Frame3d {
 }
 
 impl Frame3d {
+    /// 位置から変換を作る。`Screen`には3D図形を置けない(`validate`が弾く)のでNone。
     fn at(ctx: &BuildContext, pos: &Position) -> Option<Self> {
         match *pos {
             Position::World {
@@ -1127,6 +1215,7 @@ impl Frame3d {
         }
     }
 
+    /// ローカル座標の点を出力座標にする。`World`は局所ENU→測地座標→メッシュ原点のENUと厳密に変換する。
     fn map_position(&self, ctx: &BuildContext, p: [f64; 3]) -> [f32; 3] {
         match self {
             Self::World { local, base_height } => {
@@ -1142,6 +1231,8 @@ impl Frame3d {
         }
     }
 
+    /// 法線を出力座標の向きにする。`World`では局所ENUの向きのまま使い、メッシュ原点のENUへは回さない
+    /// (近似。原点から離れた図形ほど、地球の丸みで局所の上が傾く分だけ陰影の向きがずれる)。
     fn map_normal(&self, n: [f64; 3]) -> [f32; 3] {
         match self {
             Self::World { .. } => [n[0] as f32, n[1] as f32, n[2] as f32],
@@ -1150,12 +1241,14 @@ impl Frame3d {
     }
 }
 
+/// 立体を`pos`に置いて、面(陰影つき)と稜線を出す。
 fn emit_solid(sink: &mut Sink, ctx: &BuildContext, pos: &Position, solid: Solid, style: &Style) {
     let Some(frame) = Frame3d::at(ctx, pos) else {
         return;
     };
     if let Some(fill) = style.fill {
         let color = fill.to_array();
+        // 頂点は複数の三角形で共有されるので、先に1回ずつ変換しておく。
         let mapped: Vec<([f32; 3], [f32; 3])> = solid
             .verts
             .iter()
