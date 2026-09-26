@@ -36,7 +36,7 @@ pub fn OriginDialog(
     let dirty = RwSignal::new(false);
 
     // 地形データがまだなら取得を始める(取得は`TerrainStore`が1回だけ行う)。
-    Effect::new(move |_| terrain_store.ensure_loaded());
+    terrain_store.ensure_loaded();
 
     // 原点(OriginState)が変わるたびに、まだ編集していなければ入力欄へ反映する。
     Effect::new(move |_| {
@@ -49,74 +49,69 @@ pub fn OriginDialog(
     });
 
     // 入力値を解析し、範囲チェックまで行う。Err内の文字列はそのままUIに表示するメッセージ。
-    let parsed = move || -> Result<(f64, f64), String> {
-        let lat: f64 = lat_input
-            .get()
-            .trim()
-            .parse()
-            .map_err(|_| "緯度は数値で入力してください".to_string())?;
-        let lon: f64 = lon_input
-            .get()
-            .trim()
-            .parse()
-            .map_err(|_| "経度は数値で入力してください".to_string())?;
+    let parsed = Memo::new(move |_| -> Result<(f64, f64), String> {
+        let number = |label: &str, input: RwSignal<String>| {
+            input
+                .get()
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| format!("{label}は数値で入力してください"))
+        };
+        let in_range = |label: &str, v: f64, min: f64, max: f64| {
+            if v < min || v > max {
+                Err(format!(
+                    "{label}は{min:.1}〜{max:.1}の範囲で入力してください"
+                ))
+            } else {
+                Ok(v)
+            }
+        };
+        let lat = number("緯度", lat_input)?;
+        let lon = number("経度", lon_input)?;
         let Some(b) = bounds() else {
             return Err("地形データ範囲を取得中です...".to_string());
         };
-        if lat < b.min_lat || lat > b.max_lat {
-            return Err(format!(
-                "緯度は{:.1}〜{:.1}の範囲で入力してください",
-                b.min_lat, b.max_lat
-            ));
-        }
-        if lon < b.min_lon || lon > b.max_lon {
-            return Err(format!(
-                "経度は{:.1}〜{:.1}の範囲で入力してください",
-                b.min_lon, b.max_lon
-            ));
-        }
-        Ok((lat, lon))
-    };
+        Ok((
+            in_range("緯度", lat, b.min_lat, b.max_lat)?,
+            in_range("経度", lon, b.min_lon, b.max_lon)?,
+        ))
+    });
 
     let on_click_submit = move |_| {
-        if let Ok((lat, lon)) = parsed() {
+        if let Ok((lat, lon)) = parsed.get_untracked() {
             on_submit.run((lat, lon));
             dirty.set(false); // 送信後は次に届くOriginStateで表示を更新させる
+        }
+    };
+
+    // 緯度・経度の入力欄。手で編集したら`dirty`にする。
+    let coord_input = move |label: &'static str, input: RwSignal<String>| {
+        view! {
+            <label>
+                {label}
+                <input
+                    type="text"
+                    inputmode="decimal"
+                    prop:value=move || input.get()
+                    on:input=move |ev| {
+                        dirty.set(true);
+                        input.set(event_target_value(&ev));
+                    }
+                />
+            </label>
         }
     };
 
     view! {
         <FloatingPanel open=dialog.0 title="原点設定">
             <div class="origin-form-row">
-                <label>
-                    "緯度"
-                    <input
-                        type="text"
-                        inputmode="decimal"
-                        prop:value=move || lat_input.get()
-                        on:input=move |ev| {
-                            dirty.set(true);
-                            lat_input.set(event_target_value(&ev));
-                        }
-                    />
-                </label>
-                <label>
-                    "経度"
-                    <input
-                        type="text"
-                        inputmode="decimal"
-                        prop:value=move || lon_input.get()
-                        on:input=move |ev| {
-                            dirty.set(true);
-                            lon_input.set(event_target_value(&ev));
-                        }
-                    />
-                </label>
-                <button on:click=on_click_submit disabled=move || parsed().is_err()>
+                {coord_input("緯度", lat_input)}
+                {coord_input("経度", lon_input)}
+                <button on:click=on_click_submit disabled=move || parsed.with(Result::is_err)>
                     "設定"
                 </button>
             </div>
-            {move || parsed().err().map(|msg| view! { <p class="field-error">{msg}</p> })}
+            {move || parsed.get().err().map(|msg| view! { <p class="field-error">{msg}</p> })}
         </FloatingPanel>
     }
 }

@@ -24,6 +24,47 @@ pub struct ViewerState {
     pub models: ModelsState,
 }
 
+impl ViewerState {
+    /// URLは呼び出し側が指定する。生成だけでは通信や永続化を開始しない。
+    pub fn new(terrain_base_url: impl Into<String>) -> Self {
+        let drawings = DrawingState::new();
+        Self {
+            terrain: TerrainStore::new(terrain_base_url),
+            origin: OriginState(RwSignal::new(None)),
+            radar_markers: RadarMarkersState::new(),
+            recenter: RecenterRequestState::new(),
+            hillshade: HillshadeState::default(),
+            capture: CaptureState::new(),
+            drawings,
+            draw_tool: DrawToolState::new(drawings),
+            tracks: TracksState::new(),
+            models: ModelsState::new(),
+        }
+    }
+
+    /// 作図の保存・復元を有効にする。キーはアプリごとに指定し、登録前に1回だけ呼ぶ。
+    pub fn persist_drawings(mut self, key: &'static str) -> Self {
+        self.draw_tool = self.draw_tool.persist(key);
+        self
+    }
+
+    /// 現在のOwnerへ共有状態を登録する。同じOwnerでの二重登録は避けること。
+    /// 戻り値の状態へ受信データやモデル設定を反映できる。
+    pub fn provide(self) -> Self {
+        provide_context(self.terrain);
+        provide_context(self.origin);
+        provide_context(self.radar_markers);
+        provide_context(self.recenter);
+        provide_context(self.hillshade);
+        provide_context(self.capture);
+        provide_context(self.drawings);
+        provide_context(self.draw_tool);
+        provide_context(self.tracks);
+        provide_context(self.models);
+        self
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -65,46 +106,5 @@ mod tests {
             assert!(use_context::<ModelsState>().is_some());
         });
         owner.cleanup();
-    }
-}
-
-impl ViewerState {
-    /// URLは呼び出し側が指定する。生成だけでは通信や永続化を開始しない。
-    pub fn new(terrain_base_url: impl Into<String>) -> Self {
-        let drawings = DrawingState::new();
-        Self {
-            terrain: TerrainStore::new(terrain_base_url),
-            origin: OriginState(RwSignal::new(None)),
-            radar_markers: RadarMarkersState::new(),
-            recenter: RecenterRequestState::new(),
-            hillshade: HillshadeState::default(),
-            capture: CaptureState::new(),
-            drawings,
-            draw_tool: DrawToolState::new(drawings),
-            tracks: TracksState::new(),
-            models: ModelsState::new(),
-        }
-    }
-
-    /// 作図の保存・復元を有効にする。キーはアプリごとに指定し、登録前に1回だけ呼ぶ。
-    pub fn persist_drawings(mut self, key: &'static str) -> Self {
-        self.draw_tool = self.draw_tool.persist(key);
-        self
-    }
-
-    /// 現在のOwnerへ共有状態を登録する。同じOwnerでの二重登録は避けること。
-    /// 戻り値の状態へ受信データやモデル設定を反映できる。
-    pub fn provide(self) -> Self {
-        provide_context(self.terrain);
-        provide_context(self.origin);
-        provide_context(self.radar_markers);
-        provide_context(self.recenter);
-        provide_context(self.hillshade);
-        provide_context(self.capture);
-        provide_context(self.drawings);
-        provide_context(self.draw_tool);
-        provide_context(self.tracks);
-        provide_context(self.models);
-        self
     }
 }

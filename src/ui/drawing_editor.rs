@@ -69,6 +69,43 @@ fn hex_rgb(s: &str) -> Option<(f32, f32, f32)> {
     Some((channel(0)?, channel(2)?, channel(4)?))
 }
 
+/// `Style`の塗りか線の色(`field`で選ぶ)の、有無のチェックボックス(付けたときは`default`の色)と色の選択欄。
+fn color_inputs(
+    get: impl Fn() -> Style + Copy + Send + Sync + 'static,
+    set: impl Fn(Style) + Copy + Send + Sync + 'static,
+    field: fn(&mut Style) -> &mut Option<Color>,
+    default: Color,
+) -> (impl IntoView, impl IntoView) {
+    let check = view! {
+        <input
+            type="checkbox"
+            prop:checked=move || field(&mut get()).is_some()
+            on:change=move |ev| {
+                let mut style = get();
+                *field(&mut style) = event_target_checked(&ev).then_some(default);
+                set(style);
+            }
+        />
+    };
+    let picker = view! {
+        <input
+            type="color"
+            prop:value=move || color_hex(field(&mut get()).unwrap_or(default))
+            disabled=move || field(&mut get()).is_none()
+            on:input=move |ev| {
+                if let Some((r, g, b)) = hex_rgb(&event_target_value(&ev)) {
+                    let mut style = get();
+                    let color = field(&mut style);
+                    let a = color.map_or(default.a, |c| c.a);
+                    *color = Some(Color::rgba(r, g, b, a));
+                    set(style);
+                }
+            }
+        />
+    };
+    (check, picker)
+}
+
 /// 見た目(塗り・線)の入力欄。`with_fill`がfalseなら塗りの欄を出さない(折れ線)。
 fn style_fields(
     get: impl Fn() -> Style + Copy + Send + Sync + 'static,
@@ -77,33 +114,11 @@ fn style_fields(
 ) -> impl IntoView {
     let default_fill = Style::default().fill.unwrap_or(Color::WHITE);
     let fill_row = with_fill.then(|| {
+        let (check, picker) = color_inputs(get, set, |s| &mut s.fill, default_fill);
         view! {
             <div class="drawing-row">
-                <label class="drawing-check">
-                    <input
-                        type="checkbox"
-                        prop:checked=move || get().fill.is_some()
-                        on:change=move |ev| {
-                            let mut style = get();
-                            style.fill = event_target_checked(&ev).then_some(default_fill);
-                            set(style);
-                        }
-                    />
-                    "塗り"
-                </label>
-                <input
-                    type="color"
-                    prop:value=move || color_hex(get().fill.unwrap_or(default_fill))
-                    disabled=move || get().fill.is_none()
-                    on:input=move |ev| {
-                        if let Some((r, g, b)) = hex_rgb(&event_target_value(&ev)) {
-                            let mut style = get();
-                            let a = style.fill.map_or(default_fill.a, |c| c.a);
-                            style.fill = Some(Color::rgba(r, g, b, a));
-                            set(style);
-                        }
-                    }
-                />
+                <label class="drawing-check">{check} "塗り"</label>
+                {picker}
                 <label class="drawing-inline">
                     "不透明度"
                     <input
@@ -126,37 +141,15 @@ fn style_fields(
         }
     });
     let default_stroke = Style::default().stroke.unwrap_or(Color::WHITE);
-    let stroke_check = with_fill.then(|| {
-        view! {
-            <input
-                type="checkbox"
-                prop:checked=move || get().stroke.is_some()
-                on:change=move |ev| {
-                    let mut style = get();
-                    style.stroke = event_target_checked(&ev).then_some(default_stroke);
-                    set(style);
-                }
-            />
-        }
-    });
+    let (stroke_check, stroke_picker) = color_inputs(get, set, |s| &mut s.stroke, default_stroke);
+    // 折れ線は線の色だけで描くので、線を消すチェックボックスは出さない。
+    let stroke_check = with_fill.then_some(stroke_check);
     view! {
         <div class="drawing-style">
             {fill_row}
             <div class="drawing-row">
                 <label class="drawing-check">{stroke_check} "線"</label>
-                <input
-                    type="color"
-                    prop:value=move || color_hex(get().stroke.unwrap_or(default_stroke))
-                    disabled=move || get().stroke.is_none()
-                    on:input=move |ev| {
-                        if let Some((r, g, b)) = hex_rgb(&event_target_value(&ev)) {
-                            let mut style = get();
-                            let a = style.stroke.map_or(1.0, |c| c.a);
-                            style.stroke = Some(Color::rgba(r, g, b, a));
-                            set(style);
-                        }
-                    }
-                />
+                {stroke_picker}
                 {num_field(
                     "太さ",
                     "px",
@@ -546,7 +539,7 @@ pub fn DrawingEditor() -> impl IntoView {
                 <button
                     class="drawing-row-name"
                     title="選択して編集"
-                    on:click=move |_| tool.select(if tool.selected.get_untracked() == Some(id) { None } else { Some(id) })
+                    on:click=move |_| tool.select((tool.selected.get_untracked() != Some(id)).then_some(id))
                 >
                     {u.name}
                 </button>

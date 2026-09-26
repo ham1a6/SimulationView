@@ -6,6 +6,7 @@ use leptos::prelude::*;
 
 use super::floating_panel::FloatingPanel;
 use crate::terrain::models::{ModelDisplayMode, ModelsState};
+use crate::ui::util::event_f64;
 
 /// 3Dモデル設定ウインドウの開閉状態。トリガー(メニュー等)と本体で共有する。
 #[derive(Clone, Copy)]
@@ -40,7 +41,7 @@ pub fn ModelSettingsDialog() -> impl IntoView {
     // 数値の入力欄。パースできない・範囲外の入力は反映しない(入力の途中の状態で表示が乱れないように)。
     let number_input = move |signal: RwSignal<f64>, min: f64, max: f64| {
         move |ev| {
-            if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+            if let Some(v) = event_f64(&ev) {
                 if (min..=max).contains(&v) {
                     signal.set(v);
                 }

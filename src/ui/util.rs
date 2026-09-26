@@ -23,6 +23,21 @@ pub fn copy_to_clipboard(text: &str) {
     }
 }
 
+/// SVGのパス`d`へ点(x, y)を足す(`start`なら部分パスの始点`M`、そうでなければ直前の点からの直線`L`)。
+pub(crate) fn push_path_point(d: &mut String, start: bool, (x, y): (f64, f64)) {
+    use std::fmt::Write;
+    let _ = if start {
+        write!(d, "M{x:.1},{y:.1}")
+    } else {
+        write!(d, " L{x:.1},{y:.1}")
+    };
+}
+
+/// 入力欄のイベントの値を数値として読む(数値でなければNone)。
+pub(crate) fn event_f64<T: JsCast>(ev: &T) -> Option<f64> {
+    leptos::prelude::event_target_value(ev).parse().ok()
+}
+
 /// マウス・ポインターのイベントの画面座標(client座標、CSSピクセル)。
 pub(crate) fn client_xy(ev: &web_sys::MouseEvent) -> (f64, f64) {
     (f64::from(ev.client_x()), f64::from(ev.client_y()))

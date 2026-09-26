@@ -99,6 +99,15 @@ impl RadarMarkersState {
         id
     }
 
+    /// IDの観測点を書き換える(アンテナ高・最大観測範囲など)。無ければ何もしない。
+    pub(crate) fn update(&self, id: u64, f: impl FnOnce(&mut RadarMarker)) {
+        self.markers.update(|list| {
+            if let Some(marker) = list.iter_mut().find(|m| m.id == id) {
+                f(marker);
+            }
+        });
+    }
+
     pub fn remove(&self, id: u64) {
         self.markers.update(|list| list.retain(|m| m.id != id));
         if self.selected.get_untracked() == Some(id) {

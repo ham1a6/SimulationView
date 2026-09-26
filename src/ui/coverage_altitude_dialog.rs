@@ -8,6 +8,7 @@ use leptos::prelude::*;
 
 use super::floating_panel::FloatingPanel;
 use crate::terrain::markers::RadarMarkersState;
+use crate::ui::util::event_f64;
 
 /// 覆域高度設定フローティングパネルの開閉状態。トリガー(メニュー等)と本体で共有する。
 #[derive(Clone, Copy)]
@@ -33,7 +34,7 @@ pub fn CoverageAltitudeDialog() -> impl IntoView {
                         step="10"
                         prop:value=move || radar_markers.coverage_altitude_m.get().to_string()
                         on:input=move |ev| {
-                            if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+                            if let Some(v) = event_f64(&ev) {
                                 radar_markers.coverage_altitude_m.set(v);
                             }
                         }

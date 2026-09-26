@@ -10,12 +10,25 @@ use leptos::prelude::*;
 use crate::terrain::los::{LosPoint, RangeComputation, RangeKind};
 use crate::terrain::markers::{coverage_colors, RadarMarker, RadarMarkersState};
 use crate::terrain::store::TerrainStore;
-use crate::ui::util::run_in_slices;
+use crate::ui::util::{event_f64, push_path_point, run_in_slices};
 
 const VIEW_SIZE: f64 = 300.0;
 const PAD: f64 = 26.0;
 const RADIUS: f64 = (VIEW_SIZE - PAD * 2.0) / 2.0;
 const CENTER: f64 = VIEW_SIZE / 2.0;
+/// 極座標図の外周の上下左右の端。
+const TOP: f64 = CENTER - RADIUS;
+const BOTTOM: f64 = CENTER + RADIUS;
+const LEFT: f64 = CENTER - RADIUS;
+const RIGHT: f64 = CENTER + RADIUS;
+/// 方位の文字(N・E・S・W)と、最大観測範囲の文字の位置。
+const N_LABEL_Y: f64 = TOP - 6.0;
+const S_LABEL_Y: f64 = BOTTOM + 14.0;
+const E_LABEL_X: f64 = RIGHT + 8.0;
+const W_LABEL_X: f64 = LEFT - 8.0;
+const EW_LABEL_Y: f64 = CENTER + 4.0;
+const RANGE_LABEL_X: f64 = CENTER + 4.0;
+const RANGE_LABEL_Y: f64 = TOP + 11.0;
 /// 極座標図の方位の刻み(mil)。2なら3,200方位(50km先で約98m間隔)。図の大きさ(300px)に対して十分細かく、計算量が半分になる。
 const CHART_AZIMUTH_STEP: usize = 2;
 /// 計算を1回に進める方位の数(`run_in_slices`の持ち時間の中で繰り返し呼ぶ)。
@@ -45,13 +58,8 @@ fn build_boundary_path(points: &[LosPoint], max_range_m: f64) -> String {
     for (i, p) in points.iter().enumerate() {
         let r = (p.range_m / max_range).clamp(0.0, 1.0) * RADIUS;
         let az_rad = p.azimuth_deg.to_radians();
-        let x = CENTER + r * az_rad.sin();
-        let y = CENTER - r * az_rad.cos();
-        if i == 0 {
-            d.push_str(&format!("M{x:.1},{y:.1}"));
-        } else {
-            d.push_str(&format!(" L{x:.1},{y:.1}"));
-        }
+        let point = (CENTER + r * az_rad.sin(), CENTER - r * az_rad.cos());
+        push_path_point(&mut d, i == 0, point);
     }
     d.push_str(" Z");
     d
@@ -64,16 +72,25 @@ pub fn LosView() -> impl IntoView {
         use_context::<RadarMarkersState>().expect("RadarMarkersState context not found");
     terrain_store.ensure_loaded();
 
+    let status = |message: &'static str| {
+        view! { <p class="placeholder los-status">{message}</p> }.into_any()
+    };
+    // 観測点`id`のパラメータの入力欄の`input`ハンドラ(数値なら`set(観測点, 値)`で書き換える)。
+    let param_input = move |id: u64, set: fn(&mut RadarMarker, f64)| {
+        move |ev: leptos::ev::Event| {
+            if let Some(v) = event_f64(&ev) {
+                radar_markers.update(id, |marker| set(marker, v));
+            }
+        }
+    };
+
     let list_view = move || {
         let list = radar_markers.markers.get();
         let selected = radar_markers.selected.get();
         if list.is_empty() {
-            return view! {
-                <p class="placeholder los-status">
-                    "メインパネル(中央の地図)を右クリックして、レーダー観測点を追加してください"
-                </p>
-            }
-            .into_any();
+            return status(
+                "メインパネル(中央の地図)を右クリックして、レーダー観測点を追加してください",
+            );
         }
         list.into_iter()
             .map(|m| {
@@ -84,6 +101,7 @@ pub fn LosView() -> impl IntoView {
                 } else {
                     "los-marker-row"
                 };
+                let range_km = m.max_range_m / 1000.0;
                 view! {
                     <div class=row_class on:click=move |_| radar_markers.selected.set(Some(id))>
                         <span class="los-swatch" title="覆域の色(左=3D、右=2D)" style=swatch_style(id)></span>
@@ -98,15 +116,7 @@ pub fn LosView() -> impl IntoView {
                                 step="1"
                                 prop:value=m.height_m.to_string()
                                 on:click=move |ev| ev.stop_propagation()
-                                on:input=move |ev| {
-                                    if let Ok(v) = event_target_value(&ev).parse::<f64>() {
-                                        radar_markers.markers.update(|list| {
-                                            if let Some(marker) = list.iter_mut().find(|marker| marker.id == id) {
-                                                marker.height_m = v.max(0.0);
-                                            }
-                                        });
-                                    }
-                                }
+                                on:input=param_input(id, |marker, v| marker.height_m = v.max(0.0))
                             />
                         </label>
                         <label class="los-param-label">
@@ -115,17 +125,9 @@ pub fn LosView() -> impl IntoView {
                                 type="number"
                                 min="1"
                                 step="1"
-                                prop:value=(m.max_range_m / 1000.0).to_string()
+                                prop:value=range_km.to_string()
                                 on:click=move |ev| ev.stop_propagation()
-                                on:input=move |ev| {
-                                    if let Ok(v) = event_target_value(&ev).parse::<f64>() {
-                                        radar_markers.markers.update(|list| {
-                                            if let Some(marker) = list.iter_mut().find(|marker| marker.id == id) {
-                                                marker.max_range_m = v.max(1.0) * 1000.0;
-                                            }
-                                        });
-                                    }
-                                }
+                                on:input=param_input(id, |marker, v| marker.max_range_m = v.max(1.0) * 1000.0)
                             />
                         </label>
                         <button
@@ -187,25 +189,19 @@ pub fn LosView() -> impl IntoView {
 
     let chart = move || {
         if terrain_store.get().is_none() {
-            return view! { <p class="placeholder los-status">"地形データを読み込み中..."</p> }
-                .into_any();
+            return status("地形データを読み込み中...");
         }
-        let Some(selected) = selected_marker.get() else {
-            return view! { <p class="placeholder los-status">"レーダーが選択されていません"</p> }
-                .into_any();
+        let Some(marker) = selected_marker.get() else {
+            return status("レーダーが選択されていません");
         };
         // 選択やパラメータが変わった直後は、前の結果が残っていることがある(計算し直している間)ので、
         // いまの選択の結果だけを使う。
         let points = match result.get() {
-            Some((marker, points)) if marker == selected => points,
-            _ => {
-                return view! { <p class="placeholder los-status">"見通し範囲を計算中..."</p> }
-                    .into_any();
-            }
+            Some((computed, points)) if computed == marker => points,
+            _ => return status("見通し範囲を計算中..."),
         };
-        let marker = selected;
         if points.is_empty() {
-            return view! { <p class="placeholder los-status">"計算できません"</p> }.into_any();
+            return status("計算できません");
         }
         let boundary_d = build_boundary_path(&points, marker.max_range_m);
         let max_range_km = marker.max_range_m / 1000.0;
@@ -220,29 +216,28 @@ pub fn LosView() -> impl IntoView {
                 {[0.25, 0.5, 0.75, 1.0]
                     .into_iter()
                     .map(|frac| {
-                        view! {
-                            <circle cx=CENTER cy=CENTER r=RADIUS * frac class="los-grid-circle"></circle>
-                        }
+                        let r = RADIUS * frac;
+                        view! { <circle cx=CENTER cy=CENTER r=r class="los-grid-circle"></circle> }
                     })
                     .collect::<Vec<_>>()}
-                <line x1=CENTER y1=CENTER - RADIUS x2=CENTER y2=CENTER + RADIUS class="los-axis"></line>
-                <line x1=CENTER - RADIUS y1=CENTER x2=CENTER + RADIUS y2=CENTER class="los-axis"></line>
+                <line x1=CENTER y1=TOP x2=CENTER y2=BOTTOM class="los-axis"></line>
+                <line x1=LEFT y1=CENTER x2=RIGHT y2=CENTER class="los-axis"></line>
                 <path d=boundary_d.clone() class="los-area"></path>
                 <path d=boundary_d class="los-outline" fill="none"></path>
                 <circle cx=CENTER cy=CENTER r=3.0 class="los-observer"></circle>
-                <text x=CENTER y=CENTER - RADIUS - 6.0 text-anchor="middle" class="los-label">
+                <text x=CENTER y=N_LABEL_Y text-anchor="middle" class="los-label">
                     "N"
                 </text>
-                <text x=CENTER + RADIUS + 8.0 y=CENTER + 4.0 class="los-label">
+                <text x=E_LABEL_X y=EW_LABEL_Y class="los-label">
                     "E"
                 </text>
-                <text x=CENTER y=CENTER + RADIUS + 14.0 text-anchor="middle" class="los-label">
+                <text x=CENTER y=S_LABEL_Y text-anchor="middle" class="los-label">
                     "S"
                 </text>
-                <text x=CENTER - RADIUS - 8.0 y=CENTER + 4.0 text-anchor="end" class="los-label">
+                <text x=W_LABEL_X y=EW_LABEL_Y text-anchor="end" class="los-label">
                     "W"
                 </text>
-                <text x=CENTER + 4.0 y=CENTER - RADIUS + 11.0 class="los-label">
+                <text x=RANGE_LABEL_X y=RANGE_LABEL_Y class="los-label">
                     {format!("{:.0}km", max_range_km)}
                 </text>
             </svg>

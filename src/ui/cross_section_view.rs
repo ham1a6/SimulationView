@@ -22,6 +22,7 @@ use crate::terrain::origin::OriginState;
 use crate::terrain::profile::{build_profile_span, ProfilePoint};
 use crate::terrain::store::TerrainStore;
 use crate::terrain::tracks::{Track, TrackId, TracksState};
+use crate::ui::util::{event_f64, push_path_point};
 
 const VIEW_W: f64 = 400.0;
 const VIEW_H: f64 = 220.0;
@@ -29,6 +30,56 @@ const PAD_L: f64 = 46.0;
 const PAD_R: f64 = 10.0;
 const PAD_T: f64 = 10.0;
 const PAD_B: f64 = 22.0;
+/// グラフの描画領域の幅・高さと、右端・下端。
+const PLOT_W: f64 = VIEW_W - PAD_L - PAD_R;
+const PLOT_H: f64 = VIEW_H - PAD_T - PAD_B;
+const PLOT_RIGHT: f64 = VIEW_W - PAD_R;
+const PLOT_BOTTOM: f64 = PAD_T + PLOT_H;
+/// 軸の目盛り・ラベルの位置。
+const TICK_X: f64 = PAD_L - 3.0;
+const AXIS_LABEL_X: f64 = PAD_L - 4.0;
+const TOP_LABEL_Y: f64 = PAD_T + 8.0;
+const BOTTOM_LABEL_Y: f64 = VIEW_H - 4.0;
+
+/// 距離(m)・標高(m)から、SVGの座標への変換。
+#[derive(Clone, Copy)]
+struct Scale {
+    /// グラフの左端の距離と、左端から右端までの距離。
+    start_m: f64,
+    span_m: f64,
+    /// グラフの下端の標高と、下端から上端までの標高差(1m以上)。
+    min_elev: f32,
+    elev_range: f32,
+}
+
+impl Scale {
+    fn new(start_m: f64, span_m: f64, min_elev: f32, max_elev: f32) -> Self {
+        Self {
+            start_m,
+            span_m,
+            min_elev,
+            elev_range: (max_elev - min_elev).max(1.0),
+        }
+    }
+
+    /// 断面上の点群の左端から右端までを、標高`min_elev..max_elev`で描く変換。
+    fn of_points(points: &[ProfilePoint], span_m: f64, min_elev: f32, max_elev: f32) -> Self {
+        let start = points.first().map_or(0.0, |p| p.distance_m);
+        Self::new(start, span_m, min_elev, max_elev)
+    }
+
+    fn x(&self, distance_m: f64) -> f64 {
+        PAD_L + ((distance_m - self.start_m) / self.span_m) * PLOT_W
+    }
+
+    fn y(&self, elev: f32) -> f64 {
+        PLOT_BOTTOM - ((elev - self.min_elev) as f64 / self.elev_range as f64) * PLOT_H
+    }
+
+    fn xy(&self, p: &ProfilePoint) -> (f64, f64) {
+        (self.x(p.distance_m), self.y(p.elevation_m))
+    }
+}
 
 /// グラフの上端(空側)をどこまで表示するか、地表断面の最高標高からの上乗せ分(m)。
 /// 覆域(上空を含む)の塗りつぶしが「空へ抜けている」ことが視覚的に分かる程度の余裕を
@@ -39,15 +90,11 @@ const SYMBOL_HEADROOM_M: f32 = 1_500.0;
 
 /// 断面上の点群から実際の標高範囲(最小・最大)を求める。
 fn elevation_bounds(points: &[ProfilePoint]) -> (f32, f32) {
-    let min_elev = points
+    points
         .iter()
-        .map(|p| p.elevation_m)
-        .fold(f32::INFINITY, f32::min);
-    let max_elev = points
-        .iter()
-        .map(|p| p.elevation_m)
-        .fold(f32::NEG_INFINITY, f32::max);
-    (min_elev, max_elev)
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| {
+            (lo.min(p.elevation_m), hi.max(p.elevation_m))
+        })
 }
 
 /// 地表断面(折れ線・塗りつぶし)のSVGパスを作る。`scale_max_elev`はY軸の上端に使う値で、
@@ -61,32 +108,17 @@ fn build_svg_paths(
     if points.len() < 2 {
         return None;
     }
-    let elev_range = (scale_max_elev - min_elev).max(1.0);
-    let plot_w = VIEW_W - PAD_L - PAD_R;
-    let plot_h = VIEW_H - PAD_T - PAD_B;
-    let start = points[0].distance_m;
-
-    let to_xy = |p: &ProfilePoint| -> (f64, f64) {
-        let x = PAD_L + ((p.distance_m - start) / max_distance) * plot_w;
-        let y = PAD_T + plot_h - ((p.elevation_m - min_elev) as f64 / elev_range as f64) * plot_h;
-        (x, y)
-    };
-
+    let scale = Scale::of_points(points, max_distance, min_elev, scale_max_elev);
     let mut line_d = String::new();
     for (i, p) in points.iter().enumerate() {
-        let (x, y) = to_xy(p);
-        if i == 0 {
-            line_d.push_str(&format!("M{x:.1},{y:.1}"));
-        } else {
-            line_d.push_str(&format!(" L{x:.1},{y:.1}"));
-        }
+        push_path_point(&mut line_d, i == 0, scale.xy(p));
     }
     let area_d = format!(
         "{line_d} L{:.1},{:.1} L{:.1},{:.1} Z",
-        PAD_L + plot_w,
-        PAD_T + plot_h,
+        PAD_L + PLOT_W,
+        PLOT_BOTTOM,
         PAD_L,
-        PAD_T + plot_h
+        PLOT_BOTTOM
     );
 
     Some((line_d, area_d))
@@ -117,36 +149,16 @@ fn build_coverage_path(
     scale_max_elev: f32,
     max_distance: f64,
 ) -> Option<String> {
-    let elev_range = (scale_max_elev - min_elev).max(1.0);
-    let plot_w = VIEW_W - PAD_L - PAD_R;
-    let plot_h = VIEW_H - PAD_T - PAD_B;
-    let start = points.first().map_or(0.0, |p| p.distance_m);
-    let to_xy = |p: &ProfilePoint| -> (f64, f64) {
-        let x = PAD_L + ((p.distance_m - start) / max_distance) * plot_w;
-        let y = PAD_T + plot_h - ((p.elevation_m - min_elev) as f64 / elev_range as f64) * plot_h;
-        (x, y)
-    };
-
+    let scale = Scale::of_points(points, max_distance, min_elev, scale_max_elev);
     let mut d = String::new();
     let mut in_run = false;
     for (p, &is_covered) in points.iter().zip(covered) {
         if is_covered {
-            let (x, y) = to_xy(p);
-            if in_run {
-                d.push_str(&format!(" L{x:.1},{y:.1}"));
-            } else {
-                d.push_str(&format!("M{x:.1},{y:.1}"));
-                in_run = true;
-            }
-        } else {
-            in_run = false;
+            push_path_point(&mut d, !in_run, scale.xy(p));
         }
+        in_run = is_covered;
     }
-    if d.is_empty() {
-        None
-    } else {
-        Some(d)
-    }
+    (!d.is_empty()).then_some(d)
 }
 
 /// 断面上の各点について、配置済みレーダーのうちいずれか1つでも見える最低高度(標高、m)を
@@ -183,50 +195,35 @@ fn build_airspace_path(
     sky_ceiling: f32,
     max_distance: f64,
 ) -> Option<String> {
-    let elev_range = (sky_ceiling - min_elev).max(1.0);
-    let plot_w = VIEW_W - PAD_L - PAD_R;
-    let plot_h = VIEW_H - PAD_T - PAD_B;
-    let start = points.first().map_or(0.0, |p| p.distance_m);
-    let x_of = |distance: f64| PAD_L + ((distance - start) / max_distance) * plot_w;
-    let y_of = |elev: f32| PAD_T + plot_h - ((elev - min_elev) as f64 / elev_range as f64) * plot_h;
-    let y_top = PAD_T;
-
+    let scale = Scale::of_points(points, max_distance, min_elev, sky_ceiling);
     let mut d = String::new();
     let mut run: Vec<(f64, f64)> = Vec::new();
 
     for (p, b) in points.iter().zip(boundary) {
         match b {
             Some(h) if (*h as f32) < sky_ceiling => {
-                let y = y_of((*h as f32).max(min_elev));
-                run.push((x_of(p.distance_m), y));
+                let y = scale.y((*h as f32).max(min_elev));
+                run.push((scale.x(p.distance_m), y));
             }
-            _ => {
-                flush_airspace_run(&mut run, y_top, &mut d);
-            }
+            _ => flush_airspace_run(&mut run, &mut d),
         }
     }
-    flush_airspace_run(&mut run, y_top, &mut d);
-
-    if d.is_empty() {
-        None
-    } else {
-        Some(d)
-    }
+    flush_airspace_run(&mut run, &mut d);
+    (!d.is_empty()).then_some(d)
 }
 
-/// 連続する覆域区間(run)を、上端(sky_ceiling)を天井とする閉じたポリゴンとして`d`に追記する。
-fn flush_airspace_run(run: &mut Vec<(f64, f64)>, y_top: f64, d: &mut String) {
-    if run.len() < 2 {
-        run.clear();
-        return;
+/// 連続する覆域区間(run)を、グラフの上端を天井とする閉じたポリゴンとして`d`に追記する。
+fn flush_airspace_run(run: &mut Vec<(f64, f64)>, d: &mut String) {
+    if run.len() >= 2 {
+        let (x0, _) = run[0];
+        let (x_last, _) = run[run.len() - 1];
+        push_path_point(d, true, (x0, PAD_T));
+        for &point in run.iter() {
+            push_path_point(d, false, point);
+        }
+        push_path_point(d, false, (x_last, PAD_T));
+        d.push_str(" Z");
     }
-    let (x0, _) = run[0];
-    d.push_str(&format!("M{x0:.1},{y_top:.1}"));
-    for &(x, y) in run.iter() {
-        d.push_str(&format!(" L{x:.1},{y:.1}"));
-    }
-    let (x_last, _) = *run.last().unwrap();
-    d.push_str(&format!(" L{x_last:.1},{y_top:.1} Z"));
     run.clear();
 }
 
@@ -328,14 +325,7 @@ pub fn CrossSectionView() -> impl IntoView {
                 .map(|e| e.track.clone())
         })
     };
-    let center_track_untracked = move || -> Option<Track> {
-        let id = center_track_id.get_untracked()?;
-        tracks?.entries.with_untracked(|es| {
-            es.iter()
-                .find(|e| e.track.id == id)
-                .map(|e| e.track.clone())
-        })
-    };
+    let center_track_untracked = move || untrack(center_track);
 
     // 選んだ航跡の、断面を作り直す単位に丸めた位置。選択の変更・一定以上の移動のときだけ変わる。
     let center_key = Memo::new(move |_| {
@@ -423,29 +413,30 @@ pub fn CrossSectionView() -> impl IntoView {
             }
             SectionState::Ready(sec) => sec,
         };
-        let plot_w = VIEW_W - PAD_L - PAD_R;
-        let plot_h = VIEW_H - PAD_T - PAD_B;
-        let elev_range = (sec.sky_ceiling - sec.min_elev).max(1.0);
-        let y_of = |elev: f32| {
-            PAD_T + plot_h - ((elev - sec.min_elev) as f64 / elev_range as f64) * plot_h
-        };
-        let max_elev_y = y_of(sec.max_elev);
         let span = (sec.back_m + sec.forward_m).max(1.0);
+        let scale = Scale::new(-sec.back_m, span, sec.min_elev, sec.sky_ceiling);
+        let max_elev_y = scale.y(sec.max_elev);
+        let max_elev_label_y = max_elev_y + 3.0;
         // 中心(距離0)の位置。
-        let center_x = PAD_L + (sec.back_m / span) * plot_w;
+        let center_x = scale.x(0.0);
 
         // 選んだ航跡のシンボル: 中心の真上に、高度の位置で印を付ける(位置・高度の更新には、断面を作り直さずに追従する)。
         let symbol = center_track().map(|track| {
             let altitude = symbol_altitude_msl(&track, sec.center_ground_m);
-            let y = y_of(altitude.clamp(sec.min_elev, sec.sky_ceiling));
-            let ground_y = y_of(sec.center_ground_m);
+            let y = scale.y(altitude.clamp(sec.min_elev, sec.sky_ceiling));
+            let ground_y = scale.y(sec.center_ground_m);
             let label = format!("{} {:.0}m", track.label, altitude);
             // ラベルは、右端にはみ出さないよう、中心が右寄りなら左側に出す。
-            let (label_x, anchor) = if center_x > VIEW_W * 0.6 { (center_x - 6.0, "end") } else { (center_x + 6.0, "start") };
+            let (label_x, anchor) = if center_x > VIEW_W * 0.6 {
+                (center_x - 6.0, "end")
+            } else {
+                (center_x + 6.0, "start")
+            };
+            let label_y = (y - 6.0).max(TOP_LABEL_Y);
             view! {
                 <line x1=center_x y1=ground_y x2=center_x y2=y class="cs-symbol-line"></line>
                 <circle cx=center_x cy=y r=4.0 class="cs-symbol"></circle>
-                <text x=label_x y=(y - 6.0).max(PAD_T + 8.0) text-anchor=anchor class="cs-symbol-label">
+                <text x=label_x y=label_y text-anchor=anchor class="cs-symbol-label">
                     {label}
                 </text>
             }
@@ -459,37 +450,35 @@ pub fn CrossSectionView() -> impl IntoView {
                 role="img"
                 aria-label="地形断面図(覆域は上空を含む)"
             >
-                <line x1=PAD_L y1=PAD_T x2=PAD_L y2=PAD_T + plot_h class="cs-axis"></line>
-                <line x1=PAD_L y1=PAD_T + plot_h x2=VIEW_W - PAD_R y2=PAD_T + plot_h class="cs-axis"></line>
+                <line x1=PAD_L y1=PAD_T x2=PAD_L y2=PLOT_BOTTOM class="cs-axis"></line>
+                <line x1=PAD_L y1=PLOT_BOTTOM x2=PLOT_RIGHT y2=PLOT_BOTTOM class="cs-axis"></line>
                 {sec.airspace_d.map(|d| view! { <path d=d class="cs-airspace"></path> })}
                 <path d=sec.area_d class="cs-area"></path>
                 <path d=sec.line_d class="cs-line" fill="none"></path>
                 {sec.coverage_d.map(|d| view! { <path d=d class="cs-coverage" fill="none"></path> })}
-                <line x1=center_x y1=PAD_T x2=center_x y2=PAD_T + plot_h class="cs-center"></line>
+                <line x1=center_x y1=PAD_T x2=center_x y2=PLOT_BOTTOM class="cs-center"></line>
                 {symbol}
-                <line x1=PAD_L - 3.0 y1=max_elev_y x2=PAD_L y2=max_elev_y class="cs-axis"></line>
-                <text x=PAD_L - 4.0 y=max_elev_y + 3.0 text-anchor="end" class="cs-label">
+                <line x1=TICK_X y1=max_elev_y x2=PAD_L y2=max_elev_y class="cs-axis"></line>
+                <text x=AXIS_LABEL_X y=max_elev_label_y text-anchor="end" class="cs-label">
                     {format!("{:.0}m", sec.max_elev)}
                 </text>
-                <text x=PAD_L - 4.0 y=PAD_T + 8.0 text-anchor="end" class="cs-label">
+                <text x=AXIS_LABEL_X y=TOP_LABEL_Y text-anchor="end" class="cs-label">
                     {format!("+{:.0}m", sec.sky_ceiling - sec.max_elev)}
                 </text>
-                <text x=PAD_L - 4.0 y=PAD_T + plot_h text-anchor="end" class="cs-label">
+                <text x=AXIS_LABEL_X y=PLOT_BOTTOM text-anchor="end" class="cs-label">
                     {format!("{:.0}m", sec.min_elev)}
                 </text>
-                <text x=PAD_L y=VIEW_H - 4.0 text-anchor="start" class="cs-label">
+                <text x=PAD_L y=BOTTOM_LABEL_Y text-anchor="start" class="cs-label">
                     {format!("-{:.1}km", sec.back_m / 1000.0)}
                 </text>
-                <text x=center_x y=VIEW_H - 4.0 text-anchor="middle" class="cs-label">"0"</text>
-                <text x=VIEW_W - PAD_R y=VIEW_H - 4.0 text-anchor="end" class="cs-label">
+                <text x=center_x y=BOTTOM_LABEL_Y text-anchor="middle" class="cs-label">"0"</text>
+                <text x=PLOT_RIGHT y=BOTTOM_LABEL_Y text-anchor="end" class="cs-label">
                     {format!("+{:.1}km", sec.forward_m / 1000.0)}
                 </text>
             </svg>
         }
         .into_any()
     };
-
-    let has_track = move || center_track().is_some();
 
     view! {
         <div class="cross-section-view">
@@ -504,7 +493,7 @@ pub fn CrossSectionView() -> impl IntoView {
                         step="1"
                         prop:value=move || azimuth.get().to_string()
                         on:input=move |ev| {
-                            if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+                            if let Some(v) = event_f64(&ev) {
                                 azimuth.set(v);
                             }
                         }
@@ -547,7 +536,7 @@ pub fn CrossSectionView() -> impl IntoView {
                     <select
                         id="cross-section-range"
                         on:change=move |ev| {
-                            if let Ok(v) = event_target_value(&ev).parse::<f64>() {
+                            if let Some(v) = event_f64(&ev) {
                                 range_km.set(v);
                             }
                         }
@@ -567,7 +556,7 @@ pub fn CrossSectionView() -> impl IntoView {
                 <button
                     class="cross-section-heading-btn"
                     title="方位角を、選んだ航跡の進行方向に合わせる"
-                    disabled=move || !has_track()
+                    disabled=move || center_track().is_none()
                     on:click=move |_| {
                         if let Some(track) = center_track_untracked() {
                             azimuth.set(track.heading_deg.rem_euclid(360.0).round() % 360.0);
