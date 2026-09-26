@@ -17,7 +17,7 @@ Rust/Leptos(WASM)向けの3D地形ライブラリと地形前処理CLIを管理�
 | `sim3dview`の公開API・組み込み方・CSS契約 | [README.md](README.md) |
 | 開発経緯・過去のハマりどころ | [sample/docs/DEVELOPMENT_HISTORY.md](sample/docs/DEVELOPMENT_HISTORY.md) |
 | ライセンス・著作権表示 | [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md) |
-| C++経験者向け技術解説 | [docs/tech_note.html](docs/tech_note.html) |
+| C++経験者向け技術解説 | [docs/tech_note.html](docs/tech_note.html)(ライブラリ編)・[sample/docs/tech_note.html](sample/docs/tech_note.html)(sample編) |
 
 ## 応答・変更・コミット
 
@@ -27,7 +27,8 @@ Rust/Leptos(WASM)向けの3D地形ライブラリと地形前処理CLIを管理�
 - push、force-push、amend、履歴改変、広範な削除は通常の安全ルールどおり事前確認する。
 - 仕様変更では実装だけでなく設計書の対応節も更新する。定数・アルゴリズム・バイト配置は9節、設計理由は1〜7節を更新する。
 - 依存を変えたら`python scripts/gen_third_party_notice.py`で`THIRD_PARTY_NOTICE.md`を再生成する。
-- `docs/DETAILED_DESIGN.md`の既存節番号はソースコメントから参照されるため振り直さない。
+- `docs/DETAILED_DESIGN.md`の既存節番号はソースコメントから参照されるため振り直さない。サンプルへ移した節は欠番として残す。
+- サンプル固有の設計・解説・履歴は`sample/docs/`に書き、`docs/`へ置かない。
 
 ## 責務とディレクトリ
 
@@ -36,7 +37,7 @@ src/                      地形、カメラ、描画、覆域、作図、航跡
 style/                    ライブラリCSS
 tests/fixtures/           ライブラリ単体の検証データ
 tools/geotiff_preprocess/  原点非依存な地形LOD前処理CLI
-docs/                     ライブラリ設計と技術解説記事
+docs/                     ライブラリ設計と技術解説記事(サンプル固有の文書はsample/docs/)
 scripts/                  ライブラリのライセンス生成
 sample/                   独立した利用例。固有の手順はsample/AGENTS.md
 ```

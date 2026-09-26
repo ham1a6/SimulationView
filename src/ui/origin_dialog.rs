@@ -1,5 +1,5 @@
 //! 原点設定フローティングパネル。呼び出し側(アプリ)のメニュー等から
-//! `OriginDialogState`を`true`にすることで開く。DETAILED_DESIGN.md 3.5節:
+//! `OriginDialogState`を`true`にすることで開く。DETAILED_DESIGN.md 9.14節:
 //! 地形データ範囲外の値はそもそも送信できないようにする(入力段階でブロック)。
 //! 範囲(`geodetic_bounds`)は地形データ(`terrain::store::TerrainStore`。metadata.json)から読む。
 //!

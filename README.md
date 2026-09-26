@@ -7,7 +7,8 @@
 | 組み込み・機能別の使用例・CSS | 本README |
 | 公開APIの検索・contextと更新方法 | [APIリファレンス](API_REFERENCE.md) |
 | 機能追加・修正時の責務、実装ルール、検証 | [実装ガイドライン](IMPLEMENTATION_GUIDELINES.md) |
-| 設計理由・アルゴリズム・データ形式 | [統合設計書](docs/DETAILED_DESIGN.md) |
+| 設計理由・アルゴリズム・データ形式 | [ライブラリ設計書](docs/DETAILED_DESIGN.md) |
+| サンプルアプリの設計(通信・C++サーバー・業務UI) | [サンプル設計書](sample/docs/DETAILED_DESIGN.md) |
 
 型・メソッドの完全なシグネチャは`cargo doc -p sim3dview --no-deps --target wasm32-unknown-unknown --open`で参照できます。
 
@@ -23,7 +24,7 @@ ALOS DEMベースの3D地形描画(wgpu)・レーダー覆域/見通し(Line of 
 ## 配置と検証
 
 ライブラリのcrateはこのリポジトリのルートにあります。`src/` がRust実装、`style/` がCSS、
-`tests/fixtures/` が単体テスト用データ、`docs/` が設計書です。
+`tests/fixtures/` が単体テスト用データ、`docs/` がライブラリの設計書と解説です(サンプルの文書は`sample/docs/`)。
 地形ファイルを生成する[前処理CLI](tools/geotiff_preprocess/README.md)も提供します。
 
 ```powershell

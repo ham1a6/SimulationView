@@ -1,6 +1,6 @@
 # サンプル実装の作業ガイド
 
-共通方針は[ルートAGENTS.md](../AGENTS.md)、設計は[サンプル設計書](docs/DETAILED_DESIGN.md)、ビルド・起動は[README](README.md)、過去の判断は[開発履歴](docs/DEVELOPMENT_HISTORY.md)を参照する。
+共通方針は[ルートAGENTS.md](../AGENTS.md)、設計は[サンプル設計書](docs/DETAILED_DESIGN.md)、ビルド・起動は[README](README.md)、過去の判断は[開発履歴](docs/DEVELOPMENT_HISTORY.md)を参照する。サンプル固有の文書は`sample/docs/`に置き、ルートの`docs/`へ書かない。
 
 - `sim_frontend/` は通信・VAB・状況パネル・メニュー、`sim_server/` はC++参照サーバー、`sim_desktop/` はElectron起動・配布。
 - Cargoワークスペース・ロック・ビルド出力はsample内で完結させる。ライブラリは `path = "../.."` で参照する。

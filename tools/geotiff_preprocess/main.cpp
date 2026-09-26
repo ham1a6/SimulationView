@@ -82,7 +82,7 @@ constexpr double kEllipsoidInvF = 298.257222101;
 constexpr double kDefaultOriginLat = 35.355556;
 constexpr double kDefaultOriginLon = 138.859722;
 
-// 1タイルあたりの画素数(DETAILED_DESIGN.md 1.2節)。モザイクの外接矩形自体は固定値を
+// 1タイルあたりの画素数(DETAILED_DESIGN.md 2.2節)。モザイクの外接矩形自体は固定値を
 // 持たず、実際に見つかったタイル群から実行時に計算する(下記MosaicBounds参照)。
 constexpr int kTileFullPx = 3600; // 1タイル = 1度 × 3600px/度(1秒角)
 

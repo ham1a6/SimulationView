@@ -189,7 +189,7 @@ tools\geotiff_preprocess\build\Debug\geotiff_preprocess.exe sample/map_data samp
 緯度経度から毎回自動計算されるため、`sample/map_data/`に別の場所のタイルを追加/削除してもコード変更は不要
 (ただし`sim_server`は起動時に`metadata.json`を読むので再起動が必要)。
 フロントは全タイルの最粗レベルだけを起動時に取得し、カメラに近いチャンクだけ細かいレベルをその都度
-取得して描画する(地形LOD。docs/DETAILED_DESIGN.md 6.10節)。
+取得して描画する(地形LOD。[ライブラリ設計書](../docs/DETAILED_DESIGN.md) 6.10節)。
 成功すると以下のようなログが出る:
 
 ```
@@ -320,9 +320,11 @@ C++シミュレータ本体・Web UI(サンプルアプリ)とも実装・動作
 
 - [README.md](README.md) — 本書。セットアップ・起動手順
 - [../README.md](../README.md) — `sim3dview`ライブラリの使い方(開発者向け)
-- [docs/README.md](docs/README.md) — ドキュメントの索引・読み順・保守ルール
-- [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) — 統合設計書(全体像、設計方針、詳細設計、実装仕様、再実装ガイド、Mermaid図)
+- [docs/README.md](docs/README.md) — サンプルのドキュメントの索引
+- [docs/DETAILED_DESIGN.md](docs/DETAILED_DESIGN.md) — サンプル設計書(地形の実データ、原点の運用、通信プロトコル、C++サーバー、業務UI、Electron、Mermaid図)
+- [docs/tech_note.html](docs/tech_note.html) — 技術解説ノート sample編(通信・C++/Rustのコード・画面の部品・全処理の解説スナップショット)
 - [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) — 実装の経緯・ハマりどころの記録(機能ごとの「要望→原因→修正→確認」)
+- [../docs/DETAILED_DESIGN.md](../docs/DETAILED_DESIGN.md) — ライブラリ設計書(地形形式・描画・実装仕様・再実装ガイド)
 - [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md) — 利用しているサードパーティ(Rustクレート・C++ライブラリ・ALOS地形データ)の一覧・著作権表示・ライセンス。依存を変えたら`python sample/scripts/gen_third_party_notice.py`で再生成する
 - [CLAUDE.md](CLAUDE.md) — AIエージェント向けの作業方針・要点(短い索引)
 

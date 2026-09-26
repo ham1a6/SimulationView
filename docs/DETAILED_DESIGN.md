@@ -13,7 +13,17 @@ APIは[README](../README.md)・[API_REFERENCE](../API_REFERENCE.md)、作業手�
 ### 0.2 文書内の読み順
 
 地形形式は1〜2節、座標は3節、描画と状態は6節、汎用UIは7節、実装契約は9節、再実装は10節。
-移設した節番号は予約として保持する。
+サンプル固有の節は[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)へ移設した。ソースコメントから参照されるため、
+移設した節番号は欠番として見出しだけを残し、別の内容に再利用しない。
+
+| 移設した節 | 内容 |
+|---|---|
+| 1.1〜1.3 | 入力データ(ALOS World 3D-30m)のファイル構成・分布・実測値 |
+| 3.4〜3.6 | 原点の変更タイミング・入力検証・状態遷移(原点の正はサンプルのサーバー) |
+| 4 | 通信プロトコル |
+| 5.1〜5.4・5.6 | C++参照サーバー(スレッド・コマンド処理・HTTP配信・ファイル受信) |
+| 6.1〜6.3 | サンプルフロントの構成と接続管理 |
+| 7.1・7.2・7.4・7.5・7.8・7.9 | 画面レイアウト・VAB・状況パネル・Electron起動などの業務UI |
 
 ### 0.3 確定した設計方針
 
@@ -31,17 +41,17 @@ Rust・Leptos・wgpu・WASMが表示と状態管理、C++20/GDALが前処理を�
 
 ALOS World 3D-30mのGeoTIFFを入力とする。入力範囲と枚数はデータセットに依存する。
 
-### 1.1 サンプル設計へ移動
+### 1.1 (欠番: 入力ファイル構成)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の1.1節へ移設。
 
-### 1.2 サンプル設計へ移動
+### 1.2 (欠番: タイル分布と規模)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の1.2節へ移設。
 
-### 1.3 サンプル設計へ移動
+### 1.3 (欠番: 標高データの実態)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の1.3節へ移設。
 
 ### 1.4 欠損・海域の扱い(方針)
 
@@ -131,11 +141,11 @@ GDALはラスタを北→南で格納するので、前処理はグリッド化�
 |---|---|
 | `tile_levels` | レベルごとの1度タイル1辺あたりのセル数(先頭がレベル0=最粗)。フロントはこの配列からレベル数・各グリッドの大きさを決めるので、前処理側で値を変えてもフロントの変更は不要(レベル1以上は`chunks_per_tile`で割り切れること) |
 | `chunks_per_tile` | 1度タイルを何×何のチャンクに分けるか(レベル1以上) |
-| `geodetic_bounds` | 全タイルの外接矩形(整数度)。原点入力のバリデーション(3.5節)・タイル索引の大きさ・範囲チェックに使う。サーバーも起動時にこれを読む |
-| `elevation_min`/`elevation_max` | ダウンサンプリング前の全画素から実測。色の正規化は上限だけを使う(下限は0m固定。1.3節) |
+| `geodetic_bounds` | 全タイルの外接矩形(整数度)。タイル索引の大きさ・範囲チェック・原点入力の検証(`OriginDialog`。9.14節)に使う。サーバー側で範囲を検証する場合もこの値を読む |
+| `elevation_min`/`elevation_max` | ダウンサンプリング前の全画素から実測。色の正規化は上限だけを使う(下限は0m固定。6.7節) |
 | `ellipsoid`/`height_datum` | フロント側のENU変換(3節)のパラメータ(WGS84相当。DSMの標高はEGM96海抜) |
 | `has_texture` | `texture.png`の有無を毎回fetch失敗で判定せずに済むよう明示フラグとして持つ(現在は常にfalse) |
-| `default_origin` | UIの原点入力欄の初期値。実際に使われる原点はサーバーが保持する状態(`OriginState`。5節)が正で、これは未接続時のUI初期表示用 |
+| `default_origin` | `OriginState`が`None`のときに使う原点(原点入力欄の初期値を兼ねる)。実際の原点はアプリが`OriginState`で渡す値が正 |
 
 ### 2.7 前処理ツール処理フロー(UML: アクティビティ相当のフローチャート)
 
@@ -206,29 +216,29 @@ sim_z = Up
 - 原点を変更したら、常駐している全タイル(各自の解像度レベル)の頂点バッファを再計算・再アップロードする
   (タイルデータの再フェッチは不要。インデックスは原点に依存しないので作り直さない)
 
-### 3.4 サンプル設計へ移動
+### 3.4 (欠番: 原点の変更タイミング)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の3.4節へ移設。
 
-### 3.5 サンプル設計へ移動
+### 3.5 (欠番: 原点入力のバリデーション)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の3.5節へ移設。
 
-### 3.6 サンプル設計へ移動
+### 3.6 (欠番: 原点状態の状態遷移)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の3.6節へ移設。
 
-## 4. サンプル設計へ移動
+## 4. (欠番: 通信プロトコル)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の4節へ移設。
 
-## 5. サンプル設計へ移動
+## 5. C++側設計
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+前処理ツールだけをここに置く。C++参照サーバー(5.1〜5.4・5.6節)は[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)へ移設した。
 
 ### 5.5 GeoTIFF前処理ツール(geotiff_preprocess)のクラス構成
 
-`tools/geotiff_preprocess/main.cpp`と`preprocess_core.hpp`に実装(`sim_server`本体とは別のCMakeプロジェクト・別実行ファイル。sim3dviewライブラリの一部としてリポジトリ直下の`tools/`に置く)。
+`tools/geotiff_preprocess/main.cpp`と`preprocess_core.hpp`に実装(サンプルのC++サーバーとは別のCMakeプロジェクト・別実行ファイル。sim3dviewライブラリの一部としてリポジトリ直下の`tools/`に置く)。
 ファイル名解析・外接矩形・チャンク分割はGDALやファイルI/Oに依存しない`preprocess_core.hpp`へ分離し、CLI本体とCTestから共用する。
 
 | 関数/構造体 | 役割 |
@@ -296,23 +306,17 @@ sim_z = Up
 一定高度面は楕円体ではないため、楕円体の半径だけを増やさず曲線の弧長を積分する。
 高度面上の最短経路探索や地形追従は対象外。海抜・対地・気圧高度との変換はアプリの責務(9.3.2節)。
 
-### 6.15 ファイル送信
+### 6.1 (欠番: サンプルフロントのコンポーネント構成)
 
-`upload::upload_blob`は呼び出し側からURLとBlobを受け取り、HTTP POSTで送信する。
-地形の状態やWebSocketから独立し、保存場所・命名・認証ヘッダー・応答解釈・UIはアプリが担当する。
-ブラウザのBlobを直接本文にしてRustメモリへの全体コピーを避ける。実装契約は9.16節。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の6.1節へ移設。
 
-### 6.1 サンプル設計へ移動
+### 6.2 (欠番: WebSocket接続管理)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の6.2節へ移設。
 
-### 6.2 サンプル設計へ移動
+### 6.3 (欠番: 再接続の状態遷移)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
-
-### 6.3 サンプル設計へ移動
-
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の6.3節へ移設。
 
 ### 6.4 地形描画パイプライン
 
@@ -500,7 +504,7 @@ ENU座標系(東=X, 北=Y, 上=Z)は右手系(East×North=Up)。wgpu/glamの一�
 
 **観測点は地形メッシュの原点(`OriginState`)とは独立**: 緯度経度の絶対値で保持しており、`set_origin`コマンドは一切送らない。原点(メッシュ)が変わっても観測点の緯度経度は変わらず、
 描画側が新しい原点基準のENU座標へ再変換するだけで、地形メッシュの再計算も発生しない。したがって、原点変更とは異なり**シミュレーション実行中でも自由に追加・編集できる**
-(3.4節の「原点変更はシミュレーション停止中のみ」は`OriginState`自体の変更にのみ適用される)。
+(サンプルの「原点変更はシミュレーション停止中のみ」(サンプル設計書3.4節)という制約は`OriginState`自体の変更にのみ適用される)。
 
 ```mermaid
 flowchart LR
@@ -668,7 +672,7 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 - **一覧と選択**: `DrawToolState.shapes`(作った順の`UserShape { id, name }`)が、このエディタで作った図形を区別する(アプリが`DrawingState`へ直接足したデモ等は一覧に出ず、保存もされない)。
   一覧で選ぶと地図上で**黄色い太線の枠**になり、下に数値編集フォームが開く(位置・大きさ・高度・見た目・名前・表示/非表示・削除)。地図上のドラッグでの頂点移動やシンボルのクリック選択は未実装
 - **保存**: `DrawToolState::persist(key)`で、作った図形をJSON(`{version, shapes}`)にしてブラウザのlocalStorageへ保存し、次回起動時に復元する(内容が変わったときだけ書く)。版が違う・壊れたデータは警告ログを出して読み込まない
-- **UI**: `ui::drawing_editor::DrawingEditor`。地図をクリックできるよう、モーダルではなく非モーダルの`FloatingPanel`(`modal=false`、7.7節)かタブの中身として置く(サンプルは表示メニューの「作図...」で開く移動可能なウインドウ)。
+- **UI**: `ui::drawing_editor::DrawingEditor`。地図をクリックできるよう、モーダルではなく非モーダルの`FloatingPanel`(`modal=false`、7.7節)かタブの中身として置く。
   作成中の案内と`確定`/`1つ戻す`/`終了`は、地図の左上に重ねるヒントバーに出す
 
 ### 6.12 航跡(トラック)表示(`terrain::tracks` / `draw.wgsl`の向きつきビルボード)
@@ -706,8 +710,8 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 - 当たり判定: `TerrainView`の`pointerup`で、ドラッグではない左クリック(移動が5px未満)のとき、「原点クリック指定」モード中なら従来どおり原点指定、そうでなければ`tracks::pick_track`
   (各シンボルのアンカーを画面へ射影し、クリック位置に最も近く半径20px以内のもの。地形の陰に隠れたシンボルも対象)で選ぶ。**何もない所のクリックは選択解除**
 - 強調: 選択中のシンボルの後ろに白い輪を描き、ラベルに`.selected`クラスを付ける
-- 詳細の表示はアプリの役目。ライブラリは`selected`と`selected_track()`、種別・所属の日本語名だけを渡す。サンプルは、トップステータスパネルの**「航跡情報」タブ**(`components/track_detail.rs`)に、
-  名前・識別番号・種別・所属・位置・高度・針路・速度・原点からの距離と方位・「選択を解除」ボタンを出し、`TabbedPanel`の`active`(任意のprop)で、航跡が選択されたら自動でこのタブへ移る
+- 詳細の表示はアプリの役目。ライブラリは`selected`と`selected_track()`、種別・所属の日本語名だけを渡す。
+  アプリは`TabbedPanel`の`active`(任意のprop)で、航跡が選択されたら詳細のタブへ自動で切り替えられる(サンプルの例はサンプル設計書7.6節)
 
 **描画・再構築**: `TerrainRenderer::update_tracks`(専用バッファ、`draw_blend_pipeline`・絶対座標のuniform)。再構築(`ui/terrain_view/overlay.rs::rebuild_tracks`)は、トラックの受信・表示設定の変更・原点変更・2D/3D切替・地形LOD切替(地表基準・高度線があるとき)。
 トラックは高頻度で更新されるので、受信のたびに`render_frame`だけ呼び、LODの更新は予約しない。
@@ -778,69 +782,58 @@ UIから図形を作る・編集する層。`DrawingState`の上に載る別のc
 
 **写るもの/写らないもの**: canvas上の描画(地形・作図・航跡シンボル・覆域等)はどちらにも写るが、航跡ラベル等のHTML要素の重ね合わせ(`terrain-track-labels`)は対象外(canvasの外にあるDOM要素のため)。
 
+### 6.15 ファイル送信
+
+`upload::upload_blob`は呼び出し側からURLとBlobを受け取り、HTTP POSTで送信する。
+地形の状態や通信プロトコルから独立し、保存場所・命名・認証ヘッダー・応答解釈・UIはアプリが担当する。
+ブラウザのBlobを直接本文にしてRustメモリへの全体コピーを避ける。実装契約は9.16節。
+
 ---
 
 ## 7. 汎用UI設計
 
 アプリ固有のレイアウト・メニュー・通信はサンプル設計書へ分離する。
 
-### 7.1 サンプル設計へ移動
+### 7.1 (欠番: 画面レイアウト)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の7.1節へ移設。
 
-### 7.2 サンプル設計へ移動
+### 7.2 (欠番: レスポンシブ方式)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の7.2節へ移設。
 
 ### 7.3 リサイザー(splitter)の実装
 
 - 共通部品`ui::split_pane::SplitPane`がドラッグ・pointer capture・終了処理を担当する。アルゴリズムは9.14節。
 
-### 7.4 サンプル設計へ移動
+### 7.4 (欠番: VAB)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の7.4節へ移設。
 
-### 7.5 サンプル設計へ移動
+### 7.5 (欠番: 状況パネル)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の7.5節へ移設。
 
 ### 7.6 タブ付きパネル(`ui/tabbed_panel.rs`)
 
-右パネル上下段(トップ/ボトムステータスパネル、`components/right_panel.rs`)は、
-汎用の`TabbedPanel`コンポーネントで実装する。パネル固有の名前(「各種情報」「側面図」等)は
-**タブのラベル**であり、パネル自体の名前は位置に基づく汎用名
-(「トップステータスパネル」「ボトムステータスパネル」)にすることで、後から同じ枠に
-別内容のタブを追加できるようにしてある。この名前は画面には出さない(`title`は省略可能で、
-サンプルは指定しない)。
+`TabbedPanel`は、パネルの枠とタブバーだけを持つ汎用部品である。パネル固有の名前は**タブのラベル**に置き、
+枠そのものは位置に基づく汎用名で扱う。これにより、呼び出し側は`tab(...)`を1行足すだけで同じ枠へ別内容のタブを追加でき、
+`TabbedPanel`側の変更は要らない。`title`は省略可能で、省略または空文字なら見出しを出さずタブバーだけにする。
+サンプルの右パネルでの使い方はサンプル設計書7.6節を参照。
 
 ```mermaid
 classDiagram
     class TabbedPanel {
         +String title (省略可)
         +Vec~Tab~ tabs
+        +Option~RwSignal~usize~~ active
     }
     class Tab {
         -label: &str
         -view: AnyView
     }
-    class TopStatusPanel {
-        tabs = [("各種情報", StatusPanel)]
-    }
-    class BottomStatusPanel {
-        tabs = [("断面図", CrossSectionView), ("見通し範囲", LosView)]
-    }
     TabbedPanel o-- Tab
-    TopStatusPanel ..> TabbedPanel : 使う
-    BottomStatusPanel ..> TabbedPanel : 使う
 ```
-
-ボトムステータスパネルへ「見通し範囲」タブ(6.9節)を追加した際に、「断面図」
-「見通し範囲」の2タブ構成になった(タブ配列に`tab(...)`のエントリを1行足すだけで、
-`TabbedPanel`側の変更は一切不要だった。設計意図通りの拡張性)。その後「ボトムステータス
-パネルの側面図もいらない」との要望を受けて断面図タブ(`CrossSectionView`、旧称「側面図」)
-自体を一時削除したが、後日「断面図機能自体を復活してほしい」との要望を受けて再度追加し、
-現在は再び2タブ構成になっている(git履歴参照。復活時の実装は`sim3dview::ui::
-cross_section_view::CrossSectionView`としてライブラリ側に置いている)。
 
 - `active: RwSignal<usize>`で選択中タブのインデックスを保持する
 - 各タブの中身(`AnyView`)は初回描画時に全タブぶん一度だけ生成してDOMに残し、
@@ -855,13 +848,13 @@ cross_section_view::CrossSectionView`としてライブラリ側に置いてい�
 `OriginDialog`は通信を持たずコールバックで要求を返し、覆域高度ダイアログはローカルのシグナルを更新する。
 props・状態・操作の実装契約は9.14節。
 
-### 7.8 サンプル設計へ移動
+### 7.8 (欠番: シミュレーション状態の表示)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の7.8節へ移設。
 
-### 7.9 サンプル設計へ移動
+### 7.9 (欠番: Electronデスクトップ起動)
 
-[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の同番号節を参照。
+[サンプル設計書](../sample/docs/DETAILED_DESIGN.md)の7.9節へ移設。
 
 ## 8. 図の索引
 
@@ -916,7 +909,7 @@ record_bytes = (n+1)² × 2
 **サーバーへの要件**: 静的配信(JSONは`application/json`、binは`application/octet-stream`)。**HTTP Range**(単一範囲`bytes=a-b`)に`206`で対応するのが望ましい(未対応でも動くが毎回全体を転送する。
 単純な`bytes=a-b`ならCORSのプリフライトは不要。別オリジンなら`Access-Control-Allow-Origin`を付ける)。フロントは失敗(HTTPエラー・サイズ不一致)を数回まで再試行する(9.2)。
 
-低速回線向けに、以下を推奨する(`sample/sim_server`は実装済み。参照実装は`serve_terrain_file`/`http_utils::accepts_gzip`/`http_utils::gzip_compress`):
+低速回線向けに、以下を推奨する(参照実装はサンプル設計書5.4節):
 - **圧縮**: Range指定の無い(206ではない)応答は、リクエストの`Accept-Encoding`に`gzip`があれば`Content-Encoding: gzip`で圧縮して返す(JSON・`base.bin`・`WHOLE_FILE_MAX_LEVEL`以下のタイルファイル全体取得が対象になる)。**Rangeでの部分取得(206)は圧縮しない**(圧縮後のバイト位置はチャンクのレコード境界と対応しなくなるため)。あわせて`Vary: Accept-Encoding`を付け、キャッシュがエンコーディング違いの応答を混同しないようにする。
 - **キャッシュ**: 地形データは同一サーバープロセスの生存期間中は不変なので、`Cache-Control: public, max-age=<長め>, must-revalidate`のように長期キャッシュ可能として返してよい(`no-cache`だと同じデータでも毎回条件付きGETの往復が発生し、高遅延回線でのRTTがそのまま無駄になる)。`ETag`による再検証(`If-None-Match`→`304`)は引き続き行い、プロセス再起動でデータセットが変わった場合に正しく更新されるようにする。
 
@@ -1469,7 +1462,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 
 - **`SplitPane(first, second, initial_fraction=0.5, min_first=160, min_second=160, second_visible=true)`**: 左右のビューを常時マウントする横分割部品。最小幅は正の有限値、初期比率は有限値(0.001〜0.999に制限)。CSS Gridを`minmax(min_first, f fr) 6px minmax(min_second, (1-f) fr)`とし、全体の最小幅は両側最小幅+6px。親が横スクロールを担当する。`second_visible: Signal<bool>`がfalseなら第二区画と仕切りを`display:none`で隠し、列定義を`minmax(min_first, 1fr)`、最小幅を`min_first`へ変更する。内容と分割比率は保持する。左ボタンのpointerdownで実測した左幅L・両区画合計Tを保存し、moveで`f=clamp(L+dx, min_first, T-min_second)/T`へ更新する。1本のpointerのみ受け付け、pointer captureで区画外も追跡し、up/cancel/lostpointercaptureで終了する。CSSは`.sim3d-split-pane`・`.sim3d-split-content`・`.sim3d-split-handle`。検証: 実寸に比例する移動、左右最小幅、最小幅合計でのドラッグ、実画面での繰り返し操作。
 
-- **`pointer_drag::{DragTracker, DragUpdate, DragEnd}`**: 同時に1本のpointer IDだけを追跡する純粋な状態管理。move時に直前位置からの`delta`と開始位置からの`total`、up時に`DragEnd`を返す。別pointerのmove/up/cancelは無視する。DOMのpointer captureは呼び出し側の責務。`TerrainView`・`FloatingPanel`・サンプルアプリの区画リサイザーで共用する
+- **`pointer_drag::{DragTracker, DragUpdate, DragEnd}`**: 同時に1本のpointer IDだけを追跡する純粋な状態管理。move時に直前位置からの`delta`と開始位置からの`total`、up時に`DragEnd`を返す。別pointerのmove/up/cancelは無視する。DOMのpointer captureは呼び出し側の責務。`TerrainView`・`FloatingPanel`・`SplitPane`で共用する
 - **`TabbedPanel(title?, tabs: Vec<Tab>, active: Option<RwSignal<usize>>)`**(`title`は省略可。省略/空文字なら見出しを出さない) + `tab(label, view)`: `active`を渡すと呼び出し側からタブを切り替えられる。**全タブの中身を初回に1度だけ生成してDOMに残し、非選択は`display:none`で隠す**(切替で作り直さない)。タブが1個でもタブバーは表示する
 - **`FloatingPanel(open, title, modal=true, draggable=false, initial_position, children)`**: 中身は常時マウントし`display`だけ切り替える。`modal`は半透明バックドロップ(`.floating-panel-backdrop`)+中央表示で、背景クリックか✕で閉じる。
   `modal=false`(ウインドウ)はバックドロップなし(`.floating-window-layer`は`pointer-events:none`、パネルだけ`auto`)で✕でだけ閉じる。既定位置`(80,60)`。`draggable`はタイトルバーのポインタ操作で動かし、
@@ -1558,7 +1551,7 @@ uniformは作図の`World`用(`draw_world`。`view_proj`・`light`だけ使う)�
 
 **`ui::model_settings_dialog`**: `ModelSettingsDialogState(RwSignal<bool>)`とコンポーネント`ModelSettingsDialog`(`FloatingPanel`の`modal=false`・`draggable`)。表示方式の`<select>`、切替距離(100〜200,000m)・最小サイズ(4〜512px)の数値入力(範囲外・数値でない入力は反映しない。使わない方式の欄は無効表示)。
 
-**検証**: `gltf_import`(最小のGLBを手で組み立てて、軸の変換・ノードの平行移動と基本色の焼き込み・法線なしのとき面の法線・壊れた入力がパニックでなくエラー。**サンプルのGLB5つが読めて、実寸の長さで、三角形の向きが法線と一致する**)、
+**検証**: `gltf_import`(最小のGLBを手で組み立てて、軸の変換・ノードの平行移動と基本色の焼き込み・法線なしのとき面の法線・壊れた入力がパニックでなくエラー。**`tests/fixtures/models`のGLB5つが読めて、実寸の長さで、三角形の向きが法線と一致する**)、
 `placement`(ヘディングは北から時計回り・ピッチ機首上げ・ロール右翼下がり・地点の局所の上に沿う・行列の位置と大きさとyaw補正・奥行きと画面の大きさ・切替距離とヒステリシス・最小サイズの倍率と上限・
 モデル別のインスタンス集約と未読み込み/未登録の除外・配置の位置と向き)、`geodesy::local_frame`(原点で単位行列・遠方で上がかたむく・正規直交の右手系)、`tracks`(`symbols_hidden`のトラックはシンボルだけ消える)、
 `renderer`(`model.wgsl`のnaga検証・`DrawUniform`の一致・頂点/インスタンスの属性のオフセットと`@location`)、`models`(登録・置き換え・解除)。実機: 最小サイズでモデルが出て向きが進行方向に合う・切替距離で入れ替わる。
@@ -1619,10 +1612,11 @@ flowchart LR
 ### 10.2 完了条件
 
 1. `cargo check -p sim3dview --target wasm32-unknown-unknown`が通る。
-2. `cargo check --manifest-path sample/Cargo.toml -p sim_frontend --target wasm32-unknown-unknown`が通る。
-3. `cargo test -p sim3dview`が全件通る。
-4. 実データで各フェーズの実機項目を複数回確認する。
-5. [README.md](../README.md)の公開APIと一致する。
+2. `cargo test -p sim3dview`が全件通る。
+3. 実データで各フェーズの実機項目を複数回確認する。
+4. [README.md](../README.md)の公開APIと一致する。
+
+利用アプリでの結合確認(サンプルのビルド・実機操作)は[sample/AGENTS.md](../sample/AGENTS.md)の手順に従う。
 
 ### 10.3 実装時の重要チェック
 
