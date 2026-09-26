@@ -65,6 +65,9 @@ pub(super) struct ViewState {
     pub(super) target_up: f32,
     /// レンダラーの非同期の初期化中か(`try_init`を重ねて走らせないため)。
     pub(super) initializing: bool,
+    /// canvasの表示上の大きさ(CSSピクセル)。ResizeObserverで最後に受け取った値で、まだ受け取って
+    /// いなければNone(canvasの内部解像度は、これにdevicePixelRatioを掛けたもの。`resize::canvas_pixel_size`)。
+    pub(super) canvas_css_px: Option<(u32, u32)>,
     /// 次の画面更新での描画を予約済みか(`render_frame`)。
     pub(super) frame_request: FrameRequest,
     /// canvas上のドラッグ(カメラの回転・移動)。

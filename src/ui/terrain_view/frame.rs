@@ -44,6 +44,10 @@ pub(super) fn try_init(
         }
     }
     state.borrow_mut().initializing = true;
+    // 表示上の大きさ(CSSピクセル)。まだResizeObserverから受け取っていなければ(非表示のタブなど)、
+    // canvasの内部解像度をそのまま使う(devicePixelRatioは1とみなす)。
+    let css_size = state.borrow().canvas_css_px.unwrap_or((width, height));
+    let canvas_for_size = canvas.clone();
 
     let origin = origin_state
         .0
@@ -54,8 +58,12 @@ pub(super) fn try_init(
     let target_up = heightmap::sample_heightmap(&data, origin.lat_deg, origin.lon_deg);
 
     wasm_bindgen_futures::spawn_local(async move {
-        match TerrainRenderer::new(canvas).await {
+        match TerrainRenderer::new(canvas, css_size).await {
             Ok(mut renderer) => {
+                // 初期化を待つ間にcanvasの大きさが変わっていたら(その間のResizeObserverの通知は
+                // レンダラーが無いので反映されない)、いまの大きさに合わせる。
+                let css_now = state.borrow().canvas_css_px.unwrap_or(css_size);
+                renderer.resize(css_now, (canvas_for_size.width(), canvas_for_size.height()));
                 // 全タイルを最粗のレベル0(タイル全体で1枚)で載せる(細かいレベルはカメラに近い
                 // チャンクだけ、あとから`update_lod`が差し替える)。
                 let transform = EnuTransform::new(&origin, &data.metadata.ellipsoid);

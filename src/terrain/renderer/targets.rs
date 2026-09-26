@@ -1,7 +1,9 @@
 //! 描画先のテクスチャ(深度・MSAA・スーパーサンプリングの解決先)と、canvasの解像度への縮小(downsample)。
 //!
-//! 描画はcanvasの`SUPERSAMPLE_FACTOR`倍の内部解像度で、4倍MSAAをかけて行い、最後に線形フィルタで
-//! canvasの解像度へ縮小する。
+//! 描画はcanvasの表示上の大きさ(CSSピクセル)の`SUPERSAMPLE_FACTOR`倍の内部解像度で、4倍MSAAをかけて
+//! 行い、最後に線形フィルタでcanvasの内部解像度(CSSピクセル×devicePixelRatio)へ縮小する。
+//! devicePixelRatioが2の高DPIの画面では縮小はほぼ等倍になり、描画の負荷は通常の画面と同じまま、
+//! ブラウザによる引き伸ばしが無くなってくっきり表示される。
 
 use super::pipelines::{create_pipeline, pipeline_layout, PipelineSpec};
 
@@ -14,8 +16,8 @@ pub(super) const SAMPLE_COUNT: u32 = 4;
 
 /// スーパーサンプリングの倍率。4倍MSAAだけでは、やや引いた視点・浅い角度で地形の
 /// エイリアシング(「背景と同じ色の点が多数表示される/ズーム操作やカメラ操作時に画面が
-/// ちかちかする」)を抑えきれなかったため追加した。canvasの`SUPERSAMPLE_FACTOR`倍の
-/// 内部解像度で描画(+4倍MSAA)した後、線形フィルタで実際のcanvas解像度へ縮小する
+/// ちかちかする」)を抑えきれなかったため追加した。canvasの表示上の大きさ(CSSピクセル)の`SUPERSAMPLE_FACTOR`倍の
+/// 内部解像度で描画(+4倍MSAA)した後、線形フィルタで実際のcanvasの内部解像度へ縮小する
 /// (`Downsample`)。
 const SUPERSAMPLE_FACTOR: u32 = 2;
 /// スーパーサンプリング後の内部テクスチャの一辺の上限(ピクセル)。WebGPUが保証する
@@ -23,7 +25,7 @@ const SUPERSAMPLE_FACTOR: u32 = 2;
 /// 2倍すると際どくなるため、余裕を持って安全側に制限する。
 pub(super) const SUPERSAMPLE_MAX_DIMENSION: u32 = 4096;
 
-/// canvasの実解像度からスーパーサンプリング用の内部解像度を求める。
+/// canvasの表示上の大きさ(CSSピクセル)からスーパーサンプリング用の内部解像度を求める。
 pub(super) fn supersample_size(width: u32, height: u32) -> (u32, u32) {
     let w = (width.max(1) * SUPERSAMPLE_FACTOR).min(SUPERSAMPLE_MAX_DIMENSION);
     let h = (height.max(1) * SUPERSAMPLE_FACTOR).min(SUPERSAMPLE_MAX_DIMENSION);
@@ -69,14 +71,14 @@ pub(super) struct RenderTargets {
 }
 
 impl RenderTargets {
-    /// canvasの大きさから内部解像度(`supersample_size`)を決めて、3枚を作る。
+    /// canvasの表示上の大きさ(CSSピクセル)から内部解像度(`supersample_size`)を決めて、3枚を作る。
     pub(super) fn new(
         device: &wgpu::Device,
         format: wgpu::TextureFormat,
-        canvas_width: u32,
-        canvas_height: u32,
+        css_width: u32,
+        css_height: u32,
     ) -> Self {
-        let size = supersample_size(canvas_width, canvas_height);
+        let size = supersample_size(css_width, css_height);
         let attachment = wgpu::TextureUsages::RENDER_ATTACHMENT;
         Self {
             depth_view: create_target(

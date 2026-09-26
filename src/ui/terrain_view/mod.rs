@@ -110,6 +110,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         camera: OrbitCamera::preset(preset, 0.0),
         target_up: 0.0,
         initializing: false,
+        canvas_css_px: None,
         frame_request: Default::default(),
         drag: Default::default(),
         radar_markers,
@@ -131,8 +132,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             let Some(canvas) = canvas_ref.get() else {
                 return;
             };
-            // canvasの内部解像度(width/height)を実際のCSSサイズへ合わせ、必要なら
-            // レンダラーを初期化/リサイズする。
+            // canvasの内部解像度(width/height)を実際のCSSサイズ×devicePixelRatio(上限あり。
+            // `resize::canvas_pixel_size`)へ合わせ、必要ならレンダラーを初期化/リサイズする。
             let apply_size = {
                 let canvas = canvas.clone();
                 let state = state.clone();
@@ -140,19 +141,32 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                     if width == 0 || height == 0 {
                         return;
                     }
-                    canvas.set_width(width);
-                    canvas.set_height(height);
+                    let css_size = (width, height);
+                    let (pixel_w, pixel_h) =
+                        resize::canvas_pixel_size(css_size, resize::device_pixel_ratio());
+                    state.borrow_mut().canvas_css_px = Some(css_size);
+                    // canvasは`width`・`height`を設定するたびに(同じ値でも)中身が消えるので、
+                    // 変わったときだけ設定する。
+                    if canvas.width() != pixel_w {
+                        canvas.set_width(pixel_w);
+                    }
+                    if canvas.height() != pixel_h {
+                        canvas.set_height(pixel_h);
+                    }
 
                     let has_renderer = state.borrow().renderer.is_some();
                     if has_renderer {
                         let mut s = state.borrow_mut();
-                        if let Some(renderer) = s.renderer.as_mut() {
-                            renderer.resize(width, height);
-                        }
+                        let changed = s
+                            .renderer
+                            .as_mut()
+                            .is_some_and(|r| r.resize(css_size, (pixel_w, pixel_h)));
                         drop(s);
-                        // 画面座標の作図は、canvasの大きさで角の位置が変わる。
-                        rebuild_drawings(&state);
-                        render_now(&state);
+                        if changed {
+                            // 画面座標の作図は、canvasの大きさで角の位置が変わる。
+                            rebuild_drawings(&state);
+                            render_now(&state);
+                        }
                     } else {
                         try_init(
                             state.clone(),

@@ -400,10 +400,10 @@ classDiagram
         -Pipelines pipelines
         -RenderTargets targets
         -HashMap~MeshKey, MeshGpu~ meshes
-        +new(canvas) TerrainRenderer
+        +new(canvas, css_size) TerrainRenderer
         +set_mesh(key, mesh)
         +render(camera) Result
-        +resize(width, height)
+        +resize(css_size, pixel_size) bool
         +update_markers(vertices)
         +update_drawings(batches)
         +update_tracks(vertices)
@@ -477,6 +477,11 @@ ENU座標系(東=X, 北=Y, 上=Z)は右手系(East×North=Up)。wgpu/glamの一�
 - すべてのパイプライン(地形・水域・覆域ドーム、および作図・マーカー・航跡が使う`draw.wgsl`系)で`multisample.count = 4`にし、深度テクスチャも同じサンプル数にする
 - WebGPUで仕様上必須なのは1と4のみで、8倍は実装依存(実機で`createTexture`が明示的にエラーになることを確認)。そのため倍率は4のまま、**内部解像度をcanvasの`SUPERSAMPLE_FACTOR`(2)倍にして描画し、最後に線形フィルタで実際のcanvas解像度へ縮小する2パス構成**にした
   (ちょうど2倍なのでバイリニア補間がそのまま2×2画素の平均になる。`TextureBlitter`は使わず自前の縮小パス)
+- **高DPI**: 内部解像度はcanvasの**表示上の大きさ(CSSピクセル)**の2倍で決め、canvasの内部解像度(スワップチェーン)は
+  CSSピクセル×`devicePixelRatio`(1〜2に制限、各辺4096pxで頭打ち。`resize::canvas_pixel_size`)にする。devicePixelRatio=2では
+  縮小がほぼ等倍になり、描画の負荷(内部解像度)は通常の画面と同じまま、ブラウザによる引き伸ばしが無くなってくっきり表示される。
+  線の太さ・マーカー・画面座標の作図・LOD・ラベル・クリック位置など「ピクセル」で決めるものは、すべてCSSピクセルで扱う
+  (`canvas_size_px`はCSSピクセルを返す)ので、高DPIでも見た目の大きさ・地形の細かさ(=取得量)は変わらない
 - 内部テクスチャの一辺は`SUPERSAMPLE_MAX_DIMENSION`(4096px)で頭打ち(`maxTextureDimension2D`の最小値8192に対し、非常に大きなcanvasで2倍すると際どいため)
 - 効果: 修正前に陸地内で水色と完全一致する画素が複数あった領域を、ピクセルサンプリングで再検証して1200画素中0画素まで減少。**ただしカメラがほぼ水平に近い極端に浅い角度では、2倍でも弱い縞模様が残る**
   (完全な解消にはLOD的な仕組みかより高い倍率が必要。未対応。CLAUDE.md「既知の技術的負債」)
@@ -1183,9 +1188,9 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 
 | パス | 描画先 | 内容 |
 |---|---|---|
-| ① メイン | 4×MSAAカラー+深度(内部解像度=canvas×2) | 水域 → 地形メッシュ → `World`不透明作図 → 3Dモデル(6.13節) → 覆域ドーム → `World`半透明作図 → 2D覆域 → マーカー → 航跡 |
+| ① メイン | 4×MSAAカラー+深度(内部解像度=canvasの表示上の大きさ(CSSピクセル)×2) | 水域 → 地形メッシュ → `World`不透明作図 → 3Dモデル(6.13節) → 覆域ドーム → `World`半透明作図 → 2D覆域 → マーカー → 航跡 |
 | ② オーバーレイ(カメラ固定の作図があるときだけ) | 同じMSAAカラー(`Load`)+深度(`Clear(0.0)`) | 視点空間の不透明 → 視点空間の半透明 → 画面座標(追加順) |
-| ③ 縮小 | スワップチェーン(canvas解像度、1サンプル) | 内部解像度の解決結果を線形フィルタで2×2平均して縮小 |
+| ③ 縮小 | スワップチェーン(canvasの内部解像度=CSSピクセル×devicePixelRatio、1サンプル) | 内部解像度の解決結果を線形フィルタで縮小(devicePixelRatio=1なら2×2平均、2なら等倍) |
 
 - **MSAA=4**+**スーパーサンプリング×2**。内部テクスチャの一辺は`SUPERSAMPLE_MAX_DIMENSION=4096`で頭打ち(`supersample_size(w,h) = (min(max(w,1)*2, 4096), min(max(h,1)*2, 4096))`)
 - 深度は`Depth32Float`・**反転Z**(比較`Greater`、クリア0.0)。パス①・②の深度はともに`Discard`(②は再クリアし、③は深度を使わないため、パス終了後の保存が不要)。裏面カリングは**無効**(`cull_mode: None`。既知の技術的負債。有効化するなら先にスカートの巻き順を4辺で揃える)。空・データ範囲外は黒
@@ -1219,11 +1224,11 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 - 縮小サンプラーは`ClampToEdge`・`Linear`/`Linear`/`Nearest`。**wgpu標準の`TextureBlitter`は縮小側がNearest固定なので使わない**(線形フィルタの2×2平均がスーパーサンプリングの要)
 - 水域のbind groupと縮小のbind groupはどちらも`@group(0)`(別パイプラインで別のレイアウト)
 
-**`TerrainRenderer`の公開API**: `new(canvas)`(async)、`set_mesh(key, &mesh)`(同じキーは置換、`indices.is_empty()`なら削除。`bounds`=頂点位置のAABBを保持)、`set_mesh_faded`・`remove_mesh_faded`(クロスフェードで切り替える版)・`is_fading`、`update_mesh_vertices(key, &vertices)`(頂点数不変で位置だけ更新=原点変更。boundsも更新)、
+**`TerrainRenderer`の公開API**: `new(canvas, css_size)`(async)、`set_mesh(key, &mesh)`(同じキーは置換、`indices.is_empty()`なら削除。`bounds`=頂点位置のAABBを保持)、`set_mesh_faded`・`remove_mesh_faded`(クロスフェードで切り替える版)・`is_fading`、`update_mesh_vertices(key, &vertices)`(頂点数不変で位置だけ更新=原点変更。boundsも更新)、
 `update_markers`・`update_coverage_2d`・`update_tracks`(`&[DrawVertex]`)、`update_drawings(&DrawingBatches)`、`update_dome(&[TerrainVertex])`、`set_hillshade(bool)`、`set_ellipsoid_origin(&EnuTransform)`(頂点を作り直す場面で必ず呼ぶ)、
-`resize(w,h)`(0または現状と同じなら何もしない)、`aspect_ratio`・`canvas_size_px`、`render(&Camera) -> Result<(), String>`。
+`resize(css_size, pixel_size) -> bool`(0または現状と同じなら何もしないでfalse。内部解像度のテクスチャは`css_size`が変わったときだけ作り直す)、`aspect_ratio`・`canvas_size_px`(どちらもCSSピクセルの大きさから)、`render(&Camera) -> Result<(), String>`。
 
-- **`new`**: `canvas.width()/height()`(0なら1)。ネイティブ(単体テスト)ではcanvas surfaceが作れないので`cfg(target_arch="wasm32")`で分け、非wasmは`Err`を返す(ライブラリ全体が`cargo test`でビルドできるように)。
+- **`new`**: surfaceの大きさは`canvas.width()/height()`(0なら1)、内部解像度は`css_size`から。ネイティブ(単体テスト)ではcanvas surfaceが作れないので`cfg(target_arch="wasm32")`で分け、非wasmは`Err`を返す(ライブラリ全体が`cargo test`でビルドできるように)。
   `request_adapter{HighPerformance, compatible_surface}`、`surface.get_default_config`で**sRGB形式があればそれに変更**、`present_mode=Fifo`
 - **`render(camera)`**: `CameraUniform`と作図のuniform3種を`queue.write_buffer`(`view`は`camera.projection_matrix()`=**ビュー行列なし**、`screen`は`screen_matrix`)。`surface.get_current_texture()`の結果:
   `Success`→描画、`Suboptimal`→描画してsubmit後に再設定、**`Timeout|Occluded`→このフレームは描かず`Ok(())`**(エラーではない。タブが隠れている等)、`Outdated`→再設定して`Ok(())`。その他は`Err`。
@@ -1397,7 +1402,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 
 | # | 購読 | 処理 |
 |---|---|---|
-| 1 | `canvas_ref` | `resize::observe_canvas_size`: `ResizeObserver`で`apply_size`(0なら無視)→`resize`→`rebuild_drawings`(`Screen`の角が動く)→`render_now`(レンダラー無しなら`try_init`)。`visibilitychange`で`getBoundingClientRect`を取り直す(**非表示タブではResizeObserverがスロットリングされ、canvasが300×150のまま引き伸ばされるため**)。`on_cleanup`で`disconnect`・`remove_event_listener` |
+| 1 | `canvas_ref` | `resize::observe_canvas_size`: `ResizeObserver`で`apply_size`(0なら無視。CSSピクセルを`canvas_css_px`へ記録し、canvasの`width`・`height`を`resize::canvas_pixel_size`(CSSピクセル×devicePixelRatio)に変わったときだけ設定)→`resize`→変わっていれば`rebuild_drawings`(`Screen`の角が動く)→`render_now`(レンダラー無しなら`try_init`。初期化の完了時にもその時点の大きさへ`resize`し直す)。`visibilitychange`で`getBoundingClientRect`を取り直して`apply_size`(devicePixelRatioの変化もここで拾う)(**非表示タブではResizeObserverがスロットリングされ、canvasが300×150のまま引き伸ばされるため**)。`on_cleanup`で`disconnect`・`remove_event_listener` |
 | 2 | `terrain_store.get()` | データが届いたら`try_init` |
 | 3 | `origin_state` | 原点変更(下記) |
 | 4 | `radar_markers.{markers, selected, coverage_altitude_m, show_all_coverage}` | `rebuild_markers`(覆域は非同期で計算し、終わったら自動で描き直す)→`render_now` |
@@ -1413,7 +1418,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
   `pointerup`は同じpointer IDだけを終了し、左ボタン・合計移動5px未満なら次の優先順で ①原点指定中なら`pick`が`Some`で`on_pick`(範囲外はモード維持) ②図形作成ツール選択中なら`tool.click` ③それ以外は`pick_track_at_client`→`tracks.select`(**何もない所は`None`=選択解除**)を実行する。
   `wheel`=`zoom`。`contextmenu`=`prevent_default`。図形作成中なら`undo`。`ContextMenuState`と`MapMenuState`の**両方**があれば`position`(pick)と`track`(pick_track。あれば先に選択)を`MapMenuTarget`にしてメニューを出す(どちらもNoneなら出さない)。どちらか無ければ従来どおり観測点を追加。
   `dblclick`=`draw_tool.finish()`。`keydown`(window。`input::handle_draw_key`。ツール選択中のみ、`INPUT/TEXTAREA/SELECT`上は無視)=`Escape`→`cancel`、`Enter`→`finish`、`Backspace`→`undo`
-- **ピッキング(`picking.rs`)**: `pick_at_client`は`getBoundingClientRect`でcanvas内座標にして`pick::pick_lat_lon`。`pick_track_at_client`はCSS pxからcanvas内部解像度へ変換して`tracks::pick_track`(`PICK_RADIUS_PX`)
+- **ピッキング(`picking.rs`)**: どちらも`getBoundingClientRect`でclient座標をcanvas内のCSSピクセル(`canvas_size_px`の単位)へ換算し(`client_to_canvas_css`)、`pick_at_client`は`pick::pick_lat_lon`、`pick_track_at_client`は`tracks::pick_track`(`PICK_RADIUS_PX`)
 - **オーバーレイの再構築(`overlay.rs`)**: `GeometryInputs`から`BuildContext`(`ground = sample_surface_height`)を作る。`rebuild_markers`はピン(`rebuild_marker_pins`。軽い)を作り直し、覆域は`coverage::refresh_coverage`に任せる。地形のレベル切り替えからは`rebuild_markers_for_terrain`(覆域は300ms待つ)。
   **`refresh_coverage`**(`coverage.rs`): 表示する観測点(選択中の1つ、`show_all_coverage`ならすべて)ごとに、観測点・モード・高度・地形(`terrain_signature`=観測点の最大観測範囲に重なるチャンクの`(tile, chunk, level)`のハッシュ)から`CoverageKey`を作る。
   キャッシュ(`CoverageCache`)が同じキーなら、`show_coverage`でジオメトリを作って`update_dome`/`update_coverage_2d`(すでに同じキー・同じメッシュ原点で載っていれば何もしない)。

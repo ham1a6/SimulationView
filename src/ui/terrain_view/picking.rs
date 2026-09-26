@@ -16,14 +16,12 @@ pub(super) fn pick_at_client(
     canvas: &web_sys::HtmlCanvasElement,
     (client_x, client_y): (f64, f64),
 ) -> Option<(f64, f64)> {
-    // client座標をcanvasの左上基準のCSSピクセルへ(canvasの大きさはCSSピクセルに合わせてある:
-    // `resize::observe_canvas_size`)。
-    let rect = canvas.get_bounding_client_rect();
-    let x = client_x as f32 - rect.left() as f32;
-    let y = client_y as f32 - rect.top() as f32;
     let s = state.borrow();
     let (terrain, mesh_origin, renderer) =
         (s.terrain.clone()?, s.mesh_origin?, s.renderer.as_ref()?);
+    let size = renderer.canvas_size_px();
+    let (x, y) = client_to_canvas_css(canvas, size, (client_x, client_y));
+    let (width, height) = size;
     let camera = s.camera.to_camera(renderer.aspect_ratio());
     pick::pick_lat_lon(
         &terrain,
@@ -31,8 +29,8 @@ pub(super) fn pick_at_client(
         &camera,
         x,
         y,
-        canvas.width() as f32,
-        canvas.height() as f32,
+        width as f32,
+        height as f32,
     )
 }
 
@@ -43,12 +41,9 @@ pub(super) fn pick_track_at_client(
     canvas: &web_sys::HtmlCanvasElement,
     (client_x, client_y): (f64, f64),
 ) -> Option<TrackId> {
-    let rect = canvas.get_bounding_client_rect();
-    // CSSのpxからcanvasの内部解像度のpxへ(通常は同じ)。
-    let x = (client_x - rect.left()) as f32 * canvas.width() as f32 / rect.width().max(1.0) as f32;
-    let y = (client_y - rect.top()) as f32 * canvas.height() as f32 / rect.height().max(1.0) as f32;
     let s = state.borrow();
     let renderer = s.renderer.as_ref()?;
+    let (x, y) = client_to_canvas_css(canvas, renderer.canvas_size_px(), (client_x, client_y));
     let view_proj = s
         .camera
         .to_camera(renderer.aspect_ratio())
@@ -61,4 +56,18 @@ pub(super) fn pick_track_at_client(
         (x, y),
         tracks::PICK_RADIUS_PX,
     )
+}
+
+/// client座標を、canvasの左上を原点とするレンダラーの画面座標(`TerrainRenderer::canvas_size_px`の
+/// CSSピクセル)へ換算する。canvasの見た目の大きさ(`getBoundingClientRect`)とレンダラーが知っている
+/// 大きさは、丸めの分だけずれうるので比で合わせる(ふつうは同じ)。
+fn client_to_canvas_css(
+    canvas: &web_sys::HtmlCanvasElement,
+    (width, height): (u32, u32),
+    (client_x, client_y): (f64, f64),
+) -> (f32, f32) {
+    let rect = canvas.get_bounding_client_rect();
+    let x = (client_x - rect.left()) * f64::from(width) / rect.width().max(1.0);
+    let y = (client_y - rect.top()) * f64::from(height) / rect.height().max(1.0);
+    (x as f32, y as f32)
 }

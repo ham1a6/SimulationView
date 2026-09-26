@@ -1,7 +1,8 @@
 //! wgpuによる描画(地形メッシュ・水域・作図・航跡・覆域)。DETAILED_DESIGN.md 6節。
-//! 描画は3つのパスで、いずれも内部解像度はcanvasの2倍(スーパーサンプリング)+4倍MSAA:
-//! (1) 水域→地形→絶対座標の作図・マーカー・航跡、(2) カメラ固定の作図(あれば。深度を作り直して手前に重ねる)、
-//! (3) canvasの解像度へ縮小(`targets::Downsample`)。深度は反転Z(`camera.rs`)。
+//! 描画は3つのパスで、いずれも内部解像度はcanvasの表示上の大きさ(CSSピクセル)の2倍(スーパーサンプリング)
+//! +4倍MSAA: (1) 水域→地形→絶対座標の作図・マーカー・航跡、(2) カメラ固定の作図(あれば。深度を作り直して
+//! 手前に重ねる)、(3) canvasの内部解像度(CSSピクセル×devicePixelRatio)へ縮小(`targets::Downsample`。
+//! devicePixelRatioが2なら等倍)。深度は反転Z(`camera.rs`)。
 //!
 //! 構成: このファイルは`TerrainRenderer`(状態と描画のパス)。uniform・頂点属性は`uniforms`、
 //! 描画先のテクスチャと縮小は`targets`、パイプラインの生成は`pipelines`、作図等の頂点バッチは`overlay`、
@@ -87,8 +88,13 @@ pub struct TerrainRenderer {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    /// surfaceの設定(形式・大きさ・垂直同期)。`resize`で大きさを更新する。
+    /// surfaceの設定(形式・大きさ・垂直同期)。大きさはcanvasの内部解像度(物理ピクセル)で、
+    /// `resize`で更新する。
     config: wgpu::SurfaceConfiguration,
+    /// canvasの表示上の大きさ(CSSピクセル)。線の太さ・マーカー・画面座標の作図・LOD・ラベルなど、
+    /// 「ピクセル」で決めるものはすべてこの単位にする(高DPIの画面でも見た目の大きさが変わらない)。
+    /// 描画の内部解像度(`targets`)もここから決める。
+    css_size: (u32, u32),
     /// 描画パイプラインとbind groupのレイアウト。
     pipelines: Pipelines,
     /// 表示中の地形メッシュ(タイル全体またはチャンク)。
@@ -205,13 +211,17 @@ async fn init_surface(
 
 impl TerrainRenderer {
     /// canvasにレンダラーを作る(GPUの取得・パイプラインの生成)。描くものは空で始まる。
-    /// canvasの`width`・`height`(内部解像度)が描画の大きさになる。WebGPUが使えない等で失敗したら`Err`。
-    pub async fn new(canvas: web_sys::HtmlCanvasElement) -> Result<Self, String> {
+    /// canvasの`width`・`height`(内部解像度、物理ピクセル)が出力の大きさ、`css_size`がcanvasの
+    /// 表示上の大きさ(CSSピクセル)。WebGPUが使えない等で失敗したら`Err`。
+    pub async fn new(
+        canvas: web_sys::HtmlCanvasElement,
+        css_size: (u32, u32),
+    ) -> Result<Self, String> {
         let (surface, device, queue, config) = init_surface(canvas).await?;
-        let (width, height) = (config.width, config.height);
+        let css_size = (css_size.0.max(1), css_size.1.max(1));
 
         let shader = terrain_shader(&device);
-        let targets = RenderTargets::new(&device, config.format, width, height);
+        let targets = RenderTargets::new(&device, config.format, css_size.0, css_size.1);
         let downsample = Downsample::new(
             &device,
             &shader,
@@ -259,6 +269,7 @@ impl TerrainRenderer {
             device,
             queue,
             config,
+            css_size,
             pipelines,
             meshes: HashMap::new(),
             fades: Fades::new(),
@@ -296,9 +307,10 @@ impl TerrainRenderer {
         self.screen_batch.set(device, queue, &batches.screen);
     }
 
-    /// canvasの内部解像度(ピクセル)。作図の画面座標(`Position::Screen`)の角の位置を決めるのに使う。
+    /// canvasの表示上の大きさ(CSSピクセル。`css_size`)。作図の画面座標(`Position::Screen`)の角の
+    /// 位置・LOD・ラベルの配置・クリック位置の換算など、画面上の「ピクセル」はすべてこの単位。
     pub fn canvas_size_px(&self) -> (u32, u32) {
-        (self.config.width, self.config.height)
+        self.css_size
     }
 
     /// レーダー観測点のマーカー(画面サイズ固定のピン)の頂点データを更新する。原点変更・マーカー追加/
@@ -457,26 +469,43 @@ impl TerrainRenderer {
         }
     }
 
-    /// canvasの内部解像度が変わったときに呼ぶ(surfaceと内部の描画先テクスチャを作り直す)。
-    pub fn resize(&mut self, width: u32, height: u32) {
+    /// canvasの大きさが変わったときに呼ぶ(surfaceと内部の描画先テクスチャを作り直す)。
+    /// `css_size`は表示上の大きさ(CSSピクセル)、`pixel_size`はcanvasの内部解像度(物理ピクセル)。
+    /// 何か変わったらtrue(描き直しが要る)。
+    pub fn resize(&mut self, css_size: (u32, u32), pixel_size: (u32, u32)) -> bool {
+        let (width, height) = pixel_size;
         // 大きさが変わっていなければ何もしない(ResizeObserverやタブの再表示で同じ大きさが何度も
         // 通知されるが、そのたびにsurfaceの再設定と大きなテクスチャ3枚の作り直しをするのは無駄)。
-        if width == 0 || height == 0 || (width == self.config.width && height == self.config.height)
+        if width == 0
+            || height == 0
+            || css_size.0 == 0
+            || css_size.1 == 0
+            || (css_size == self.css_size
+                && width == self.config.width
+                && height == self.config.height)
         {
-            return;
+            return false;
         }
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
-        self.targets = RenderTargets::new(&self.device, self.config.format, width, height);
+        // 描画の内部解像度(`targets`)は表示上の大きさから決まるので、それが変わったときだけ作り直す
+        // (devicePixelRatioだけが変わったときは、縮小の比率が変わるだけ)。
+        if css_size == self.css_size {
+            return true;
+        }
+        self.css_size = css_size;
+        self.targets = RenderTargets::new(&self.device, self.config.format, css_size.0, css_size.1);
         // supersample_color_viewを作り直したので、それを参照しているbind groupも作り直す。
         self.downsample
             .rebind(&self.device, &self.targets.supersample_color_view);
+        true
     }
 
-    /// 描画先の横÷縦(カメラの射影に渡す)。
+    /// 描画先の横÷縦(カメラの射影に渡す)。表示上の大きさ(CSSピクセル)から求める(内部解像度は
+    /// 丸めや上限で縦横比がわずかにずれうるが、canvasは表示上の大きさへ引き伸ばして表示されるため)。
     pub fn aspect_ratio(&self) -> f32 {
-        self.config.width as f32 / self.config.height.max(1) as f32
+        self.css_size.0 as f32 / self.css_size.1.max(1) as f32
     }
 
     /// 陰影(ヒルシェード)を付けるかを切り替える。次の`render`から反映される(メッシュの作り直しは不要)。
@@ -514,8 +543,8 @@ impl TerrainRenderer {
             .write(&self.queue, bytemuck::bytes_of(&camera_uniform));
 
         // 作図のuniform。絶対座標=地形と同じカメラ、視点空間=射影だけ(カメラから見た座標をそのまま射影)、
-        // 画面=ピクセル座標。
-        let (width, height) = (self.config.width as f32, self.config.height as f32);
+        // 画面=ピクセル座標。ピクセルは表示上の大きさ(CSSピクセル。線の太さ・マーカーの大きさもこの単位)。
+        let (width, height) = (self.css_size.0 as f32, self.css_size.1 as f32);
         let viewport = [width, height, 0.0, 0.0];
         for (space, view_proj, light) in [
             (
