@@ -883,3 +883,59 @@ GDALはConfig形式を優先し、見つからなければCMakeのFindGDALへフ
 - 手動スクロール: ホイール・スクロールバー・キー操作で上へ戻すと自動スクロールが止まり、新しい行が
   追記されても表示位置を保つ。最下部まで戻すと再開する。右端の「最新へ」ボタンでも最下部へ移動して
   再開できる(張り付いている間は押せない)。
+
+## 8. 再実装ガイド
+
+sampleを一から実装する場合は、下記の依存順で進める。ライブラリ(`sim3dview`)自体の再実装は
+[docs/DETAILED_DESIGN.md](../../docs/DETAILED_DESIGN.md)10節が別にあり、ここではsample固有の3プログラム
+(`sim_server`・`sim_frontend`・`sim_desktop`)だけを扱う。地形前処理済みの`assets/terrain/`があれば、
+ライブラリの完成を待たずにC++側から着手できる。
+
+### 8.1 実装順序
+
+```mermaid
+flowchart LR
+    T["前提: 地形前処理済みのassets/terrain/"] --> S1
+    S1["1 protocol.hpp(内部値オブジェクト)"] --> S2["2 webtransport_protocol.hpp(ワイヤ形式+static_assert)"]
+    S2 --> S3["3 websocket_messaging(送受信・振り分け)"]
+    S3 --> S4["4 simulation(状態機械・デモシナリオ)"]
+    S4 --> S5["5 ws_server(uWS結線・HTTP配信・simスレッド)"]
+    S5 --> S6["6 main.cpp(起動)"]
+    S2 --> R1["1' protocol.rs(同じバイト配置を手書き復号)"]
+    R1 --> R2["2' ws.rs(接続・再接続・URL)"]
+    R2 --> R3["3' app.rs(context・レイアウト)"]
+    R3 --> R4["4' components/(VAB・状況パネル・メニュー等)"]
+    S6 -. 両方動くと結合できる .-> R4
+    R4 --> D["5 sim_desktop(Electron配布)"]
+```
+
+| # | フェーズ | 主な成果物 | 詳細仕様 | 受け入れ基準 |
+|---|---|---|---|---|
+| 1 | C++内部型 | `protocol.hpp` | 4.3節 | 値オブジェクトが可変長メンバを持ってよい(ワイヤには出さない) |
+| 2 | ワイヤ形式 | `webtransport_protocol.hpp` | 4.1〜4.3節 | 全構造体が`static_assert(sizeof(...) == N)`を通る(standard-layout) |
+| 3 | 送受信 | `websocket_messaging.hpp/.cpp` | 4.1節・5.3節 | フレームの組み立て・検証・message_id振り分けを単体テストできる |
+| 4 | シミュレーション | `simulation.hpp/.cpp`、`simulation_test` | 5.1〜5.2節 | 原点変更ガード・コマンドキュー・デモシナリオをCTestで確認 |
+| 5 | サーバー結線 | `ws_server.hpp/.cpp`、`http_utils.hpp` | 5.1・5.4節 | 3通の接続直後配信、Range/ETag/gzip、`SIM3DVIEW_READY`出力を確認 |
+| 6 | 起動 | `main.cpp` | 5.1節 | `--host`/`--terrain-dir`/`--upload-dir`/ポート引数を検証 |
+| 1' | Rustプロトコル | `protocol.rs` | 4.1〜4.3節 | C++の`static_assert`と同じサイズ・オフセットで復号/エンコードのテストが通る |
+| 2' | 通信管理 | `ws.rs` | 4.5節・6.2〜6.3節 | 再接続の指数バックオフ、タブ非表示時の停止を確認 |
+| 3' | 組み立て | `app.rs` | 6.1節 | ライブラリのcontext一式を提供し終えてから、それに依存する状態を作る順序を守る |
+| 4' | 画面部品 | `components/*.rs` | 7.1〜7.10節 | 23〜30節の実機確認項目を一通り確認 |
+| 7 | Electron配布 | `sim_desktop/` | 7.9節 | `SIM3DVIEW_READY`ハンドシェイク、単一起動ロック、配布物に地形同梱を確認 |
+
+### 8.2 完了条件
+
+1. `cargo check --manifest-path sample/Cargo.toml -p sim_frontend --target wasm32-unknown-unknown`が通る。
+2. C++はCMake/CTest(`simulation_test`・`http_utils_test`)が通る。
+3. `sim_server`(9001番)と`trunk serve`(8081番)を起動し、Browserペインの実機で23〜30節の確認項目を満たす。
+4. Electron配布まで確認する場合は`sim_desktop/`の`npm test`・`npm run build:ui`が通る。
+
+### 8.3 実装時の重要チェック
+
+- ワイヤの構造体は`std::string`/`std::vector`を持たず、`static_assert(kWirePayload<T>)`を通るものだけにする。
+- C++・Rustのフィールドは名前ではなく**バイト位置**で対応する。片方だけずらすと気づかないまま壊れる。
+- VAB・状況パネルの項目定義は、ワイヤでは配らない(フロント側にハードコードする)設計にする。増やすときは
+  ワイヤの固定フィールドとC++・Rust両方の対応表を同時に直す(サンプル技術解説ノート27.2節に手順の実例がある)。
+- simスレッドとuWSイベントループスレッドは、`Loop::defer()`以外の経路で状態を共有しない。高頻度更新
+  (`SimState`)は単純な`defer`の連投ではなく、1個だけの保留スロットで最新値に上書きする(処理落ち対策)。
+- HTTPキャッシュは`ETag`+`max-age`を付け、地形データの差し替えはプロセス再起動を前提にする。

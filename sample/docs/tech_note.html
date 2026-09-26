@@ -323,7 +323,7 @@
     <div class="toc-title">目次</div>
     <div class="toc-list">
       <div class="part">第3部 通信とデータ</div>
-      <a href="#comm">5. WebSocket + MessagePack</a>
+      <a href="#comm">5. WebSocket + 固定長バイナリプロトコル</a>
       <div class="part">第4部 本体解説</div>
       <a href="#cpp-walk">7. C++側コードウォークスルー</a>
       <a href="#rust-walk">8. Rust側コードウォークスルー</a>
@@ -346,6 +346,8 @@
       <a href="#all-front">33. sim_frontend(Rust)の全処理</a>
       <a href="#all-flow">34. 通信の時系列</a>
       <a href="#all-ref">35. 早見表</a>
+      <div class="part">第9部 0から作る</div>
+      <a href="#build-order">41. sampleを0から実装する手順</a>
       <div class="part">ライブラリ編(別ファイル)</div>
       <a href="../../docs/tech_note.html#overview">0〜4. 準備運動・Rust入門</a>
       <a href="../../docs/tech_note.html#arch">6. ライブラリとサンプルの構成</a>
@@ -369,7 +371,7 @@
           節番号はライブラリ編と共通です。本書にない番号(0〜4・6・9〜22・36〜40節)は<a href="../../docs/tech_note.html">ライブラリ編</a>にあります。
           本書は解説のスナップショットで、現行仕様の正は<a href="DETAILED_DESIGN.md">サンプル設計書</a>と
           <a href="../../docs/DETAILED_DESIGN.md">ライブラリ設計書</a>です。
-          特に5節の「MessagePack」は当時の方式で、現在は8バイトヘッダー+固定長構造体のWebSocketバイナリメッセージです(サンプル設計書4節)。
+          0から作ってみたい場合は<a href="#build-order">41節</a>から読むと、依存順に必要な節を辿れます。
         </p>
       </div>
     </div>
@@ -381,7 +383,7 @@
     </div>
 
     <section id="comm">
-      <h2><span class="num">5</span> WebSocket + MessagePack</h2>
+      <h2><span class="num">5</span> WebSocket + 固定長バイナリプロトコル</h2>
       <p class="section-lede">
         C++で生ソケットやgRPCを触ったことがあれば、ここは早いです。
       </p>
@@ -391,82 +393,86 @@
         (生TCPは使えない、これはブラウザのセキュリティ制約)なので、Sim3dViewでは全ての高頻度通信を
         WebSocket 1本に集約しています。
       </p>
-      <p>
-        <strong>MessagePack</strong>は、JSONに似た構造化データを<strong>バイナリで効率よくシリアライズする</strong>
-        フォーマットです。protobufに近い立ち位置ですが、スキーマファイル(.proto)が不要で、構造体をそのまま
-        シリアライズできる手軽さが特徴です。
-      </p>
 
       <div class="callout">
-        <div class="label">⚠️ このプロジェクト固有の重要な注意</div>
+        <div class="label">⚠️ 以前はMessagePackだった</div>
         <p>
-          C++側(<code>msgpack-cxx</code>)もRust側(<code>rmp-serde</code>)も、
-          構造体を<strong>「フィールド名を持つmap」ではなく「フィールド宣言順の配列」</strong>としてやり取りします。
-          つまり両言語で<strong>フィールドの並び順を1文字も違えず一致させる</strong>必要があります。
-          名前ではなく位置で対応するので、片方だけ並び替えると気づかないままデータが壊れます。
-          <code>SimState.positions</code>のように、いまのUIが使っていないフィールドを
-          <code>#[allow(dead_code)]</code>付きで残してあるのはこのためです。
+          この節はかつて「WebSocket + MessagePack」でした。<code>msgpack-cxx</code>(C++)・<code>rmp-serde</code>(Rust)で
+          可変長の構造体をやり取りしていましたが、<strong>WebTransportによる固定長バイナリ通信へ移行する</strong>という変更
+          (コミット3513c3b)で、シリアライズライブラリを使わない自前の<strong>固定長バイナリ</strong>形式に置き換わりました。
+          <code>msgpack-cxx</code>は当時<code>third_party/</code>に置いていましたが、その後サブモジュールごと削除しています。
+          「WebTransport」という名前は歴史的経緯によるもので、実体はQUICではなく<strong>ふつうのWebSocket</strong>です
+          (<code>webtransport_protocol.hpp</code>のコメント、サンプル設計書4.1節)。以下は現行(2026-09時点)の内容です。
         </p>
       </div>
 
       <p>
-        サーバー→ブラウザのフレームは「先頭1バイトで種類を示し、残りがMessagePack本体」という自前の形式です
-        (<code>protocol.hpp</code>/<code>protocol.rs</code>)。逆向きのコマンド(ブラウザ→サーバー)は
-        種類が1つだけなので、先頭バイトなしのMessagePack本体だけを送ります。
+        サーバー・ブラウザどちらの向きも、フレームは<strong>8バイトの固定ヘッダー + 固定長構造体のバイト列</strong>です。
+        構造体は<code>std::string</code>/<code>std::vector</code>のような可変長メンバを持たない
+        <a href="https://en.cppreference.com/w/cpp/named_req/StandardLayoutType">standard-layout</a>型に限り、
+        <code>static_assert</code>でサイズを固定しています(<code>webtransport_protocol.hpp</code>)。
+        Rust側はスキーマ生成もderive(<code>serde</code>)も使わず、<code>u16_at</code>・<code>f64_at</code>のような
+        「バイト位置からリトルエンディアンで読む」小関数で手書きに復号します(<code>protocol.rs</code>)。
       </p>
-      <pre class="code"><span class="fname">フレームの形</span>[1バイト: msg_type][MessagePack本体]      ← サーバー → ブラウザ
-[MessagePack本体 (ClientCommand)]          ← ブラウザ → サーバー</pre>
+      <pre class="code"><span class="fname">フレームの形(全メッセージ共通)</span>[u16 message_id][u16 reserved(=0)][u32 payload_size][固定長構造体のバイト列]
+                └─────────── 8バイトヘッダー ───────────┘   └─ payload_size バイト ─┘</pre>
 
       <div class="table-wrap">
       <table>
-        <thead><tr><th>msg_type</th><th>名前</th><th>中身</th><th>送るタイミング</th><th>宛先</th></tr></thead>
+        <thead><tr><th>message_id</th><th>名前</th><th>サイズ</th><th>向き</th><th>送るタイミング</th><th>宛先</th></tr></thead>
         <tbody>
-          <tr><td><code>0x01</code></td><td>SimState</td><td>時刻・位置・状況パネルの値</td><td>毎フレーム(約60Hz)</td><td>全員</td></tr>
-          <tr><td><code>0x02</code></td><td>VabConfig</td><td>ボタンの並び・ラベル・有効/無効</td><td>接続直後</td><td>全員</td></tr>
-          <tr><td><code>0x03</code></td><td>OriginState</td><td>座標系の原点(緯度経度)</td><td>接続直後 + 原点が変わった時</td><td>全員</td></tr>
-          <tr><td><code>0x04</code></td><td>StatusPanelConfig</td><td>状況パネルの項目定義</td><td>接続直後</td><td>全員</td></tr>
-          <tr><td><code>0x05</code></td><td>CommandError</td><td>コマンドを拒否した理由</td><td>拒否した時</td><td><strong>要求元のみ</strong></td></tr>
-          <tr><td><code>0x06</code></td><td>AppStatus</td><td>「実行中/一時停止中」の表示文字列</td><td>接続直後 + pause/resume時</td><td>全員</td></tr>
-          <tr><td><code>0x07</code></td><td>TrackList</td><td>航空機・艦船・車両などの位置とシンボル情報(全トラック)</td><td>接続直後 + 進行中は約20Hz</td><td>全員</td></tr>
+          <tr><td><code>0x0001</code></td><td>ClientCommand</td><td>32B</td><td>ブラウザ→サーバー</td><td>ボタン操作・原点変更のたび</td><td>-</td></tr>
+          <tr><td><code>0x0002</code></td><td>SimState</td><td>48B</td><td>サーバー→ブラウザ</td><td>毎フレーム(約60Hz)</td><td>全員</td></tr>
+          <tr><td><code>0x0003</code></td><td>OriginState</td><td>16B</td><td>サーバー→ブラウザ</td><td>接続直後 + 原点が変わった時</td><td>全員</td></tr>
+          <tr><td><code>0x0004</code></td><td>CommandError</td><td>8B</td><td>サーバー→ブラウザ</td><td>コマンドを拒否した時</td><td><strong>要求元のみ</strong></td></tr>
+          <tr><td><code>0x0005</code></td><td>AppStatus</td><td>8B</td><td>サーバー→ブラウザ</td><td>接続直後 + pause/resume時</td><td>全員</td></tr>
+          <tr><td><code>0x0006</code></td><td>TrackList</td><td>1424B(=8+8+16×88)</td><td>サーバー→ブラウザ</td><td>接続直後 + 進行中は約20Hz</td><td>全員</td></tr>
         </tbody>
       </table>
       </div>
+      <p>
+        <strong>message_idはこの6種類だけ</strong>です。VABのボタン定義や状況パネルの項目定義を配るメッセージは
+        <strong>もう存在しません</strong>。VAB(25節)も状況パネルの項目(27節)も、今はサーバーの値を待たずに
+        ブラウザ側のコードに直接書いてあります(フロントだけで完結する見た目の定義)。
+      </p>
 
       <div class="grid-2">
         <div class="card">
-          <h4>C++側の定義(sample/sim_server)</h4>
-          <pre class="code" style="margin:0"><span class="kw">struct</span> SimState {
+          <h4>C++側の定義(sample/sim_server/include/webtransport_protocol.hpp)</h4>
+          <pre class="code" style="margin:0"><span class="kw">struct</span> FrameHeader {
+    MessageId message_id;
+    std::uint16_t reserved = <span class="ty">0</span>;
+    std::uint32_t payload_size;
+};
+<span class="kw">struct</span> SimState {
     <span class="ty">double</span> t = <span class="ty">0.0</span>;
-    std::vector&lt;<span class="ty">float</span>&gt; positions;
-    uint32_t frame_id = <span class="ty">0</span>;
-    std::vector&lt;<span class="ty">double</span>&gt; status_values;
-
-    MSGPACK_DEFINE(t, positions,
-                   frame_id, status_values);
-};</pre>
+    <span class="ty">float</span> position_x = <span class="ty">0.0F</span>, position_y = <span class="ty">0.0F</span>, position_z = <span class="ty">0.0F</span>;
+    std::uint32_t frame_id = <span class="ty">0</span>;
+    <span class="ty">double</span> elapsed_time_s = <span class="ty">0.0</span>, altitude_m = <span class="ty">0.0</span>, speed_mps = <span class="ty">0.0</span>;
+};
+<span class="cm">// static_assert(sizeof(FrameHeader) == 8); static_assert(sizeof(SimState) == 48);</span></pre>
         </div>
         <div class="card">
-          <h4>Rust側の定義(sample/sim_frontend)</h4>
-          <pre class="code" style="margin:0">#[derive(Deserialize)]
-<span class="kw">pub struct</span> SimState {
-    <span class="kw">pub</span> t: f64,
-    <span class="kw">pub</span> positions: Vec&lt;f32&gt;,
-    <span class="kw">pub</span> frame_id: u32,
-    <span class="kw">pub</span> status_values: Vec&lt;f64&gt;,
-}</pre>
+          <h4>Rust側の復号(sample/sim_frontend/src/protocol.rs、抜粋)</h4>
+          <pre class="code" style="margin:0"><span class="kw">fn</span> f64_at(bytes: &amp;[u8], at: usize) -&gt; f64 {
+    f64::from_le_bytes(bytes[at..at + <span class="ty">8</span>].try_into().unwrap())
+}
+<span class="cm">// SimStateの復号(抜粋): t=body[0], frame_id=body[20],</span>
+<span class="cm">// elapsed_time_s/altitude_m/speed_mpsはbody[24]から8バイトずつ</span>
+<span class="ty">MsgType</span>::SimState =&gt; { <span class="cm">/* expect_size(...48)? のあと f64_at/f32_at/u32_at で1フィールドずつ読む */</span> }</pre>
         </div>
       </div>
       <p style="text-align:center; color:var(--ink-soft); font-size:.9rem;">
-        ↑ フィールドの<strong>順序</strong>が完全一致していることに注目してください。
+        ↑ フィールドは<strong>名前ではなくバイト位置</strong>で対応します。C++側で<code>static_assert</code>している
+        サイズと、Rust側で読む位置・バイト数を、両方とも1バイトもずらさず一致させる必要があります。
       </p>
 
       <div class="callout cpp">
         <div class="label">🔧 接続した瞬間に何が起きるか</div>
         <p>
-          ブラウザがつながると、サーバーはその1接続にだけ <code>OriginState</code> → <code>VabConfig</code> →
-          <code>StatusPanelConfig</code> → <code>AppStatus</code> → <code>TrackList</code> の5通を続けて送ります。
-          「画面を描くのに必要な構造(設定)」は変化が少ないので最初の1回だけ、変化する値
-          (<code>SimState</code>)だけを毎フレーム流す、という分担です。再接続した時も同じ5通が来るので、
+          ブラウザがつながると、サーバーはその1接続にだけ <code>OriginState</code> → <code>AppStatus</code> →
+          <code>TrackList</code> の<strong>3通</strong>を続けて送ります(<code>ws_server.cpp</code>の<code>open</code>ハンドラ)。
+          変化する値(<code>SimState</code>)は毎フレーム流す、という分担です。再接続した時も同じ3通が来るので、
           ブラウザ側は「最初から状態を持っている」前提を置かなくて済みます。
         </p>
       </div>
@@ -496,29 +502,41 @@
         (「後でイベントループスレッド上でこの関数を実行して」という予約)を使います。
       </p>
 
-      <pre class="code"><span class="fname">sample/sim_server/src/ws_server.cpp（実際のコード、抜粋）</span>impl-&gt;sim_thread = <span class="kw">std</span>::thread([impl, loop]() {
+      <pre class="code"><span class="fname">sample/sim_server/src/ws_server.cpp（実際のコード、抜粋）</span>impl-&gt;sim_thread = <span class="kw">std</span>::thread([impl, loop] {
     <span class="kw">while</span> (impl-&gt;keep_running) {
-        <span class="ty">SimulationTickResult</span> tick = impl-&gt;simulation.step(dt);
+        <span class="kw">const</span> <span class="kw">auto</span> tick = impl-&gt;simulation.step(<span class="cm">/*dt=*/</span><span class="ty">0.016</span>);
 
-        <span class="cm">// 毎フレームのSimStateは全クライアントへ。simスレッドから直接送らず、</span>
-        <span class="cm">// uWSスレッドに実行を「予約」する</span>
-        <span class="kw">std</span>::<span class="ty">string</span> sim_frame = protocol::encode_frame(
-            <span class="ty">MsgType</span>::<span class="ty">SimState</span>, impl-&gt;simulation.snapshot_sim_state());
-        loop-&gt;defer([impl, sim_frame = <span class="kw">std</span>::move(sim_frame)]() { impl-&gt;broadcast(sim_frame); });
+        <span class="cm">// 毎フレームのSimStateは、単純にdeferで積むと処理落ち時にキューが伸び続けるので、</span>
+        <span class="cm">// 「保留中は1個だけ上書きする」専用の経路(queue_latest_state)を通す(下記コラム)</span>
+        impl-&gt;queue_latest_state(loop, to_wire_state(impl-&gt;simulation.snapshot_sim_state()));
 
-        <span class="cm">// 原点が変わった時だけ、新しいOriginStateを全員へ</span>
-        <span class="kw">if</span> (tick.origin_changed) { <span class="cm">/* ...同様にdeferでbroadcast... */</span> }
-
-        <span class="cm">// コマンド拒否は要求元にだけ返す</span>
-        <span class="kw">for</span> (<span class="kw">auto</span>&amp; err : tick.errors) {
-            loop-&gt;defer([impl, client_id = err.client_id, err_frame = ...]() {
-                impl-&gt;send_to_client(client_id, err_frame);
-            });
+        <span class="cm">// 原点が変わった時だけ、新しいOriginStateを全員へ(deferでuWSスレッド上のbroadcast_structを予約)</span>
+        <span class="kw">if</span> (tick.origin_changed) {
+            <span class="kw">const</span> <span class="kw">auto</span> value = to_wire_origin(impl-&gt;simulation.snapshot_origin());
+            loop-&gt;defer([impl, value] { impl-&gt;messaging.broadcast_struct(<span class="ty">wire</span>::<span class="ty">Message</span>::OriginState, value); });
         }
-        next_tick += frame_interval;
-        <span class="kw">std</span>::this_thread::sleep_until(next_tick);
+
+        <span class="cm">// コマンド拒否は要求元にだけ返す(send_struct)</span>
+        <span class="kw">for</span> (<span class="kw">const</span> <span class="kw">auto</span>&amp; error : tick.errors) {
+            <span class="kw">const</span> <span class="kw">auto</span> client_id = error.client_id;
+            <span class="kw">const</span> <span class="ty">wire</span>::<span class="ty">CommandError</span> value{to_wire_command(error.error.command_type), to_wire_error_code(error.error.message)};
+            loop-&gt;defer([impl, client_id, value] { impl-&gt;messaging.send_struct(client_id, <span class="ty">wire</span>::<span class="ty">Message</span>::CommandError, value); });
+        }
+        next += interval;
+        <span class="kw">std</span>::this_thread::sleep_until(next);
     }
 });</pre>
+      <div class="callout cpp">
+        <div class="label">🔧 SimStateだけ特別扱いする理由: queue_latest_state</div>
+        <p>
+          <code>SimState</code>は約60Hzで作られますが、<code>loop-&gt;defer</code>で積んだ関数の実行はuWSスレッドの
+          混み具合に左右されます。単純に毎回<code>defer</code>すると、送信が遅れているあいだにフレームが
+          何十個も溜まり、画面がどんどん過去の状態を追いかける「遅延の蓄積」が起きます。
+          <code>Impl::queue_latest_state</code>は、<code>atomic_flag</code>で「すでに1つ予約済みか」を見て、
+          予約済みならmutexで保護した<strong>1個だけの保留スロット</strong>を新しい値で上書きするだけにします。
+          uWSスレッドが実際に送るのは、その時点で一番新しい1個だけです(古いSimStateは送られずに消える)。
+        </p>
+      </div>
 
       <h3>受信コマンドは「即実行」せず「キューに積む」</h3>
       <p>
@@ -615,26 +633,31 @@ res-&gt;end(body);</pre>
         <li><code>Range</code>ヘッダーは、単純な<code>bytes=a-b</code>ならCORSの「安全なヘッダー」なので、別オリジンのブラウザからも事前確認(プリフライト)なしで送れます</li>
       </ul>
 
-      <h3>地形の配信: キャッシュ(ETagと304)</h3>
+      <h3>地形の配信: キャッシュ(ETagと304)・全体応答のgzip</h3>
       <p>
         地形ファイルは、ブラウザを開くたびに同じものを取り直す必要はありません(俯瞰を整えるだけで約45MB)。そこで、4つのルートすべてに、
-        <strong>ETag</strong>(ファイルの大きさ+更新時刻)と<code>Cache-Control: no-cache</code>を付けました。
-        <code>no-cache</code>は「保存してよいが、使う前に毎回、サーバーに変更がないか確認せよ」という意味です(保存しない<code>no-store</code>ではありません)。
+        <strong>ETag</strong>(ファイルの大きさ+更新時刻)と<code>Cache-Control: public, max-age=86400, must-revalidate</code>を付けました。
       </p>
-      <pre class="code"><span class="fname">sample/sim_server/src/ws_server.cpp(実際のコード、抜粋)</span><span class="kw">const</span> <span class="kw">std</span>::string etag = make_etag(path, total);    <span class="cm">// "大きさ-更新時刻" を16進で</span>
-<span class="kw">if</span> (etag_matches(req-&gt;getHeader(<span class="str">"if-none-match"</span>), etag)) {
-    res-&gt;writeStatus(<span class="str">"304 Not Modified"</span>);         <span class="cm">// 本体は送らない</span>
-    res-&gt;writeHeader(<span class="str">"ETag"</span>, etag);
-    res-&gt;writeHeader(<span class="str">"Cache-Control"</span>, <span class="str">"no-cache"</span>);
-    res-&gt;writeHeader(<span class="str">"Access-Control-Allow-Origin"</span>, <span class="str">"*"</span>);
-    res-&gt;end();
+      <pre class="code"><span class="fname">sample/sim_server/src/ws_server.cpp(実際のコード、抜粋)</span><span class="kw">const</span> <span class="kw">auto</span> etag = make_etag(path, total);    <span class="cm">// "大きさ-更新時刻" を引用符付きで</span>
+<span class="kw">if</span> (http_utils::etag_matches(request-&gt;getHeader(<span class="str">"if-none-match"</span>), etag)) {
+    response-&gt;writeStatus(<span class="str">"304 Not Modified"</span>)          <span class="cm">// 本体は送らない</span>
+        -&gt;writeHeader(<span class="str">"ETag"</span>, etag)
+        -&gt;writeHeader(<span class="str">"Cache-Control"</span>, kTerrainCacheControl)
+        -&gt;writeHeader(<span class="str">"Vary"</span>, <span class="str">"Accept-Encoding"</span>)
+        -&gt;writeHeader(<span class="str">"Access-Control-Allow-Origin"</span>, <span class="str">"*"</span>)-&gt;end();
     <span class="kw">return</span>;
+}
+<span class="cm">// Rangeでの部分取得(206)は圧縮しない。全体取得(200)だけ、クライアントが受け入れるなら</span>
+<span class="cm">// gzip圧縮する(ETagは圧縮の有無で分けず、キャッシュの区別はVary: Accept-Encodingに任せる)</span>
+<span class="kw">bool</span> compressed = <span class="kw">false</span>;
+<span class="kw">if</span> (!partial &amp;&amp; http_utils::accepts_gzip(request-&gt;getHeader(<span class="str">"accept-encoding"</span>))) {
+    <span class="kw">if</span> (<span class="kw">auto</span> gz = http_utils::gzip_compress(body)) { body = <span class="kw">std</span>::move(*gz); compressed = <span class="kw">true</span>; }
 }</pre>
       <ul>
         <li><strong>流れ</strong>: 1回目は<code>200</code>+ETag。2回目以降、ブラウザが保存した応答に<code>If-None-Match: "…"</code>を付けて問い合わせ、ETagが一致すれば<code>304</code>(本体なし)が返り、保存分をそのまま使う。<code>If-None-Match</code>は、<code>*</code>・<code>W/</code>付き・カンマ区切りの複数にも対応する。</li>
-        <li><strong>有効期限(<code>max-age</code>)は付けない</strong>: 期限を付けると、<code>map_data/</code>を作り直して地形が変わっても、期限が切れるまで古いものを使い続ける事故が起きる。ETagは大きさか更新時刻が変われば変わるので、作り直せば必ず新しいものになる。</li>
-        <li><strong>効果</strong>: 2回目以降は、L1の転送量が25.8MB→0.1MB、L3/L4のRange取得も0MB(実測)。確認の往復は残るが、本体がないので速い。同じPC上ではおよそ1秒の短縮で、<strong>遅い回線ほど転送量ぶんが丸ごとなくなる</strong>。</li>
-        <li><strong>Rangeの応答(206)にも同じヘッダー</strong>を付ける。</li>
+        <li><strong><code>max-age=86400</code>(1日)を付ける</strong>: <code>terrain_dir</code>はプロセスの生存期間中は不変という前提のもと、期限内はサーバーへ問い合わせずブラウザの保存分をそのまま使う。<code>map_data/</code>を作り直したら<strong>サーバーの再起動</strong>が要る(7節のコラムと同じ理由)。ETagは大きさか更新時刻が変われば変わるので、作り直して再起動すれば必ず新しいものになる。</li>
+        <li><strong>gzip(<code>zlib</code>)</strong>: Rangeでの部分取得(206)はバイト位置がチャンク境界と対応するため圧縮しない。全体取得(200)だけ、<code>Accept-Encoding</code>にgzipが含まれれば圧縮して返す(<code>Content-Encoding: gzip</code>を付け、<code>Vary: Accept-Encoding</code>で圧縮版と非圧縮版を区別する)。</li>
+        <li><strong>Rangeの応答(206)にも同じCache-Control/ETag</strong>を付ける。</li>
       </ul>
 
     </section>
@@ -690,27 +713,32 @@ res-&gt;end(body);</pre>
       <p>
         指数バックオフの実装は驚くほど短く書けます(実際のコード、抜粋):
       </p>
-      <pre class="code"><span class="fname">sample/sim_frontend/src/ws.rs（実際のコード、抜粋）</span><span class="kw">let</span> base_ms = <span class="ty">INITIAL_BACKOFF_MS</span>.saturating_mul(<span class="ty">1u32</span> &lt;&lt; attempt.min(<span class="ty">5</span>)).min(<span class="ty">MAX_BACKOFF_MS</span>);
-                                              <span class="cm">// 1,2,4,8,16,32秒…を上限30秒でキャップ</span>
-<span class="kw">let</span> jitter_ms = (js_sys::<span class="ty">Math</span>::random() * (<span class="ty">2.0</span> * <span class="ty">JITTER_MS</span>) - <span class="ty">JITTER_MS</span>).round() <span class="kw">as</span> <span class="ty">i64</span>;
-                                              <span class="cm">// ±300msのゆらぎ(全員が同時に再接続しないように)</span>
-<span class="kw">let</span> delay_ms = (base_ms <span class="kw">as</span> <span class="ty">i64</span> + jitter_ms).clamp(<span class="ty">200</span>, <span class="ty">MAX_BACKOFF_MS</span> <span class="kw">as</span> <span class="ty">i64</span>) <span class="kw">as</span> <span class="ty">u32</span>;</pre>
+      <pre class="code"><span class="fname">sample/sim_frontend/src/ws.rs（実際のコード）</span><span class="kw">let</span> delay = <span class="ty">INITIAL_BACKOFF_MS</span>.saturating_mul(<span class="ty">1</span> &lt;&lt; attempt.min(<span class="ty">5</span>)).min(<span class="ty">MAX_BACKOFF_MS</span>);
+                                              <span class="cm">// 1,2,4,8,16,32秒…だが上限30秒(MAX_BACKOFF_MS)でキャップされるので、実際は最大30秒</span></pre>
+      <div class="callout warn">
+        <div class="label">⚠️ ジッターは、いまはありません</div>
+        <p>
+          以前はここに<code>js_sys::Math::random()</code>による±300msのジッター(複数クライアントが同時に再接続しないための乱数のずらし)が
+          入っていましたが、現在のコードには<strong>ジッターも下限クランプ(200ms)もありません</strong>。指数バックオフだけの、より単純な実装です。
+        </p>
+      </div>
 
-      <h3>VAB: 先頭行だけがサーバー駆動、「存在しないボタン」はDOMに生成しない</h3>
+      <h3>VAB: 配置・表示・操作は全てフロント側の定義、「存在しないボタン」はDOMに生成しない</h3>
       <p>
-        VAB(操作ボタン)は3つの区画でできています。<strong>先頭行</strong>はサーバーの<code>VabConfig</code>で
-        決まる「カテゴリ選択タブ」、<strong>中段</strong>(◀/▶でページ送り)と<strong>下段</strong>は、
-        選ばれたカテゴリに応じて中身が変わる<strong>フロントだけのダミー</strong>です(サーバーはその存在を知りません)。
-        今のダミー<code>VabConfig</code>は6行×4列ですが、UIが実際に使うのは先頭行だけです。
+        VAB(操作ボタン)は3つの区画でできています。<strong>先頭行</strong>は<code>vab.rs</code>内の定数
+        <code>CATEGORIES</code>で決まる「カテゴリ選択タブ」、<strong>中段</strong>(◀/▶でページ送り)と
+        <strong>下段</strong>は、選ばれたカテゴリに応じて中身が変わる<strong>ダミー</strong>です。
+        3区画とも<strong>フロント側だけで完結</strong>していて、サーバー(C++)はVABという概念自体を知りません
+        (5節: <code>VabConfig</code>のようなメッセージはワイヤ上に存在しません)。
       </p>
       <p>
         ラベルが空のボタン(「未使用の穴」)は、無効化ボタンではなく<strong>DOM要素そのものを作らない</strong>
         設計です。ただし単純に配列から除外すると、CSS Gridの自動配置がズレて後続ボタンの位置がおかしくなるため、
         各ボタンに<code>grid-column</code>を配列の添字から明示的に計算して割り当てています:
       </p>
-      <pre class="code"><span class="fname">sample/sim_frontend/src/components/vab.rs（実際のコード、抜粋）</span>top_row_buttons.into_iter().enumerate()
-    .filter(|(_, btn)| !btn.label.is_empty())   <span class="cm">// 空ラベルは丸ごと除外</span>
-    .map(|(i, btn)| {
+      <pre class="code"><span class="fname">sample/sim_frontend/src/components/vab.rs（実際のコード、抜粋）</span><span class="ty">CATEGORIES</span>.into_iter().enumerate()
+    .filter(|(_, (label, _))| !label.is_empty())   <span class="cm">// 空ラベルは丸ごと除外</span>
+    .map(|(i, (label, enabled))| {
         <span class="kw">let</span> col = i + <span class="ty">1</span>;                        <span class="cm">// 除外されても位置がズレないよう、</span>
         <span class="kw">let</span> pos_style = format!(<span class="str">"grid-row: 1; grid-column: {col};"</span>);  <span class="cm">// 添字から直接指定する</span>
         <span class="cm">/* ...&lt;button&gt;を生成... */</span>
@@ -1005,38 +1033,36 @@ res-&gt;end(body);</pre>
       <table>
         <thead><tr><th>区画</th><th>中身の出どころ</th><th>押したとき</th></tr></thead>
         <tbody>
-          <tr><td>① 先頭行(カテゴリ)</td><td><strong>サーバーの<code>VabConfig</code></strong>の先頭1行(<code>cols</code>個)。ラベル・有効/無効もサーバーが決める。ラベルが空の要素は「未使用の穴」で、DOM自体を作らない</td><td><code>vab_press</code>を送り、選択中カテゴリとして記憶(色が反転)。中段・下段の内容が切り替わり、ページは1ページ目に戻る</td></tr>
-          <tr><td>② 中段(4行×(ページ数×列数)列、◀▶で1ページ(=<code>cols</code>列)ずつページ送り)</td><td><strong>フロントだけのダミー</strong>。ラベルは<code>{カテゴリ名}-{通し番号}</code>(<code>B1-1</code>…)。<strong>ページ数は<code>VabPanel</code>の<code>mid_pages</code>で、使う側が決める</strong>(1なら単一ページでページ送りを出さない)。既定の2ページ・4列なら1行が8列分なので、1ページ目の2行目は<code>B1-9</code>から始まる</td><td><code>vab_press</code>(idは<code>vab_dummy_mid_N</code>)を送り、押したボタンの色を反転</td></tr>
-          <tr><td>③ 下段(4個固定)</td><td><strong>フロントだけのダミー</strong>。ラベルは<code>{カテゴリ名}A1</code>〜<code>A4</code></td><td>同上(<code>vab_dummy_bottom_N</code>)</td></tr>
+          <tr><td>① 先頭行(カテゴリ)</td><td><strong>フロント内蔵の定数<code>CATEGORIES</code></strong>(<code>vab.rs</code>、<code>(ラベル, 有効かどうか)</code>の配列)。ラベルが空の要素は「未使用の穴」で、DOM自体を作らない</td><td>ローカルの<code>selected_category</code>を切り替えるだけ(色が反転)。中段・下段の内容が切り替わり、ページは1ページ目に戻る。<strong>サーバーへは何も送らない</strong></td></tr>
+          <tr><td>② 中段(4行×(ページ数×列数)列、◀▶で1ページ(=<code>cols</code>列)ずつページ送り)</td><td><strong>フロントだけのダミー</strong>。ラベルは<code>{カテゴリ名}-{通し番号}</code>(<code>B1-1</code>…)。<strong>ページ数はカテゴリごとに<code>VabPanel</code>の<code>mid_pages</code>(<code>[usize; 4]</code>)で決まる</strong>(1なら単一ページでページ送りを出さない)。既定は<code>[1, 2, 2, 2]</code>(B1だけ1ページ)なので、B2〜B4の1ページ目・2行目は<code>B2-9</code>のように9番から始まる</td><td>先頭2枠(<code>i==0</code>/<code>1</code>)はスクリーンショット・録画、続く2枠(<code>i==2</code>/<code>3</code>)は開始/一時停止(25.3節、いずれも本物の操作)。それ以外のダミーは、ローカルの<code>selected_mid</code>を切り替えて色を反転するだけ。<strong>いずれもサーバーへは何も送らない</strong></td></tr>
+          <tr><td>③ 下段(4個固定)</td><td><strong>フロントだけのダミー</strong>。ラベルは<code>{カテゴリ名}A1</code>〜<code>A4</code></td><td>ローカルの<code>selected_bottom</code>を切り替えて色を反転するだけ。<strong>サーバーへは何も送らない</strong></td></tr>
         </tbody>
       </table>
       </div>
       <div class="callout warn">
-        <div class="label">⚠️ 中段・下段はダミーです</div>
+        <div class="label">⚠️ 中段・下段はダミーで、通信すら発生しません</div>
         <p>
-          サーバー(C++)は中段・下段の存在を知りません。「B1〜B4を押すと下の中身が切り替わる」というUXを、まずフロントだけで試作してあります。
-          カテゴリごとに本物のボタンを出したいときは、サーバーにカテゴリの概念を持たせて<code>VabConfig</code>を拡張する設計変更が要ります(CLAUDE.mdの既知の技術的負債)。
+          サーバー(C++)は、VABという概念自体を知りません(5節)。「B1〜B4を押すと下の中身が切り替わる」というUXを、フロントだけの見た目として作ってあります。
+          ダミーボタン(先頭4枠を除く)を押しても<code>ClientCommand</code>は送られず、ローカルのSignalが変わって色が反転するだけです。
+          カテゴリごとに本物のボタンを出したいときは、ワイヤ上のメッセージ(5節の6種)にVAB専用のものを新設し、C++側にもカテゴリの概念を持たせる設計変更が要ります(AGENTS.mdの既知の技術的負債)。
         </p>
       </div>
 
-      <p><strong>ボタンを増やす・減らす</strong>には、どこを触るかが区画で違います。</p>
-      <pre class="code"><span class="fname">sample/sim_server/src/simulation.cpp — 先頭行(カテゴリ)を5個にする</span><span class="kw">constexpr</span> <span class="kw">uint32_t</span> kRows = 6;
-<span class="kw">constexpr</span> <span class="kw">uint32_t</span> kCols = 5;   <span class="cm">// ← 4→5。先頭行のボタンが5個になり、中段の1ページの列数も5になる(下段は4個固定のまま)</span>
-<span class="cm">// …</span>
-button.label = is_hole ? <span class="str">""</span> : (<span class="str">"B"</span> + std::to_string(row * kCols + col + 1));</pre>
-      <pre class="code"><span class="fname">sample/sim_frontend/src/components/vab.rs — 中段・下段の大きさ</span><span class="kw">const</span> <span class="ty">MID_ROWS</span>: usize = 4;             <span class="cm">// 中段の行数(フロントだけの定数)</span>
-<span class="kw">const</span> <span class="ty">BOTTOM_COLS</span>: usize = 4;          <span class="cm">// 下段のボタン数</span>
-<span class="kw">const</span> <span class="ty">DEFAULT_MID_PAGES</span>: usize = 2;    <span class="cm">// 中段のページ数の既定(mid_pagesを省略したとき)</span></pre>
+      <p><strong>先頭行(カテゴリ)を増やす・減らす</strong>には、フロント側の1か所を触るだけで完結します(サーバー側の変更は不要になりました)。</p>
+      <pre class="code"><span class="fname">sample/sim_frontend/src/components/vab.rs — カテゴリを5個にする</span><span class="kw">const</span> <span class="ty">CATEGORIES</span>: [(&amp;str, <span class="ty">bool</span>); <span class="ty">5</span>] =
+    [(<span class="str">"B1"</span>, <span class="kw">true</span>), (<span class="str">"B2"</span>, <span class="kw">true</span>), (<span class="str">"B3"</span>, <span class="kw">true</span>), (<span class="str">"B4"</span>, <span class="kw">true</span>), (<span class="str">"B5"</span>, <span class="kw">true</span>)];
+    <span class="cm">// 要素数を変えるだけで、先頭行の列数・中段の1ページの列数も追従する</span>
+<span class="kw">const</span> <span class="ty">DEFAULT_MID_PAGES</span>: [<span class="ty">usize</span>; <span class="ty">5</span>] = [<span class="ty">1</span>, <span class="ty">2</span>, <span class="ty">2</span>, <span class="ty">2</span>, <span class="ty">2</span>];   <span class="cm">// mid_pagesの要素数もCATEGORIESに合わせる</span></pre>
       <p>
-        <strong>中段のページ数</strong>は、<code>VabPanel</code>を置く側が<code>mid_pages</code>で決めます(<code>Signal&lt;usize&gt;</code>を受けるので、実行中に変えることもできます)。
-        中段の総列数は<code>mid_pages × cols</code>になり、1ページの列数<code>cols</code>は先頭行と同じ(サーバーの<code>VabConfig</code>)です。0は1として扱います。
+        <strong>中段のページ数</strong>は、カテゴリごとに<code>VabPanel</code>を置く側が<code>mid_pages: Signal&lt;[usize; 4]&gt;</code>で決めます
+        (<code>Signal</code>なので実行中に変えることもできます)。中段の総列数は<code>mid_pages[選択中カテゴリ] × cols</code>になり、
+        1ページの列数<code>cols</code>は先頭行(<code>CATEGORIES</code>の要素数)と同じです。0は1として扱います。
       </p>
-<pre class="code"><span class="fname">sample/sim_frontend/src/app.rs — ページ数を決める</span>&lt;<span class="ty">VabPanel</span> conn=conn.clone() mid_pages=1usize/&gt;    <span class="cm">// 単一ページ(ページ送りなし。中段は4行×4列=16個)</span>
-&lt;<span class="ty">VabPanel</span> conn=conn.clone() mid_pages=3usize/&gt;    <span class="cm">// 3ページ(◀ 1/3 ▶)</span>
-&lt;<span class="ty">VabPanel</span> conn=conn.clone()/&gt;                     <span class="cm">// 省略すると2ページ(従来どおり)</span></pre>
+<pre class="code"><span class="fname">sample/sim_frontend/src/app.rs(実際のコード)</span>&lt;<span class="ty">VabPanel</span> conn=conn mid_pages=[<span class="ty">1</span>usize, <span class="ty">2</span>, <span class="ty">2</span>, <span class="ty">2</span>]/&gt;   <span class="cm">// B1だけ1ページ(ページ送りなし)、B2〜B4は2ページ</span></pre>
       <p>
-        押されたときの本当の処理は、サーバー側の<code>Simulation::apply_command</code>の<code>"vab_press"</code>の枝に書きます(いまはログを出すだけ)。
-        <strong>フロントは、ボタンのidをそのまま送るだけ</strong>で、意味を知りません。
+        「開始/一時停止」(<code>i==2</code>/<code>3</code>)は<code>conn.send_command(&amp;ClientCommand::resume()/pause())</code>を直接呼びます。
+        「スクショ/録画」(<code>i==0</code>/<code>1</code>)は<code>CaptureState</code>(25.3節)を直接呼びます。
+        <strong>それ以外のダミー(<code>i&gt;=4</code>)は、ローカルの選択状態を変えるだけ</strong>で、フロントは押したことの意味を何も知りません。
       </p>
 
       <h3 id="ui-capture">25.3 中段の固定ボタン枠(スクリーンショット・画面録画・シミュレーション開始/一時停止)</h3>
@@ -1371,26 +1397,41 @@ recenter_request.request();                            <span class="cm">// カ�
         <figure class="shot is-crop" style="--mw:395px;--ar:455/138.6;"><div class="shot-frame"><div class="shot-clip"><img src="data:image/webp;base64,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" width="455" height="433" alt="実行中のトップステータスパネル" decoding="async"></div><span class="pin" style="left:3.441%;top:31.158%;width:93.039%;height:53.655%"><b>1</b></span></div><figcaption><p class="cap">実行中(値が毎フレーム更新される)</p><ol class="pin-legend"><li><b class="pn">1</b><span>毎フレーム更新される値</span></li></ol></figcaption></figure>
       </div>
       <p>
-        左が停止中、右が実行中(値が毎フレーム更新される)です。<strong>表示する項目は、C++が<code>StatusPanelConfig</code>で決めます</strong>。
-        フロントは項目名をハードコードせず、<code>「{ラベル}: {値:.2} {単位}」</code>の形で並べるだけです。
+        左が停止中、右が実行中(値が毎フレーム更新される)です。フロント側の<code>status_panel.rs</code>は項目名をハードコードせず、
+        <code>「{ラベル}: {値:.2} {単位}」</code>の形で、受け取った項目定義と値を添字でそろえて並べるだけです。
       </p>
-      <p><strong>項目を足すには、C++だけを直します</strong>(フロントは変更なし)。約束は「<code>items</code>と<code>status_values</code>の並びと個数が一致すること」だけです。</p>
-      <pre class="code"><span class="fname">sample/sim_server/src/simulation.cpp — 「方位」を足す</span>protocol::<span class="ty">StatusPanelConfig</span> make_dummy_status_panel_config() {
-    protocol::<span class="ty">StatusPanelConfig</span> config;
-    config.items = {
-        protocol::<span class="ty">StatusItem</span>{<span class="str">"elapsed_time"</span>, <span class="str">"経過時間"</span>, <span class="str">"s"</span>},
-        protocol::<span class="ty">StatusItem</span>{<span class="str">"altitude"</span>, <span class="str">"高度"</span>, <span class="str">"m"</span>},
-        protocol::<span class="ty">StatusItem</span>{<span class="str">"speed"</span>, <span class="str">"速度"</span>, <span class="str">"m/s"</span>},
-        protocol::<span class="ty">StatusItem</span>{<span class="str">"heading"</span>, <span class="str">"方位"</span>, <span class="str">"deg"</span>},   <span class="cm">// ← 追加(id, 表示名, 単位)</span>
-    };
-    <span class="kw">return</span> config;
-}
-
-<span class="cm">// 値は items と同じ順序で status_values に積む(いまはダミー値 t + i)</span>
-<span class="kw">for</span> (<span class="kw">size_t</span> i = 0; i &lt; status_panel_config_.items.size(); ++i) {
-    state.status_values.push_back(t + <span class="kw">static_cast</span>&lt;<span class="kw">double</span>&gt;(i));   <span class="cm">// ← ここを本物の値にする</span>
+      <div class="callout warn">
+        <div class="label">⚠️ 「項目定義」は、もうサーバーから配信されません</div>
+        <p>
+          <code>simulation.cpp</code>の<code>make_dummy_status_panel_config()</code>は今も存在し、<code>protocol::StatusPanelConfig</code>
+          (経過時間・高度・速度の3項目)を作っています。しかし5節のとおり<strong>ワイヤ上に<code>StatusPanelConfig</code>というメッセージは無く</strong>、
+          この内部表現は「<code>status_values</code>を何個作るか」を決めるためだけに使われ、<strong>フロントへは送られません</strong>。
+          フロント側は<code>protocol.rs::default_status_panel_config()</code>という、まったく同じ3項目を独自にハードコードした関数で
+          ラベル・単位を用意しています。<strong>両者は名前が同じでも、通信でつながっていない別々の定義</strong>です。
+        </p>
+      </div>
+      <p>
+        <strong>さらに、ワイヤの<code>SimState</code>(5節)は<code>elapsed_time_s</code>・<code>altitude_m</code>・<code>speed_mps</code>の
+        3つの固定フィールドしか持ちません</strong>。<code>status_values</code>を4個以上作っても、<code>to_wire_state</code>
+        (<code>ws_server.cpp</code>)が先頭3つしか読まないため、4個目以降は<strong>黙って捨てられます</strong>。
+        項目を1つ本当に増やすには、C++だけでは足りず、次の4か所をすべて直す必要があります。
+      </p>
+      <pre class="code"><span class="fname">1. sample/sim_server/include/webtransport_protocol.hpp — フィールドを足す</span><span class="kw">struct</span> SimState {
+    <span class="cm">/* ...t, position_x/y/z, frame_id, elapsed_time_s, altitude_m, speed_mps... */</span>
+    <span class="ty">double</span> heading_deg = <span class="ty">0.0</span>;   <span class="cm">// ← 追加。サイズが変わるのでstatic_assertの数値も直す</span>
+};
+static_assert(sizeof(SimState) == <span class="ty">56</span>);  <span class="cm">// ← 48から変わる</span></pre>
+      <pre class="code"><span class="fname">2. sample/sim_server/src/ws_server.cpp — to_wire_stateで詰める</span>result.heading_deg = state.status_values.size() &lt; <span class="ty">4</span> ? <span class="ty">0.0</span> : state.status_values[<span class="ty">3</span>];</pre>
+      <pre class="code"><span class="fname">3. sample/sim_frontend/src/protocol.rs — SIM_STATE_SIZEと復号を直す</span><span class="kw">const</span> <span class="ty">SIM_STATE_SIZE</span>: usize = <span class="ty">56</span>;  <span class="cm">// ← 48から変わる</span>
+<span class="cm">// decode_frameのSimState節: status_values に f64_at(body, 48) を追加</span></pre>
+      <pre class="code"><span class="fname">4. sample/sim_frontend/src/protocol.rs — フロント側の項目定義にも同じ名前で足す</span><span class="kw">pub fn</span> default_status_panel_config() -&gt; <span class="ty">StatusPanelConfig</span> {
+    <span class="ty">StatusPanelConfig</span> { items: <span class="kw">vec</span>![<span class="cm">/* ...elapsed_time, altitude, speed...*/</span>,
+        <span class="ty">StatusItem</span> { id: <span class="str">"heading"</span>.into(), label: <span class="str">"方位"</span>.into(), unit: <span class="str">"deg"</span>.into() }] }
 }</pre>
-      <p>設定は接続直後に1回だけ送られるので、C++を直したら<code>sim_server</code>を再起動し、ブラウザをつなぎ直します。</p>
+      <p>
+        <code>status_panel.rs</code>自体は変更不要です(項目数に依存せず、渡された配列をそのまま並べるだけのため)。
+        C++・Rustどちらの変更も再ビルドが要るので、直したら<code>sim_server</code>を再起動し、<code>trunk</code>を再起動してブラウザをつなぎ直します。
+      </p>
 
       <h3>27.3 ボトム: 断面図(<code>CrossSectionView</code>)</h3>
       <div class="shot-row">
@@ -1694,18 +1735,20 @@ origin_pick.active.set(<span class="kw">true</span>);</pre>
       <table>
         <thead><tr><th>プログラム</th><th>ファイル</th><th>役割</th><th>詳しくは</th></tr></thead>
         <tbody>
-          <tr><td rowspan="9">sim_server(C++)</td><td><code>src/main.cpp</code></td><td>起動。ポート番号と<code>--cert/--key</code>を読み、<code>WsServer</code>を作って<code>run()</code>する</td><td>32.1</td></tr>
-          <tr><td><code>include/protocol.hpp</code></td><td>通信メッセージの型(7種+コマンド。<code>TrackList</code>・<code>Track</code>を含む)と、フレームを組み立てる<code>encode_frame</code></td><td>32.2</td></tr>
+          <tr><td rowspan="11">sim_server(C++)</td><td><code>src/main.cpp</code></td><td>起動。<code>[port] [--host] [--terrain-dir] [--upload-dir]</code>を読み、<code>WsServer</code>を作って<code>run()</code>する</td><td>32.1</td></tr>
+          <tr><td><code>include/protocol.hpp</code></td><td>内部でだけ使う値オブジェクト(<code>SimState</code>・<code>Track</code>など)。ワイヤ形式は含まない</td><td>32.2</td></tr>
+          <tr><td><code>include/webtransport_protocol.hpp</code></td><td>ワイヤ形式の<strong>唯一の定義</strong>。8バイトヘッダー・6種の固定長構造体・サイズの<code>static_assert</code></td><td>32.2</td></tr>
+          <tr><td><code>include/websocket_messaging.hpp</code>・<code>src/websocket_messaging.cpp</code></td><td><code>WebSocketMessaging</code>: フレームの組み立て・送受信・message_idでのハンドラ振り分け(HTTPやSimulationを知らない)</td><td>32.2</td></tr>
           <tr><td><code>include/simulation.hpp</code></td><td><code>Simulation</code>クラスの宣言(スレッドの約束・状態の持ち方)</td><td>32.3</td></tr>
           <tr><td><code>src/simulation.cpp</code></td><td>シミュレーションの本体。コマンドの適用・時間を進める・状態の切り出し・地形の範囲の読み込み・<strong>デモシナリオ(7トラックの楕円軌道)</strong></td><td>32.3</td></tr>
-          <tr><td><code>include/ws_server.hpp</code></td><td><code>WsServer</code>・<code>TlsConfig</code>の宣言</td><td>32.4</td></tr>
-          <tr><td><code>src/ws_server.cpp</code></td><td>WebSocket(<code>/sim</code>)と地形のHTTP配信、simスレッドの60Hzループ、TLS切り替え</td><td>32.4</td></tr>
-          <tr><td><code>CMakeLists.txt</code></td><td>uSockets・libuv・OpenSSL・zlib・msgpackのビルド設定</td><td>32.5</td></tr>
-          <tr><td><code>vcpkg.json</code></td><td>依存ライブラリ(<code>libuv</code>・<code>openssl</code>・<code>zlib</code>)の宣言</td><td>32.5</td></tr>
+          <tr><td><code>include/ws_server.hpp</code>・<code>src/ws_server.cpp</code></td><td><code>WsServer</code>: WebSocket(<code>/sim</code>)・地形とアップロードのHTTP配信、simスレッドの60Hzループ(TLSは無い)</td><td>32.4</td></tr>
+          <tr><td><code>include/http_utils.hpp</code></td><td>Range・ETag・gzip判定・安全なパス名判定の純粋関数</td><td>32.4</td></tr>
+          <tr><td><code>include/upload_file.hpp</code></td><td>アップロードの一時ファイル管理(<code>.part</code>→確定名)</td><td>32.4</td></tr>
+          <tr><td><code>CMakeLists.txt</code>・<code>vcpkg.json</code></td><td>uSockets・libuv・OpenSSL・zlibのビルド設定(<code>msgpack-cxx</code>はサブモジュールごと削除済み)</td><td>32.5</td></tr>
           <tr><td><code>assets/terrain/</code></td><td>配信する地形ファイル(前処理ツールの出力。リポジトリには入らない)</td><td>32.4</td></tr>
-          <tr><td rowspan="8">sim_frontend(Rust)</td><td><code>index.html</code>・<code>Trunk.toml</code>・<code>Cargo.toml</code></td><td>ページの土台、開発サーバー、依存とweb-sysの機能</td><td>33.1</td></tr>
+          <tr><td rowspan="7">sim_frontend(Rust)</td><td><code>index.html</code>・<code>Trunk.toml</code>・<code>Cargo.toml</code></td><td>ページの土台、開発サーバー、依存とweb-sysの機能</td><td>33.1</td></tr>
           <tr><td><code>src/main.rs</code></td><td>起動。パニックのログ・ログ出力を設定して<code>App</code>を画面に載せる</td><td>33.1</td></tr>
-          <tr><td><code>src/protocol.rs</code></td><td>C++と同じメッセージの型(受信は<code>Deserialize</code>、コマンドは<code>Serialize</code>)</td><td>33.2</td></tr>
+          <tr><td><code>src/protocol.rs</code></td><td>C++の<code>webtransport_protocol.hpp</code>と同じバイト配置を、<code>serde</code>なしで手書き復号/エンコード</td><td>33.2</td></tr>
           <tr><td><code>src/ws.rs</code></td><td>WebSocket接続・受信の振り分け・再接続・タブ非表示の制御・URL組み立て</td><td>33.3</td></tr>
           <tr><td><code>src/app.rs</code></td><td>context・通信の橋渡し・3列レイアウト・リサイザー</td><td>33.4</td></tr>
           <tr><td><code>src/track_bridge.rs</code></td><td><code>TrackList</code>を、ライブラリの<code>Track</code>へ変換して<code>TracksState::set</code>へ渡す(航跡の橋渡し)</td><td>33.4・38</td></tr>
@@ -1718,13 +1761,13 @@ origin_pick.active.set(<span class="kw">true</span>);</pre>
       <h3>起動から、画面が動くまで</h3>
       <p>順序に意味があるので、番号を付けて追います。</p>
       <ol>
-        <li><strong>sim_serverを起動</strong>する(<code>main.cpp</code>)。引数を読み、<code>Simulation</code>を作る(<code>metadata.json</code>から地形の緯度経度の範囲を読む)。</li>
-        <li><code>WsServer::run()</code>が、<strong>simスレッド</strong>(60Hzで<code>step()</code>)を起こし、自分(メインスレッド)は<strong>uWSイベントループ</strong>で待ち受ける(<code>0.0.0.0:9001</code>)。</li>
+        <li><strong>sim_serverを起動</strong>する(<code>main.cpp</code>)。引数を読み、<code>WsServer</code>(内部で<code>Simulation</code>)を作る(<code>metadata.json</code>から地形の緯度経度の範囲を読む)。</li>
+        <li><code>WsServer::run()</code>が、<strong>simスレッド</strong>(60Hzで<code>step()</code>)を起こし、自分(メインスレッド)は<strong>uWSイベントループ</strong>で待ち受ける(既定<code>0.0.0.0:9001</code>)。</li>
         <li><strong>trunk serveを起動</strong>する。RustをWASMにビルドし、<code>index.html</code>と一緒に8081番で配る。</li>
         <li>ブラウザが開くと、WASMの<code>main()</code>が<code>App</code>を画面に載せ、<code>App</code>が<strong>context</strong>を用意して<code>WsConnection::connect_new</code>で接続する。</li>
-        <li>接続すると、サーバーが<strong>5通(<code>OriginState</code>・<code>VabConfig</code>・<code>StatusPanelConfig</code>・<code>AppStatus</code>・<code>TrackList</code>)</strong>を返す。あわせて、<code>TerrainStore</code>が地形を(HTTPで)取りに行く。</li>
+        <li>接続すると、サーバーが<strong>3通(<code>OriginState</code>・<code>AppStatus</code>・<code>TrackList</code>)</strong>を返す。あわせて、<code>TerrainStore</code>が地形を(HTTPで)取りに行く。</li>
         <li>以後、サーバーは<strong>毎フレーム(約60Hz)<code>SimState</code></strong>を全員へ送り、ブラウザは受け取るたびにSignalを更新して、該当する部品だけが再描画される。</li>
-        <li>ユーザーの操作(VABボタン・原点変更・開始/一時停止)は<code>ClientCommand</code>としてサーバーへ送られ、キューに積まれて、次の<code>step()</code>で適用される。</li>
+        <li>ユーザーの操作(原点変更・VABの開始/一時停止)は<code>ClientCommand</code>としてサーバーへ送られ、キューに積まれて、次の<code>step()</code>で適用される(VABの中段・下段のダミーボタンは、サーバーへ何も送らずローカルの見た目だけを変える)。</li>
         <li>「開始」でシミュレーションが進み始めると、サーバーは<strong>約20Hzで<code>TrackList</code></strong>を全員へ送り、ブラウザは<code>TracksState</code>経由で航跡を描き直す(38節)。</li>
       </ol>
     </section>
@@ -1737,52 +1780,53 @@ origin_pick.active.set(<span class="kw">true</span>);</pre>
       </p>
 
       <h3>32.1 起動: <code>main.cpp</code></h3>
-      <pre class="code"><span class="fname">sample/sim_server/src/main.cpp(抜粋)</span>uint16_t port = 9001;
-sim3dview::<span class="ty">TlsConfig</span> tls;
+      <pre class="code"><span class="fname">sample/sim_server/src/main.cpp(実際のコード、抜粋)</span>uint16_t port = <span class="ty">9001</span>;
+std::string host = <span class="str">"0.0.0.0"</span>;
+std::string terrain_dir = <span class="str">"assets/terrain"</span>;
+std::string upload_dir = <span class="str">"uploads"</span>;
 
-<span class="kw">for</span> (int i = 1; i &lt; argc; ++i) {
+<span class="kw">for</span> (<span class="kw">int</span> i = <span class="ty">1</span>; i &lt; argc; ++i) {
     <span class="kw">const</span> std::string arg = argv[i];
-    <span class="kw">if</span> ((arg == <span class="str">"--cert"</span> || arg == <span class="str">"--key"</span>) &amp;&amp; i + 1 &lt; argc) {
-        (arg == <span class="str">"--cert"</span> ? tls.cert_file : tls.key_file) = argv[++i];   <span class="cm">// TLSの証明書・秘密鍵(PEM)</span>
-    } <span class="kw">else</span> <span class="kw">if</span> (!arg.empty() &amp;&amp; arg[0] != '-') {
-        port = <span class="kw">static_cast</span>&lt;uint16_t&gt;(std::stoi(arg));                   <span class="cm">// 先頭の数字=ポート番号</span>
-    } <span class="kw">else</span> {
-        print_usage(argv[0]); <span class="kw">return</span> 1;                                 <span class="cm">// 知らないオプションは使い方を出して終了</span>
-    }
+    <span class="kw">if</span> (arg == <span class="str">"--host"</span> &amp;&amp; i + <span class="ty">1</span> &lt; argc) { host = argv[++i]; }
+    <span class="kw">else</span> <span class="kw">if</span> (arg == <span class="str">"--upload-dir"</span> &amp;&amp; i + <span class="ty">1</span> &lt; argc) { upload_dir = argv[++i]; }
+    <span class="kw">else</span> <span class="kw">if</span> (arg == <span class="str">"--terrain-dir"</span> &amp;&amp; i + <span class="ty">1</span> &lt; argc) { terrain_dir = argv[++i]; }
+    <span class="kw">else</span> <span class="kw">if</span> (!arg.empty() &amp;&amp; arg[<span class="ty">0</span>] != '-') { <span class="cm">/* ...数字ならポート番号(std::stoiで検証)... */</span> }
+    <span class="kw">else</span> { print_usage(argv[<span class="ty">0</span>]); <span class="kw">return</span> <span class="ty">1</span>; }
 }
-<span class="kw">if</span> (tls.cert_file.empty() != tls.key_file.empty()) { <span class="cm">/* 片方だけは拒否 */</span> <span class="kw">return</span> 1; }
-
-sim3dview::<span class="ty">WsServer</span> server(port, std::<span class="kw">move</span>(tls));
-server.run();                                                           <span class="cm">// ここでブロック(イベントループ)</span></pre>
+sim3dview::<span class="ty">WsServer</span> server(port, host, terrain_dir, upload_dir);
+server.run();   <span class="cm">// ここでブロック(イベントループ)</span></pre>
       <ul>
-        <li>引数は<code>sim_server [port] [--cert 証明書.pem --key 秘密鍵.pem]</code>。<strong>証明書と秘密鍵が両方そろったときだけTLS</strong>(HTTPS/WSS)、なければ従来どおり平文(HTTP/WS)。起動時に<code>(TLS)</code>/<code>(no TLS)</code>と表示する。</li>
-        <li>ポート番号が数字でなければ<code>invalid port argument</code>で終了(<code>std::stoi</code>の例外を捕まえている)。</li>
+        <li>引数は<code>sim_server [port] [--host アドレス] [--terrain-dir パス] [--upload-dir パス]</code>。<strong>TLSは存在しません</strong>(<code>--cert</code>/<code>--key</code>も<code>TlsConfig</code>もこのコードには無い)。ローカル配布(Electron・LAN内)を前提に、平文のHTTP/WSだけを話します。</li>
+        <li>ポート番号が数字でなければ<code>invalid port argument</code>で終了(<code>std::stoi</code>の例外を捕まえている)。<code>port = 0</code>を渡すと空きポートが自動割り当てされる(<code>ws_server.cpp</code>の<code>listen</code>コールバックが実際の割当ポートを読み戻す)。</li>
         <li><code>run()</code>はイベントループを回し続けるので、<strong>普通は戻ってこない</strong>(プロセスを止めるまで動く)。</li>
       </ul>
 
-      <h3>32.2 メッセージの型: <code>protocol.hpp</code></h3>
+      <h3>32.2 メッセージの型: <code>protocol.hpp</code>・<code>webtransport_protocol.hpp</code>・<code>websocket_messaging.hpp</code></h3>
       <p>
-        すべての型は、<code>MSGPACK_DEFINE(...)</code>で<strong>フィールドを宣言順の配列</strong>としてシリアライズします(5節)。Rust側の<code>protocol.rs</code>と<strong>並び順を一致</strong>させる必要があります。
+        3つのファイルで役割が分かれています。<code>protocol.hpp</code>は<code>std::string</code>/<code>std::vector</code>を使ってよい
+        <strong>内部専用</strong>の値オブジェクト、<code>webtransport_protocol.hpp</code>が<strong>ワイヤ上の唯一の形式</strong>
+        (5節の8バイトヘッダー+固定長構造体)、<code>websocket_messaging.hpp</code>がその2つをつなぐ送受信レイヤーです。
       </p>
       <div class="table-wrap">
       <table>
-        <thead><tr><th>型(<code>msg_type</code>)</th><th>フィールド(この順)</th><th>意味</th></tr></thead>
+        <thead><tr><th>message_id</th><th>ワイヤ構造体(<code>webtransport_protocol.hpp</code>)のフィールド</th><th>意味</th></tr></thead>
         <tbody>
-          <tr><td><code>SimState</code>(0x01)</td><td><code>t</code>(double)・<code>positions</code>(float配列)・<code>frame_id</code>(uint32)・<code>status_values</code>(double配列)</td><td>毎フレームの状態。<code>t</code>は経過時間(秒、実行中だけ進む)、<code>frame_id</code>は<code>step()</code>のたびに+1</td></tr>
-          <tr><td><code>VabConfig</code>(0x02)</td><td><code>rows</code>・<code>cols</code>・<code>buttons</code>(<code>VabButton</code>の配列: <code>id</code>・<code>label</code>・<code>enabled</code>)</td><td>VABの配置。空ラベルは「未使用の穴」</td></tr>
-          <tr><td><code>OriginState</code>(0x03)</td><td><code>lat_deg</code>・<code>lon_deg</code></td><td>ENU座標系の原点(サーバーが正)</td></tr>
-          <tr><td><code>StatusPanelConfig</code>(0x04)</td><td><code>items</code>(<code>StatusItem</code>の配列: <code>id</code>・<code>label</code>・<code>unit</code>)</td><td>各種情報パネルの項目定義</td></tr>
-          <tr><td><code>CommandError</code>(0x05)</td><td><code>command_type</code>・<code>message</code></td><td>コマンドを拒否した理由</td></tr>
-          <tr><td><code>AppStatus</code>(0x06)</td><td><code>text</code></td><td>「シミュレーション実行中」/「一時停止中」</td></tr>
-          <tr><td><code>TrackList</code>(0x07)</td><td><code>t</code>(double)・<code>tracks</code>(<code>Track</code>の配列: <code>id</code>・<code>kind</code>・<code>affiliation</code>・<code>label</code>・<code>lat_deg</code>・<code>lon_deg</code>・<code>alt_m</code>・<code>alt_ref</code>・<code>heading_deg</code>・<code>speed_mps</code>)</td><td>航跡(全トラックの最新状態)。<code>kind</code>等の数値の意味は38.2節</td></tr>
-          <tr><td><code>ClientCommand</code>(逆向き。先頭バイトなし)</td><td><code>type</code>・<code>button_id</code>・<code>value</code>・<code>lat_deg</code>・<code>lon_deg</code></td><td>ブラウザからの操作。<code>type</code>で使うフィールドが変わる(未使用は0/空文字)</td></tr>
+          <tr><td><code>ClientCommand</code>(0x0001)</td><td><code>command</code>(1バイトenum)・予約7バイト・<code>value</code>・<code>lat_deg</code>・<code>lon_deg</code></td><td>ブラウザからの操作。<code>command</code>で使うフィールドが変わる(未使用は0)</td></tr>
+          <tr><td><code>SimState</code>(0x0002)</td><td><code>t</code>・<code>position_x/y/z</code>(float)・<code>frame_id</code>・<code>elapsed_time_s</code>・<code>altitude_m</code>・<code>speed_mps</code></td><td>毎フレームの状態。<code>t</code>は経過時間(秒、実行中だけ進む)、<code>frame_id</code>は<code>step()</code>のたびに+1</td></tr>
+          <tr><td><code>OriginState</code>(0x0003)</td><td><code>lat_deg</code>・<code>lon_deg</code></td><td>ENU座標系の原点(サーバーが正)</td></tr>
+          <tr><td><code>CommandError</code>(0x0004)</td><td><code>command</code>(1バイトenum)・<code>code</code>(1バイトenum)・予約6バイト</td><td>コマンドを拒否した理由(理由の文字列自体はRust側が<code>code</code>から組み立てる)</td></tr>
+          <tr><td><code>AppStatus</code>(0x0005)</td><td><code>running</code>(1バイト、0/1)・予約7バイト</td><td>実行中かどうか。表示文字列はクライアント側の責務</td></tr>
+          <tr><td><code>TrackList</code>(0x0006)</td><td><code>t</code>・<code>count</code>・予約4バイト・<code>tracks</code>(<code>Track</code>×16固定)</td><td>航跡(全トラックの最新状態、最大16件)。<code>Track</code>は<code>lat/lon/alt/heading/speed/pitch/roll</code>(double)+<code>id/kind/affiliation/alt_ref</code>+24バイトのラベル</td></tr>
         </tbody>
       </table>
       </div>
-      <ul>
-        <li><strong><code>encode_frame(type, payload)</code></strong>: <code>msgpack::pack</code>した本体の先頭に、<code>msg_type</code>の1バイトを付けて1つの文字列にする。送信側はこれだけ使う。</li>
-        <li><code>read_msg_type</code>・<code>decode_body</code>: 「先頭1バイト付きのフレームを読む」ためのヘルパー。<strong>sim_serverの中では、現状どこからも呼ばれていません</strong>(受信する<code>ClientCommand</code>は先頭バイトなしで、<code>ws_server.cpp</code>が<code>msgpack::unpack</code>を直接呼ぶため)。</li>
-      </ul>
+      <p>
+        <strong>「フィールド宣言順の配列」ではなく「固定バイトオフセット」で対応する</strong>点が、MessagePack時代との一番の違いです。
+        名前も順序もシリアライズ時には残らず、C++の<code>static_assert(sizeof(...))</code>とRust側の<code>u16_at</code>等の
+        オフセット定数だけが正です。<code>websocket_messaging.hpp</code>の<code>send_struct</code>/<code>broadcast_struct</code>は
+        <code>static_assert(kWirePayload&lt;T&gt;)</code>でstandard-layout型であることをコンパイル時に強制し、
+        ポインタや可変長メンバを誤って流し込めないようにしています。
+      </p>
 
       <h3>32.3 シミュレーション本体: <code>Simulation</code>(<code>simulation.hpp/.cpp</code>)</h3>
       <p><strong>持っている状態</strong>と、それを守る鍵(mutex)は次のとおりです。</p>
@@ -1796,15 +1840,19 @@ server.run();                                                           <span cl
           <tr><td><code>frame_id_</code></td><td>0</td><td><code>state_mutex_</code></td><td><code>step()</code>が、実行中でなくても毎回+1</td></tr>
           <tr><td><code>command_queue_</code></td><td>空</td><td><code>queue_mutex_</code></td><td>積む: uWSスレッド / 取り出す: simスレッド</td></tr>
           <tr><td><code>bounds_</code>(地形の範囲)</td><td>起動時に<code>metadata.json</code>から</td><td>不要(起動後は読むだけ)</td><td><code>apply_set_origin</code></td></tr>
-          <tr><td><code>vab_config_</code>・<code>status_panel_config_</code></td><td>ダミー固定値</td><td>不要(起動後は不変)</td><td>接続直後の配信</td></tr>
+          <tr><td><code>status_panel_config_</code></td><td>ダミー固定値(3項目)</td><td>不要(起動後は不変)</td><td><strong>ワイヤには出ない</strong>。<code>status_values</code>を何個作るかにだけ使う(27.2節)</td></tr>
           <tr><td><code>scenario_</code>(デモシナリオ)</td><td>7トラック(楕円軌道)</td><td>不要(起動後は不変。位置は<code>t_</code>の関数)</td><td><code>snapshot_tracks</code>(38.3節)</td></tr>
         </tbody>
       </table>
       </div>
+      <p>
+        <code>vab_config_</code>という状態は<strong>もう存在しません</strong>。VABはフロント側だけの見た目(25節)になったため、
+        C++はVABという概念自体を持ちません。
+      </p>
 
       <p><strong>関数を、呼ばれる順に。</strong></p>
       <ol>
-        <li><strong>コンストラクタ</strong>: ダミーの<code>VabConfig</code>・<code>StatusPanelConfig</code>を作る。続けて<code>metadata.json</code>を丸ごと読み、<code>"geodetic_bounds"</code>の位置から<code>min_lat/max_lat/min_lon/max_lon</code>を、自前の小さな数値パーサ<code>find_number</code>(キー文字列を探して、その後の<code>:</code>の次を<code>std::stod</code>で読む)で取り出す。4つそろえば<code>bounds_</code>にして範囲を表示、<strong>読めなければ範囲チェックを無効にして警告</strong>を出す。JSONライブラリを足すほどではない、固定形式だけを想定した作り。</li>
+        <li><strong>コンストラクタ</strong>: ダミーの<code>StatusPanelConfig</code>(<code>status_panel_config_</code>、3項目)を作る。続けて<code>metadata.json</code>を丸ごと読み、<code>"geodetic_bounds"</code>の位置から<code>min_lat/max_lat/min_lon/max_lon</code>を、自前の小さな数値パーサ<code>find_number</code>(キー文字列を探して、その後の<code>:</code>の次を<code>std::stod</code>で読む)で取り出す。4つそろえば<code>bounds_</code>にして範囲を表示、<strong>読めなければ範囲チェックを無効にして警告</strong>を出す。JSONライブラリを足すほどではない、固定形式だけを想定した作り。</li>
         <li><strong><code>enqueue_command(client_id, cmd)</code></strong>: uWSスレッドから呼ばれ、キューに積むだけ(<code>queue_mutex_</code>)。</li>
         <li><strong><code>step(dt)</code></strong>(simスレッド専用): ①<code>apply_queued_commands</code>でコマンドを消化 → ②<code>state_mutex_</code>を取り、実行中なら<code>t_ += dt</code> → ③<code>++frame_id_</code>。結果として<code>SimulationTickResult</code>(<code>errors</code>・<code>origin_changed</code>・<code>app_status_changed</code>・<code>time_advanced</code>(実行中で時刻が進んだか。<code>TrackList</code>の配信に使う))を返す。</li>
         <li><strong><code>apply_queued_commands</code></strong>: キューを<strong>丸ごと入れ替え(<code>swap</code>)</strong>て手元に取り、鍵を離してから、1件ずつ<code>apply_command</code>する。鍵を持つ時間を最短にして、uWSスレッドが積むのを邪魔しない。</li>
@@ -1836,17 +1884,21 @@ server.run();                                                           <span cl
 
       <div class="table-wrap">
       <table>
-        <thead><tr><th><code>cmd.type</code></th><th>サーバーがすること</th><th>フロントが送るか</th></tr></thead>
+        <thead><tr><th>内部の<code>cmd.type</code></th><th>サーバーがすること</th><th>フロントが送るか</th></tr></thead>
         <tbody>
           <tr><td><code>set_origin</code></td><td><code>apply_set_origin</code>へ(下記)</td><td><strong>送る</strong>(原点設定ダイアログ・地図クリック)</td></tr>
-          <tr><td><code>pause</code></td><td>実行中なら<code>running_ = false</code>にして、<code>app_status_changed</code>を立てる(すでに停止中なら何もしない)</td><td><strong>送る</strong>(左パネルの「一時停止」)</td></tr>
-          <tr><td><code>resume</code></td><td>停止中なら<code>running_ = true</code>にして、<code>app_status_changed</code>を立てる</td><td><strong>送る</strong>(左パネルの「開始」)</td></tr>
-          <tr><td><code>vab_press</code></td><td><code>[vab_press] button_id=…</code>と<strong>ログを出すだけ</strong>(実アクチュエーション対象が無い)</td><td><strong>送る</strong>(VABの全ボタン)</td></tr>
-          <tr><td><code>set_param</code></td><td><code>[set_param] value=…</code>と<strong>ログを出すだけ</strong></td><td>送らない</td></tr>
-          <tr><td>それ以外</td><td><code>unknown ClientCommand.type</code>とエラーログ(送り返しはしない)</td><td>—</td></tr>
+          <tr><td><code>pause</code></td><td>実行中なら<code>running_ = false</code>にして、<code>app_status_changed</code>を立てる(すでに停止中なら何もしない)</td><td><strong>送る</strong>(VABの「一時停止」、25.3節)</td></tr>
+          <tr><td><code>resume</code></td><td>停止中なら<code>running_ = true</code>にして、<code>app_status_changed</code>を立てる</td><td><strong>送る</strong>(VABの「開始」、25.3節)</td></tr>
+          <tr><td><code>set_param</code></td><td>該当する分岐が無く、事実上<code>unsupported</code>と同じ扱い</td><td>送らない(Rust側に送信APIが無い)</td></tr>
+          <tr><td>それ以外(<code>unsupported</code>)</td><td>エラーログ(送り返しはしない)</td><td>—</td></tr>
         </tbody>
       </table>
       </div>
+      <p>
+        <code>vab_press</code>という<code>cmd.type</code>は<strong>もう存在しません</strong>。ワイヤの<code>Command</code> enum
+        (<code>webtransport_protocol.hpp</code>)は<code>Pause</code>・<code>Resume</code>・<code>SetParam</code>・<code>SetOrigin</code>の4つだけで、
+        <code>ws_server.cpp</code>の<code>to_simulation_command</code>がこれを内部の文字列(<code>"pause"</code>等)に変換して<code>Simulation</code>へ渡します。
+      </p>
 
       <h4>原点変更の受理条件: <code>apply_set_origin</code></h4>
       <ol>
@@ -1854,60 +1906,66 @@ server.run();                                                           <span cl
         <li><strong>範囲外なら拒否</strong>: <code>bounds_</code>があり、緯度経度が範囲の外なら「指定された緯度経度が地形データの範囲外です」。<code>bounds_</code>が無ければ、この検査は飛ばす。</li>
         <li>両方通れば、<code>origin_</code>を更新して<code>origin_changed</code>を立てる(→ 全員へ<code>OriginState</code>)。</li>
       </ol>
+      <p>
+        この理由の文字列は<strong>ワイヤには乗りません</strong>。ワイヤの<code>CommandError</code>は<code>code</code>(1バイトenum:
+        <code>UnsupportedCommand</code>/<code>OriginChangeWhileRunning</code>/<code>OriginOutsideTerrain</code>)だけを運び、
+        表示文字列はRust側の<code>CommandError::from_wire</code>が<code>code</code>から組み立てます(C++の<code>to_wire_error_code</code>は、
+        逆に内部のメッセージ文字列を<code>message.find("実行中")</code>のような部分一致で<code>code</code>へ変換しています)。
+      </p>
 
       <h4>ダミーの値(実シミュレーションに置き換える場所)</h4>
       <ul>
-        <li><strong>VabConfig</strong>: 6行×4列。ボタンのidは<code>btn_{行}_{列}</code>、ラベルは<code>B{通し番号}</code>。<strong>5行目・4列目の1個だけ、ラベルを空(穴)</strong>にしてある(先頭行・末尾行は常に埋める)。フロントが使うのは先頭1行だけ(25節)。</li>
-        <li><strong>StatusPanelConfig</strong>: 経過時間(s)・高度(m)・速度(m/s)の3項目。</li>
+        <li><strong>StatusPanelConfig</strong>: 経過時間(s)・高度(m)・速度(m/s)の3項目。ただし<strong>ワイヤには出ない内部専用の値</strong>(27.2節)。</li>
         <li><strong>TrackList</strong>: 7つのトラックの楕円軌道(38.3節)。<strong>これが、いまのUIが実際に描いているシミュレーションの物体</strong>です。</li>
-        <li><strong>SimState</strong>: <code>positions</code>は半径100mの円軌道(<code>x=100cos t, y=100sin t, z=50+10sin(t/2)</code>)のダミー1点で、<strong>いまのUIは使っていません</strong>。<code>status_values</code>は<code>t + i</code>(項目の添字を足しただけ)なので、停止中は「0.00 / 1.00 / 2.00」、実行中は増えていく。</li>
-        <li><strong>AppStatus</strong>: <code>running_</code>なら「シミュレーション実行中」、そうでなければ「一時停止中」。</li>
+        <li><strong>SimState</strong>: <code>positions</code>は半径100mの円軌道(<code>x=100cos t, y=100sin t, z=50+10sin(t/2)</code>)のダミー1点で、<code>to_wire_state</code>が先頭3要素だけを<code>position_x/y/z</code>に詰めます(<strong>いまのUIは使っていません</strong>)。<code>status_values</code>は<code>t + i</code>(項目の添字を足しただけ)で、<code>to_wire_state</code>が<code>[0]/[1]/[2]</code>を<code>elapsed_time_s</code>/<code>altitude_m</code>/<code>speed_mps</code>に詰めるので、停止中は「0.00 / 1.00 / 2.00」、実行中は増えていく。</li>
+        <li><strong>AppStatus</strong>: <code>running_</code>から<code>to_wire_app_status</code>が1バイトの<code>running</code>フラグを作り、文字列(「シミュレーション実行中」/「一時停止中」)への変換はRust側(<code>protocol.rs</code>)が行う。</li>
       </ul>
 
       <div class="callout">
         <div class="label">💡 「開始」を押すまで、シミュレーションは動きません</div>
         <p>
-          <code>running_</code>は<code>false</code>で始まるので、起動直後は経過時間が0のままで、トラックは初期位置に止まっています。左パネルの「開始」(<code>resume</code>コマンド)を押すと、
-          <code>t_</code>が進み始め、トラックが動きます。以前は<code>resume</code>を送る部品がフロントに無く、別のクライアントから送る必要がありました。
+          <code>running_</code>は<code>false</code>で始まるので、起動直後は経過時間が0のままで、トラックは初期位置に止まっています。VABの「開始」(<code>resume</code>コマンド、25.3節)を押すと、
+          <code>t_</code>が進み始め、トラックが動きます。
         </p>
       </div>
 
-      <h3>32.4 サーバー本体: <code>ws_server.cpp</code></h3>
+      <h3>32.4 サーバー本体: <code>ws_server.cpp</code>・<code>websocket_messaging.cpp</code></h3>
       <h4>クラスの構成</h4>
       <ul>
         <li><code>WsServer</code>は、<code>Impl</code>(実装)を生ポインタで持つ。コピー・ムーブは禁止(二重解放を防ぐため)。<strong>デストラクタは<code>keep_running = false</code>にして、simスレッドを<code>join</code></strong>する。</li>
-        <li><code>Impl</code>の持ち物: ポート・TLS設定・<code>Simulation</code>・<strong>接続一覧</strong>(<code>ClientId</code> → 「そのWebSocketへ送る関数」)・その鍵・次のID(<code>atomic</code>)・simスレッド・実行フラグ。</li>
-        <li>接続一覧が<strong>「関数」を持つ</strong>のは、TLSの有無で<code>WebSocket</code>の型が変わる(<code>WebSocket&lt;true,…&gt;</code>と<code>&lt;false,…&gt;</code>)のを、この構造体の外へ漏らさないため。<code>broadcast</code>/<code>send_to_client</code>は、鍵を取って一覧をたどり、関数を呼ぶだけ。</li>
+        <li><code>Impl</code>の持ち物: ポート・ホスト・地形/アップロードのディレクトリ・<code>Simulation</code>・<code>WebSocketMessaging</code>・<strong>SimState専用の保留スロット</strong>(<code>latest_state</code>・<code>realtime_delivery_scheduled</code>、下記コラム)・次のID(<code>atomic</code>)・simスレッド・実行フラグ。</li>
+        <li><strong>接続一覧・送信・受信振り分けは<code>WebSocketMessaging</code>に切り出されている</strong>(<code>websocket_messaging.hpp</code>)。<code>WsServer</code>は「どのURLで何を受け取ったら何をするか」だけを知り、フレームの組み立てや<code>client_id</code>→送信関数の対応表は知らない。</li>
       </ul>
 
-      <h4><code>run()</code>: TLSの切り替え</h4>
+      <h4><code>run()</code>: TLSは無い</h4>
       <p>
-        <code>run()</code>は、<code>tls.enabled()</code>なら<code>uWS::SSLApp</code>(証明書・鍵のパスを渡す)、そうでなければ<code>uWS::App</code>を作り、同じテンプレート関数<code>run_app&lt;SSL&gt;</code>に渡します。
-        <strong>以降の処理は、TLSの有無に関わらず同じコード</strong>です(ルートの登録・ハンドラ・simスレッドすべて)。
+        <code>run()</code>は<code>uWS::App</code>(非TLS)だけを作ります。<strong>TLS対応の分岐やSSLAppは現在のコードに存在しません</strong>
+        (uSocketsのビルド自体はOpenSSLとリンクしていますが、それは<code>third_party/uWebSockets</code>の内部実装がOpenSSLベースの暗号層を要求するためで、
+        <code>WsServer</code>自身がTLSを有効化することはありません)。HTTPS/WSSが要る配布形態では、リバースプロキシ等で別途終端する前提です。
       </p>
 
-      <h4><code>run_app</code>の手順</h4>
+      <h4><code>run()</code>の手順</h4>
       <ol>
-        <li><code>uWS::Loop::get()</code>で、このスレッド(メイン)のイベントループを確定させる(simスレッドから<code>defer</code>するために先に取っておく)。</li>
+        <li><code>messaging.register_handler</code>で、<code>ClientCommand</code>(0x0001)の受信ハンドラを登録する: サイズが<code>sizeof(wire::ClientCommand)</code>と一致することだけ確認し、<code>to_simulation_command</code>で内部形式に変換して<code>simulation.enqueue_command</code>へ渡す。</li>
         <li><strong>WebSocketの設定</strong>: 圧縮なし(<code>DISABLED</code>)・受信の最大サイズ<strong>16KB</strong>・無通信の切断<strong>120秒</strong>。</li>
-        <li><strong><code>open</code></strong>(接続されたとき): 新しい<code>ClientId</code>を採番し、接続一覧に登録、ログを出す。続けて、この1接続だけに<strong>5通</strong>(<code>OriginState</code>→<code>VabConfig</code>→<code>StatusPanelConfig</code>→<code>AppStatus</code>→<code>TrackList</code>)を送る。</li>
-        <li><strong><code>message</code></strong>(受信したとき): <code>msgpack::unpack</code>で<code>ClientCommand</code>に戻して<code>enqueue_command</code>。<strong>デコードに失敗したら、ログに出して捨てる</strong>(クライアントへエラーは返さない)。</li>
-        <li><strong><code>close</code></strong>(切れたとき): 接続一覧から消し、ログを出す。</li>
-        <li><strong>ルートの登録</strong>: <code>/sim</code>(WebSocket)と、地形の4つのGET(下記)。</li>
-        <li><code>0.0.0.0</code>の指定ポートで<code>listen</code>(全ネットワークインターフェース。LAN内の別端末から見られるように)。失敗したらエラーを出す。</li>
+        <li><strong><code>open</code></strong>(接続されたとき): 新しい<code>ClientId</code>を採番し、<code>messaging.connect</code>で送信関数を登録、続けてこの1接続だけに<strong>3通</strong>(<code>OriginState</code>→<code>AppStatus</code>→<code>TrackList</code>、いずれも<code>send_struct</code>)を送る。</li>
+        <li><strong><code>message</code></strong>(受信したとき): <code>messaging.receive</code>へそのまま渡す(ヘッダーの検証とハンドラ振り分けは<code>WebSocketMessaging</code>の仕事)。</li>
+        <li><strong><code>close</code></strong>(切れたとき): <code>messaging.disconnect</code>。</li>
+        <li><strong>ルートの登録</strong>: <code>/sim</code>(WebSocket)、<code>/uploads</code>(POST、ファイルアップロード)、地形の4つのGET(下記)。</li>
+        <li>指定ホスト・ポートで<code>listen</code>(既定は全ネットワークインターフェース)。成功すると<code>SIM3DVIEW_READY &lt;実際のポート&gt;</code>を標準出力へ(Electronが起動確認に使う、7.9節)。失敗したら例外を投げる。</li>
         <li><strong>simスレッドを起動</strong>(下記)。</li>
         <li><code>app.run()</code>でイベントループを回す(ここでブロック)。</li>
       </ol>
 
       <h4>simスレッドのループ(約60Hz)</h4>
       <ol>
-        <li><code>frame_interval = 16ms</code>、<code>dt = 0.016</code>(秒、固定)。<code>next_tick</code>を現在時刻で初期化する。</li>
+        <li><code>interval = 16ms</code>。<code>next</code>を現在時刻で初期化する。</li>
         <li><code>keep_running</code>の間、繰り返す: <code>simulation.step(dt)</code>を呼ぶ。</li>
-        <li><strong>毎回</strong>: <code>SimState</code>を組み立てて<code>encode_frame</code>し、<code>loop-&gt;defer</code>でuWSスレッドに「全員へ送って」と予約する。</li>
+        <li><strong>毎回</strong>: <code>SimState</code>を<code>to_wire_state</code>でワイヤ形式に変換し、<code>queue_latest_state</code>へ渡す(下記コラム。単純な<code>defer</code>ではない)。</li>
         <li><strong>シミュレーションが進んでいるとき、3フレームに1回</strong>(約20Hz): <code>TrackList</code>を組み立てて全員へ(<code>tick.time_advanced</code>で判定。停止中は送らない)。</li>
         <li><strong>原点が変わったときだけ</strong>: <code>OriginState</code>を全員へ。<strong>pause/resumeがあったときだけ</strong>: <code>AppStatus</code>を全員へ。</li>
-        <li><strong>拒否があったとき</strong>: <code>CommandError</code>を、<code>err.client_id</code>の1人にだけ(<code>send_to_client</code>)。</li>
-        <li><code>next_tick += 16ms</code>して<code>sleep_until(next_tick)</code>。<strong>「今から16ms寝る」ではなく「次の目標時刻まで寝る」</strong>ので、処理時間のぶんだけズレが積もらない(遅れたときは、寝ずにすぐ次へ進む)。</li>
+        <li><strong>拒否があったとき</strong>: <code>CommandError</code>を、<code>error.client_id</code>の1人にだけ(<code>send_struct</code>)。</li>
+        <li><code>next += interval</code>して<code>sleep_until(next)</code>。<strong>「今から16ms寝る」ではなく「次の目標時刻まで寝る」</strong>ので、処理時間のぶんだけズレが積もらない(遅れたときは、寝ずにすぐ次へ進む)。</li>
       </ol>
       <p>
         <strong>スレッドの鉄則</strong>: uWSのオブジェクト(<code>WebSocket*</code>)を触ってよいのは、イベントループのスレッドだけです。
@@ -1933,7 +1991,7 @@ server.run();                                                           <span cl
         <li><strong>ETag</strong>を作る(<code>make_etag</code>: ファイルの大きさと更新時刻を16進にしたもの)。リクエストの<code>If-None-Match</code>が一致したら(<code>etag_matches</code>。<code>*</code>・<code>W/</code>付き・カンマ区切りにも対応)、本体なしの<strong>304</strong>を返して終わる。ブラウザが保存した地形を、変更がなければそのまま再利用させるための仕組み(7節)。更新時刻が取れないときは、ETagなしで配信する。</li>
         <li><code>Range</code>ヘッダーがあれば<code>parse_byte_range</code>で読む。受け付けるのは<strong><code>bytes=START-END</code>と<code>bytes=START-</code>の単一範囲だけ</strong>(<code>-N</code>形式・複数範囲・<code>total==0</code>・<code>start ≥ total</code>は不正扱い)。<code>END</code>は含む、<code>total-1</code>で頭打ち。</li>
         <li>不正なRangeは<strong>無視して、ファイル全体を200で返す</strong>。有効なら、その範囲だけを読んで<strong>206</strong>(<code>Content-Range</code>付き)で返す。</li>
-        <li><code>Accept-Ranges: bytes</code>・<code>Content-Type</code>・<code>ETag</code>・<code>Cache-Control: no-cache</code>(保存はするが、使う前に毎回確認させる。<code>max-age</code>は付けない)・<code>Access-Control-Allow-Origin: *</code>を付ける(フロント(8081)とは<strong>別オリジン</strong>からのfetchなのでCORSが要る)。</li>
+        <li><code>Accept-Ranges: bytes</code>・<code>Content-Type</code>・<code>ETag</code>・<code>Cache-Control: public, max-age=86400, must-revalidate</code>(1日は問い合わせ不要、期限後は再検証)・<code>Vary: Accept-Encoding</code>・<code>Access-Control-Allow-Origin: *</code>を付ける(フロント(8081)とは<strong>別オリジン</strong>からのfetchなのでCORSが要る)。全体取得(200)はgzip圧縮も試みる(7節)。</li>
         <li><code>tiles/:level/:name</code>だけは、<code>is_safe_path_component</code>で<code>level</code>と<code>name</code>を検査する: 空でない・64文字以内・英数字と<code>_</code>と<code>.</code>だけ・<code>..</code>を含まない。<strong>違えば400</strong>。パストラバーサル(<code>../</code>で別のファイルを読ませる攻撃)を防ぐ入力検証。</li>
       </ol>
       <ul>
@@ -1947,10 +2005,11 @@ server.run();                                                           <span cl
         <thead><tr><th>部分</th><th>内容</th></tr></thead>
         <tbody>
           <tr><td><code>usockets</code>(静的ライブラリ)</td><td>uSocketsのC層: <code>bsd.c</code>・<code>context.c</code>・<code>loop.c</code>・<code>socket.c</code>・<code>udp.c</code>に、TLS用の<code>crypto/openssl.c</code>・<code>sni_tree.cpp</code>。QUIC・io_uringは対象外。定義<code>LIBUS_USE_OPENSSL</code>。Windowsではイベントの実体に<code>libuv</code>を使う</td></tr>
-          <tr><td><code>uwebsockets</code>(ヘッダのみ)</td><td>uWebSocketsの本体。<code>PerMessageDeflate.h</code>が<code>zlib.h</code>を必ず要求するため、圧縮を使わなくても<strong>zlibのリンクは必要</strong></td></tr>
-          <tr><td><code>msgpack_cxx</code>(ヘッダのみ)</td><td>MessagePack。<code>MSGPACK_NO_BOOST</code>でboostなしにビルド</td></tr>
-          <tr><td><code>sim_server</code>(実行ファイル)</td><td><code>main.cpp</code>・<code>simulation.cpp</code>・<code>ws_server.cpp</code>。C++20。Windowsでは<code>_WIN32_WINNT=0x0601</code>・<code>NOMINMAX</code>・<code>ws2_32</code>、MSVCでは<code>/Zc:__cplusplus</code></td></tr>
-          <tr><td><code>vcpkg.json</code></td><td><code>libuv</code>・<code>openssl</code>・<code>zlib</code>(初回のconfigureで自動ビルド)</td></tr>
+          <tr><td><code>uwebsockets</code>(ヘッダのみ)</td><td>uWebSocketsの本体。<code>PerMessageDeflate.h</code>が<code>zlib.h</code>を必ず要求するため、圧縮を使わなくても<strong>zlibのリンクは必要</strong>(地形のgzip応答にも同じzlibを使う、7節)</td></tr>
+          <tr><td><code>simulation_core</code>(静的ライブラリ)</td><td><code>simulation.cpp</code>だけを含む。<code>simulation_test</code>から同じ実装を直接テストするための分離</td></tr>
+          <tr><td><code>sim_server</code>(実行ファイル)</td><td><code>main.cpp</code>・<code>ws_server.cpp</code>・<code>websocket_messaging.cpp</code>+<code>simulation_core</code>。C++20。Windowsでは<code>_WIN32_WINNT=0x0601</code>・<code>NOMINMAX</code>・<code>ws2_32</code>/<code>bcrypt</code>/<code>ntdll</code>/<code>userenv</code>、MSVCでは<code>/Zc:__cplusplus</code></td></tr>
+          <tr><td><code>vcpkg.json</code></td><td><code>libuv</code>・<code>openssl</code>・<code>zlib</code>(初回のconfigureで自動ビルド)。<code>msgpack-cxx</code>はサブモジュールごと削除済みで、依存にも入っていない</td></tr>
+          <tr><td>CTest</td><td><code>simulation_test</code>(状態遷移)・<code>http_utils_test</code>(Range・ETag・gzip・パス検証)の2本</td></tr>
         </tbody>
       </table>
       </div>
@@ -1966,17 +2025,17 @@ server.run();                                                           <span cl
       <ul>
         <li><strong><code>index.html</code></strong>: <code>lang="ja"</code>、<code>&lt;body&gt;</code>は空。<code>&lt;link data-trunk rel="css" ...&gt;</code>が2つ(<code>sim3dview.css</code>=ライブラリの部品、<code>app.css</code>=アプリ固有)。<strong>Trunkがこの2つのCSSを取り込み、ビルドしたWASMとJSのグルーを自動で差し込む</strong>。</li>
         <li><strong><code>Trunk.toml</code></strong>(開発サーバー): <code>0.0.0.0</code>で待ち受け(LANの別端末から見られる)・ポート<strong>8081</strong>(8080はDockerが使いがち)・<code>disable_address_lookup = true</code>(このPCのDocker関連のネットワーク列挙が固まる問題の回避)。</li>
-        <li><strong><code>main.rs</code></strong>: ①<code>console_error_panic_hook::set_once()</code>(Rustのpanicをブラウザのコンソールに出す)②<code>console_log::init_with_level(Debug)</code>(<code>log::info!</code>等をコンソールへ)③<code>leptos::mount::mount_to_body(App)</code>(<code>&lt;body&gt;</code>に<code>App</code>を載せる)。モジュールは<code>app</code>・<code>components</code>・<code>protocol</code>・<code>ws</code>の4つ。</li>
-        <li><strong><code>Cargo.toml</code></strong>: <code>sim3dview</code>をpath依存で使う。<code>rmp-serde</code>+<code>serde</code>(MessagePack)、<code>gloo-timers</code>(再接続のタイマー)、<code>js-sys</code>(乱数・ArrayBuffer)、<code>web-sys</code>。<strong><code>web-sys</code>は使う機能を1つずつ列挙する</strong>(<code>WebSocket</code>・<code>MessageEvent</code>・<code>BinaryType</code>・<code>CloseEvent</code>・<code>Location</code>・<code>PointerEvent</code>…)ので、ブラウザのAPIを新しく使うときは、ここにfeatureを足す。</li>
+        <li><strong><code>main.rs</code></strong>: ①<code>console_error_panic_hook::set_once()</code>(Rustのpanicをブラウザのコンソールに出す)②<code>components::log_panel::init_logger(log::Level::Debug)</code>(<code>log::info!</code>等を、コンソールに加えて画面下部のログパネルへも流す独自ロガー)③<code>leptos::mount::mount_to_body(App)</code>(<code>&lt;body&gt;</code>に<code>App</code>を載せる)。モジュールは<code>app</code>・<code>components</code>・<code>log_bridge</code>・<code>protocol</code>・<code>track_bridge</code>・<code>ws</code>の6つ。</li>
+        <li><strong><code>Cargo.toml</code></strong>: <code>sim3dview</code>をpath依存で使う。<strong>シリアライズライブラリは使わない</strong>(5節: <code>serde</code>も<code>rmp-serde</code>も無く、<code>protocol.rs</code>が手書きでバイト列を読み書きする)。<code>gloo-timers</code>(再接続のタイマー)、<code>js-sys</code>(乱数・ArrayBuffer)、<code>web-sys</code>。<strong><code>web-sys</code>は使う機能を1つずつ列挙する</strong>(<code>WebSocket</code>・<code>MessageEvent</code>・<code>BinaryType</code>・<code>CloseEvent</code>・<code>Location</code>・<code>PointerEvent</code>…)ので、ブラウザのAPIを新しく使うときは、ここにfeatureを足す。</li>
       </ul>
 
       <h3>33.2 メッセージの型: <code>protocol.rs</code></h3>
       <ul>
-        <li><code>MsgType</code>(<code>#[repr(u8)]</code>)と、<code>from_byte(b)</code>: 先頭の1バイトを7種に変換し、知らない値は<code>None</code>。</li>
-        <li>受信用の型(<code>SimState</code>・<code>VabConfig</code>+<code>VabButton</code>・<code>OriginState</code>・<code>StatusPanelConfig</code>+<code>StatusItem</code>・<code>CommandError</code>・<code>AppStatus</code>・<code>TrackList</code>+<code>Track</code>)は<code>Deserialize</code>。<strong>C++の<code>MSGPACK_DEFINE</code>と、フィールドの宣言順を完全に一致</strong>させてある。</li>
-        <li>いまのUIが使っていない<code>SimState.positions</code>・<code>VabConfig.rows</code>・<code>StatusItem.id</code>は、<strong><code>#[allow(dead_code)]</code>付きで残す</strong>(配列の位置で対応するため、消すと以降の項目がずれる)。</li>
-        <li>送信用の<code>ClientCommand</code>は<code>Serialize + Default</code>。<code>type</code>は予約語なので、フィールド名<code>type_</code>に<code>#[serde(rename = "type")]</code>を付ける。<strong>全フィールドを常に送る</strong>(使わないものは0・空文字)。</li>
-        <li>コンストラクタは<code>set_origin(lat, lon)</code>・<code>vab_press(id)</code>・<code>resume()</code>・<code>pause()</code>の4つ(<code>set_param</code>を作る関数は、まだ無い)。</li>
+        <li><code>MsgType</code>(<code>#[repr(u16)]</code>)と、<code>from_u16(v)</code>: ヘッダー先頭2バイトのmessage_idを6種に変換し、知らない値は<code>None</code>(5節)。</li>
+        <li><code>decode_frame(bytes)</code>: ヘッダー(<code>message_id</code>・<code>reserved</code>・<code>payload_size</code>)を検証し、<code>match msg_type</code>で<code>ServerMessage</code>(<code>SimState</code>/<code>OriginState</code>/<code>CommandError</code>/<code>AppStatus</code>/<code>TrackList</code>の5バリアント)へ振り分ける。各型は<strong><code>Deserialize</code>ではなく、<code>u16_at</code>/<code>f32_at</code>/<code>f64_at</code>でバイト位置から手書きで読む</strong>(5節)。サイズが期待値と違えば<code>DecodeFrameError::InvalidLength</code>。</li>
+        <li><code>SimState</code>・<code>StatusPanelConfig</code>のような、いまのUIの互換のために残っているRust側だけの型(<code>positions: Vec&lt;f32&gt;</code>・<code>status_values: Vec&lt;f64&gt;</code>)は、ワイヤの3つの固定フィールド(<code>position_x/y/z</code>・<code>elapsed_time_s/altitude_m/speed_mps</code>)を<code>decode_frame</code>の中で<code>vec![...]</code>に詰め替えて作る。</li>
+        <li>送信用の<code>ClientCommand</code>は、<code>encode()</code>が<code>[u8; 32]</code>を直接組み立てる(<code>Serialize</code>は使わない)。コンストラクタは<code>set_origin(lat, lon)</code>・<code>resume()</code>・<code>pause()</code>の<strong>3つだけ</strong>(<code>vab_press</code>・<code>set_param</code>を作る関数は無い。ワイヤの<code>Command</code> enumにも<code>vab_press</code>という値は無い)。</li>
+        <li><code>default_status_panel_config()</code>: C++の<code>StatusPanelConfig</code>とは通信でつながっていない、<strong>Rust側だけで独自にハードコードした</strong>3項目(27.2節)。</li>
       </ul>
 
       <h3>33.3 通信: <code>ws.rs</code></h3>
@@ -1986,7 +2045,7 @@ server.run();                                                           <span cl
         <thead><tr><th>型</th><th>役割</th></tr></thead>
         <tbody>
           <tr><td><code>ConnectionStatus</code></td><td><code>Connecting</code>・<code>Connected</code>・<code>Reconnecting{attempt}</code>・<code>PausedHidden</code>。接続そのものの状態(サーバーが送る<code>AppStatus</code>とは別レイヤー)。<code>Display</code>(日本語の文言)も実装してあるが、<strong>いまはどこからも使われていない</strong></td></tr>
-          <tr><td><code>WsSignals</code>(<code>Copy</code>)</td><td>8つのSignal: <code>status</code>(初期値<code>Connecting</code>)・<code>origin</code>・<code>vab_config</code>・<code>status_panel_config</code>・<code>last_sim_state</code>・<code>last_command_error</code>・<code>app_status</code>・<code>track_list</code>(後ろ7つは<code>None</code>で始まる)。部品はこれをcontextで受け取る</td></tr>
+          <tr><td><code>WsSignals</code>(<code>Copy</code>)</td><td><strong>7つ</strong>のSignal: <code>status</code>(初期値<code>Connecting</code>)・<code>origin</code>・<code>status_panel_config</code>(初期値から<code>Some(default_status_panel_config())</code>で埋まっている。ワイヤからは更新されない)・<code>last_sim_state</code>・<code>last_command_error</code>・<code>app_status</code>・<code>track_list</code>。<strong><code>vab_config</code>は無い</strong>(VABはサーバーと無関係、25節)。部品はこれをcontextで受け取る</td></tr>
           <tr><td><code>Inner</code></td><td>可変な接続の状態: URL・<code>socket</code>・<code>reconnect_attempt</code>・<code>tab_visible</code>・再接続の<code>Timeout</code>・<strong>4つのイベントクロージャ</strong>(<code>onopen</code>/<code>onmessage</code>/<code>onerror</code>/<code>onclose</code>)。クロージャを持つのは、JS側から呼ばれる間、破棄されないよう生かしておくため</td></tr>
           <tr><td><code>WsConnection</code></td><td><code>WsSignals</code>+<code>Rc&lt;RefCell&lt;Inner&gt;&gt;</code>。<code>clone()</code>すると同じ接続を共有する。<code>Send</code>ではない</td></tr>
           <tr><td><code>WsHandle</code></td><td><code>StoredValue::new_local</code>で<code>WsConnection</code>を包んだ<code>Copy</code>のハンドル。<code>send_command</code>だけを持つ。<code>view!</code>の子や<code>provide_context</code>が求める<code>Send</code>+<code>Sync</code>を満たし、<code>unsafe</code>は使わない(6.7節)</td></tr>
@@ -2005,12 +2064,13 @@ server.run();                                                           <span cl
           <tr><td><code>onerror</code></td><td>ログを出すだけ。引数を取らないクロージャにしてある(WebSocketの<code>error</code>は<code>ErrorEvent</code>ではなくただの<code>Event</code>で、<code>ErrorEvent</code>として受けるとpanicするため)。再接続は<code>onclose</code>に任せる</td></tr>
           <tr><td><code>onclose</code></td><td>ログを出して<code>schedule_reconnect()</code></td></tr>
           <tr><td><code>handle_message(event)</code></td><td>下の表</td></tr>
-          <tr><td><code>send_command(cmd)</code></td><td>接続中なら<code>rmp_serde::to_vec</code>でエンコードして<code>send_with_u8_array</code>。エンコード・送信の失敗はログに出す。<strong>未接続なら警告を出して、コマンドを捨てる</strong>(キューに溜めない)</td></tr>
+          <tr><td><code>send_command(cmd)</code></td><td>接続中なら<code>frame_client_command</code>でヘッダー+32バイトのフレームを組み立てて<code>send_with_u8_array</code>。送信の失敗はログに出す。<strong>未接続なら警告を出して、コマンドを捨てる</strong>(キューに溜めない)</td></tr>
           <tr><td><code>schedule_reconnect()</code></td><td>下の表</td></tr>
-          <tr><td><code>setup_visibility_listener()</code></td><td><code>document</code>の<code>visibilitychange</code>を購読し、<code>hidden</code>かどうかを<code>set_tab_visible</code>へ。アプリの生存期間ずっと要るので<code>closure.forget()</code>する</td></tr>
-          <tr><td><code>set_tab_visible(visible)</code></td><td>非表示になったら、<strong>保留中の再接続タイマーを止める</strong>。再表示されたとき、<strong>前は非表示で、しかも今ソケットが無い</strong>なら、すぐ<code>open_socket()</code></td></tr>
-          <tr><td><code>default_ws_url()</code></td><td><code>{ws|wss}://{ページのホスト名}:9001/sim</code>。ページが<code>https:</code>なら<code>wss</code>(HTTPSページから平文<code>ws://</code>へはMixed Contentで繋がらないため)</td></tr>
-          <tr><td><code>default_terrain_base_url()</code></td><td><code>{http|https}://{ホスト名}:9001/terrain</code>。ライブラリ(<code>TerrainStore</code>・<code>OriginDialog</code>)へ渡すベースURL</td></tr>
+          <tr><td><code>setup_visibility_listener()</code></td><td><code>document</code>の<code>visibilitychange</code>を購読し、<code>hidden</code>かどうかを<code>tab_visible</code>へ。アプリの生存期間ずっと要るので<code>closure.forget()</code>する</td></tr>
+          <tr><td>(<code>visibilitychange</code>のクロージャ内)</td><td>非表示になったら、<strong>保留中の再接続タイマーを止める</strong>。再表示されたとき、<strong>前は非表示で、しかも今ソケットが無い</strong>なら、すぐ<code>open_socket()</code></td></tr>
+          <tr><td><code>server_port()</code></td><td>ページURLの<code>?sim_port=N</code>クエリを読む(Electronが実ポートを埋め込む、7.9節)。無い・不正なら既定の<strong>9001</strong></td></tr>
+          <tr><td><code>default_ws_url()</code></td><td><code>ws://{ページのホスト名}:{server_port()}/sim</code>。<strong><code>wss</code>への切り替えは無い</strong>(プロトコルの検出をしない、常に平文<code>ws://</code>)</td></tr>
+          <tr><td><code>default_terrain_base_url()</code>・<code>default_upload_url()</code></td><td><code>http://{ホスト名}:{server_port()}/terrain</code>・<code>/uploads</code>。ライブラリ(<code>TerrainStore</code>・<code>OriginDialog</code>・アップロード機能)へ渡すベースURL</td></tr>
         </tbody>
       </table>
       </div>
@@ -2018,41 +2078,43 @@ server.run();                                                           <span cl
       <h4>受信の振り分け(<code>handle_message</code>)</h4>
       <ol>
         <li><code>event.data()</code>が<code>ArrayBuffer</code>でなければ(テキストなど)、警告して無視。</li>
-        <li><code>Uint8Array</code>で<code>Vec&lt;u8&gt;</code>にし、空なら無視。先頭バイトを<code>MsgType::from_byte</code>で読み、<strong>知らない値は警告して無視</strong>。</li>
-        <li>残り(先頭バイトの後ろ)を<code>rmp_serde::from_slice</code>でデコードして、種類ごとのSignalに入れる。<strong>デコードに失敗したらログに出すだけ</strong>で、Signalは更新しない。</li>
+        <li><code>Uint8Array</code>で<code>Vec&lt;u8&gt;</code>にし、<code>decode_frame</code>へ渡す。</li>
+        <li><code>decode_frame</code>の結果を<code>match</code>し、<code>ServerMessage</code>の種類ごとのSignalに入れる。<strong>デコードに失敗(<code>Err</code>)したらログに出すだけ</strong>で、Signalは更新しない。</li>
       </ol>
       <div class="table-wrap">
       <table>
-        <thead><tr><th>受信</th><th>入れるSignal</th><th>これを読む部品</th></tr></thead>
+        <thead><tr><th>受信(<code>ServerMessage</code>)</th><th>入れるSignal</th><th>これを読む部品</th></tr></thead>
         <tbody>
           <tr><td><code>SimState</code></td><td><code>last_sim_state</code></td><td><code>SimulationStatusPanel</code>(フレーム)・<code>StatusPanel</code>(値)</td></tr>
-          <tr><td><code>VabConfig</code></td><td><code>vab_config</code></td><td><code>VabPanel</code></td></tr>
           <tr><td><code>OriginState</code></td><td><code>origin</code></td><td><code>SimulationStatusPanel</code>(原点)・<code>App</code>のEffect(→<code>OriginState</code>(ライブラリ)へミラー)</td></tr>
-          <tr><td><code>StatusPanelConfig</code></td><td><code>status_panel_config</code></td><td><code>StatusPanel</code></td></tr>
           <tr><td><code>CommandError</code></td><td><code>last_command_error</code>(警告ログも出す)</td><td><code>SimulationStatusPanel</code>の赤茶色の帯</td></tr>
           <tr><td><code>AppStatus</code></td><td><code>app_status</code></td><td><code>SimulationStatusPanel</code>の状態文字列</td></tr>
           <tr><td><code>TrackList</code></td><td><code>track_list</code></td><td><code>SimulationStatusPanel</code>(航跡数)・<code>track_bridge.rs</code>のEffect(→ライブラリの<code>TracksState</code>へ)</td></tr>
         </tbody>
       </table>
       </div>
+      <p>
+        <code>status_panel_config</code>Signalは、この振り分けに<strong>登場しません</strong>。接続の最初に<code>WsSignals::new()</code>が
+        <code>default_status_panel_config()</code>で埋めたきり、以後は誰も書き換えないためです(27.2節)。
+      </p>
 
       <h4>再接続(<code>schedule_reconnect</code>)</h4>
       <ol>
         <li>ソケット・4つのクロージャ・保留中のタイマーを<strong>全部捨てる</strong>(古いソケットのクロージャが残らないように)。</li>
         <li><strong>タブが非表示なら</strong>、<code>status = PausedHidden</code>にして、ここで終わり(再試行しない)。</li>
         <li>表示中なら、<code>attempt = reconnect_attempt</code>を取り、+1して保存。<code>status = Reconnecting{attempt+1}</code>。</li>
-        <li>待ち時間を計算する: <code>base = min(1000ms × 2^min(attempt,5), 30000ms)</code>に、<strong>±300msの乱数</strong>を足し、<code>200ms〜30000ms</code>に収める(全員が同時に再接続しないためのジッター)。</li>
+        <li>待ち時間を計算する: <code>1000ms × 2^min(attempt, 5)</code>を<code>30000ms</code>で頭打ちにする(<strong>ジッターは無い</strong>、上のコラム参照)。</li>
         <li><code>gloo_timers::Timeout</code>でその時間後に<code>open_socket()</code>を呼ぶ。</li>
       </ol>
       <div class="table-wrap">
       <table>
         <thead><tr><th>試行(<code>attempt</code>)</th><th>0回目</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5以降</th></tr></thead>
         <tbody>
-          <tr><td>基本の待ち時間</td><td>1秒</td><td>2秒</td><td>4秒</td><td>8秒</td><td>16秒</td><td>30秒(32秒が上限で頭打ち)</td></tr>
+          <tr><td>待ち時間</td><td>1秒</td><td>2秒</td><td>4秒</td><td>8秒</td><td>16秒</td><td>30秒(32秒が上限で頭打ち)</td></tr>
         </tbody>
       </table>
       </div>
-      <p>それぞれに±0.3秒。つながると(<code>onopen</code>)カウンタが0に戻ります。</p>
+      <p>つながると(<code>onopen</code>)カウンタが0に戻ります。</p>
       <div class="callout">
         <div class="label">💡 「タブ非表示」の細かい挙動</div>
         <p>
@@ -2083,14 +2145,14 @@ server.run();                                                           <span cl
         <thead><tr><th>ファイル</th><th>部品</th><th>処理の中身</th><th>節</th></tr></thead>
         <tbody>
           <tr><td><code>menu_bar.rs</code></td><td><code>MenuBar</code></td><td>開いているメニューの管理・項目の入口(「作図...」で作図ウインドウを開く)・外側クリックで閉じる</td><td>24</td></tr>
-          <tr><td><code>operation_panel.rs</code></td><td><code>SimulationStatusPanel</code></td><td>状態文字列・<strong>開始/一時停止ボタン</strong>・原点・フレーム・<strong>航跡数</strong>・<code>CommandError</code>の表示</td><td>25.1</td></tr>
+          <tr><td><code>operation_panel.rs</code></td><td><code>SimulationStatusPanel</code></td><td>状態文字列・原点・フレーム・<strong>航跡数</strong>・<code>CommandError</code>の表示(<strong>表示専用</strong>。開始/一時停止ボタンはVAB側に統合済み、25.1節)</td><td>25.1</td></tr>
           <tr><td><code>drawing_demo.rs</code></td><td><code>add_demo</code>(関数)</td><td>「作図デモ」。全種類の図形・線を、絶対座標・視点空間・画面座標で<code>DrawingState</code>へ足す</td><td>37</td></tr>
           <tr><td><code>drawing_window.rs</code></td><td><code>DrawingWindow</code>・<code>DrawingWindowState</code></td><td>作図エディタを、動かせる非モーダルの<code>FloatingPanel</code>に入れる。開閉の状態はメニューから立てる</td><td>28.5・37.7</td></tr>
           <tr><td><code>map_menu.rs</code></td><td><code>provide_map_menu</code>(関数)</td><td>地図の右クリックメニューの項目を作る(観測点の追加・原点・中心点・図形の作成・コピー。航跡のシンボルには別の項目)</td><td>26.7</td></tr>
-          <tr><td><code>vab.rs</code></td><td><code>VabPanel</code></td><td>先頭行(サーバー駆動)・中段(ダミー・ページ送り。ページ数は<code>mid_pages</code>プロパティ)・下段(ダミー)・選択の色反転・<code>vab_press</code>の送信</td><td>25.2</td></tr>
+          <tr><td><code>vab.rs</code></td><td><code>VabPanel</code></td><td>先頭行(<strong>フロント内蔵の定数<code>CATEGORIES</code>、サーバーとは無関係</strong>)・中段(先頭2枠=スクショ/録画、続く2枠=開始/一時停止、残りはダミー。ページ数はカテゴリ別の<code>mid_pages: [usize; 4]</code>)・下段(ダミー)・選択の色反転はすべてローカルSignal</td><td>25.2</td></tr>
           <tr><td><code>main_panel.rs</code></td><td><code>MainPanel</code></td><td><code>TerrainView</code>を包む(見出しラベルつき)</td><td>26</td></tr>
           <tr><td><code>right_panel.rs</code></td><td><code>TopStatusPanel</code>・<code>BottomStatusPanel</code></td><td><code>TabbedPanel</code>にタブを並べる</td><td>27</td></tr>
-          <tr><td><code>status_panel.rs</code></td><td><code>StatusPanel</code></td><td><code>StatusPanelConfig</code>の項目と<code>status_values</code>を、添字でそろえて「ラベル: 値 単位」に(値が無ければ<code>--</code>)。未受信は「(未受信)」</td><td>27.2</td></tr>
+          <tr><td><code>status_panel.rs</code></td><td><code>StatusPanel</code></td><td><code>status_panel_config</code>(フロントの<code>default_status_panel_config()</code>で固定、27.2節)の項目と<code>status_values</code>を、添字でそろえて「ラベル: 値 単位」に(値が無ければ<code>--</code>)。未受信は「(未受信)」</td><td>27.2</td></tr>
         </tbody>
       </table>
       </div>
@@ -2126,21 +2188,19 @@ sequenceDiagram
     participant U as uWSスレッド
     participant S as simスレッド
     B->>U: WebSocket接続 (/sim)
-    U-->>B: OriginState 0x03
-    U-->>B: VabConfig 0x02
-    U-->>B: StatusPanelConfig 0x04
-    U-->>B: AppStatus 0x06
-    U-->>B: TrackList 0x07
+    U-->>B: OriginState 0x0003
+    U-->>B: AppStatus 0x0005
+    U-->>B: TrackList 0x0006
     loop 約60Hz
-        S->>U: defer(broadcast SimState)
-        U-->>B: SimState 0x01
+        S->>U: queue_latest_state(1個だけ保留)
+        U-->>B: SimState 0x0002
     end
     loop 進行中は3フレームに1回(約20Hz)
-        S->>U: defer(broadcast TrackList)
-        U-->>B: TrackList 0x07
+        S->>U: defer(broadcast_struct TrackList)
+        U-->>B: TrackList 0x0006
     end
         </pre>
-        <figcaption>接続した1接続には、まず設定と航跡の5通が届く。その後は、simスレッドが<code>defer</code>で予約した<code>SimState</code>(毎フレーム)と<code>TrackList</code>(進行中は3フレームに1回)を、uWSスレッドが全員へ送り続ける。</figcaption>
+        <figcaption>接続した1接続には、まず設定と航跡の3通が届く(VabConfig・StatusPanelConfigは存在しない)。その後は、simスレッドが予約した<code>SimState</code>(毎フレーム。処理落ち時は最新の1個だけが残る)と<code>TrackList</code>(進行中は3フレームに1回)を、uWSスレッドが全員へ送り続ける。</figcaption>
       </figure>
 
       <h3>34.2 原点変更の往復(成功と拒否)</h3>
@@ -2153,16 +2213,16 @@ sequenceDiagram
     participant Q as コマンドキュー
     participant S as simスレッド
     UI->>B: send_command(set_origin)
-    B->>U: ClientCommand(先頭バイトなし)
+    B->>U: ClientCommand 0x0001(32バイト固定長)
     U->>Q: enqueue_command(client_id)
     S->>Q: step()の冒頭でswapして取り出す
     alt 実行中 または 範囲外
-        S->>U: defer(send_to_client)
-        U-->>B: CommandError 0x05(要求元だけ)
+        S->>U: defer(send_struct)
+        U-->>B: CommandError 0x0004(要求元だけ)
     else 停止中かつ範囲内
         S->>S: origin_を更新
-        S->>U: defer(broadcast)
-        U-->>B: OriginState 0x03(全員)
+        S->>U: defer(broadcast_struct)
+        U-->>B: OriginState 0x0003(全員)
     end
         </pre>
         <figcaption>受信したコマンドは、その場で適用せず、キューを経由して<code>step()</code>の中で適用される。拒否は要求元にだけ、受理は全員に届く。</figcaption>
@@ -2182,7 +2242,7 @@ stateDiagram-v2
     Reconnecting --> PausedHidden: 切断時にタブ非表示
     PausedHidden --> Connecting: タブ再表示
         </pre>
-        <figcaption><code>ConnectionStatus</code>の遷移。待ち時間は1→2→4→8→16→30秒(±0.3秒)。つながるとカウンタが戻る。</figcaption>
+        <figcaption><code>ConnectionStatus</code>の遷移。待ち時間は1→2→4→8→16→30秒(ジッターは無い)。つながるとカウンタが戻る。</figcaption>
       </figure>
     </section>
 
@@ -2194,39 +2254,39 @@ stateDiagram-v2
       <table>
         <thead><tr><th>値</th><th>場所</th><th>意味</th></tr></thead>
         <tbody>
-          <tr><td>9001</td><td><code>main.cpp</code> / <code>ws.rs</code></td><td>sim_serverの既定ポート(WebSocket・地形HTTP共通)。フロントもこの番号を決め打ちで組み立てる</td></tr>
+          <tr><td>9001</td><td><code>main.cpp</code> / <code>ws.rs</code></td><td>sim_serverの既定ポート(WebSocket・地形HTTP共通)。フロントは<code>?sim_port=</code>クエリが無ければこれを使う</td></tr>
           <tr><td>8081</td><td><code>Trunk.toml</code></td><td>フロントの開発サーバー</td></tr>
-          <tr><td>0.0.0.0</td><td><code>ws_server.cpp</code> / <code>Trunk.toml</code></td><td>全インターフェースで待ち受け(LANの別端末から見られる)</td></tr>
+          <tr><td>0.0.0.0</td><td><code>ws_server.cpp</code>(既定値) / <code>Trunk.toml</code></td><td>全インターフェースで待ち受け(LANの別端末から見られる)。C++側は<code>--host</code>で変更できる</td></tr>
           <tr><td>16ms(約60Hz)・<code>dt = 0.016</code></td><td><code>ws_server.cpp</code></td><td>simスレッドの周期と、1ステップの時間(固定)</td></tr>
           <tr><td>16KB / 120秒</td><td><code>ws_server.cpp</code></td><td>WebSocketの受信最大サイズ / 無通信で切るまでの時間</td></tr>
           <tr><td>35.355556, 138.859722</td><td><code>simulation.hpp</code></td><td>原点の既定値(富士山付近。試験用)</td></tr>
-          <tr><td>6行×4列・穴は5行4列目</td><td><code>simulation.cpp</code></td><td>ダミーのVAB</td></tr>
+          <tr><td>4個(<code>CATEGORIES</code>)・既定ページ数<code>[1,2,2,2]</code></td><td><code>vab.rs</code></td><td>VABの先頭行(フロント内蔵、サーバーとは無関係)</td></tr>
+          <tr><td>最大16トラック・ラベル24バイト</td><td><code>webtransport_protocol.hpp</code></td><td><code>kMaxTracks</code>・<code>kTrackLabelBytes</code>(ワイヤの固定長上限)</td></tr>
           <tr><td>半径100m・高さ50±10m</td><td><code>simulation.cpp</code></td><td>ダミー円軌道(UI未使用)</td></tr>
           <tr><td>3フレームに1回(約20Hz)</td><td><code>ws_server.cpp</code></td><td>進行中の<code>TrackList</code>の配信間隔(<code>kTrackListEveryNFrames</code>)</td></tr>
           <tr><td>7トラック</td><td><code>simulation.cpp</code></td><td>デモシナリオ(友軍機・敵機・ヘリ・艦船・車両・不明機・ミサイル)</td></tr>
-          <tr><td>1s / 30s / ±300ms / 下限200ms</td><td><code>ws.rs</code></td><td>再接続の最小・最大待ち時間、ジッター、下限</td></tr>
+          <tr><td>1s / 30s(2^attempt)</td><td><code>ws.rs</code></td><td>再接続の最小・最大待ち時間(<code>INITIAL_BACKOFF_MS</code>・<code>MAX_BACKOFF_MS</code>。ジッターは無い)</td></tr>
           <tr><td>320px / 260px / 初期640:320</td><td><code>app.rs</code></td><td>中央・右パネルの最小幅と、幅の比の初期値</td></tr>
           <tr><td>228px</td><td><code>app.css</code></td><td>左パネルの幅(<code>--panel-width</code>)</td></tr>
-          <tr><td>4行×8列(1ページ4列)・下段4個</td><td><code>vab.rs</code></td><td>VAB中段・下段(ダミー)の大きさ</td></tr>
+          <tr><td>4行×(ページ数×4列)・下段4個</td><td><code>vab.rs</code></td><td>VAB中段・下段(ダミー)の大きさ(<code>MID_ROWS</code>・<code>BOTTOM_COLS</code>)</td></tr>
         </tbody>
       </table>
       </div>
 
-      <h3>35.2 サーバー→ブラウザの7メッセージ: いつ送られるか</h3>
+      <h3>35.2 サーバー→ブラウザの5メッセージ: いつ送られるか</h3>
       <div class="table-wrap">
       <table>
         <thead><tr><th>メッセージ</th><th>送る条件</th><th>宛先</th></tr></thead>
         <tbody>
-          <tr><td><code>SimState</code></td><td>毎フレーム(約60Hz)</td><td>全員</td></tr>
-          <tr><td><code>VabConfig</code></td><td>接続直後だけ(起動後は不変)</td><td>接続した1人</td></tr>
+          <tr><td><code>SimState</code></td><td>毎フレーム(約60Hz。処理落ち時は最新の1個だけ)</td><td>全員</td></tr>
           <tr><td><code>OriginState</code></td><td>接続直後+原点が変わったとき</td><td>接続直後は1人、変更は全員</td></tr>
-          <tr><td><code>StatusPanelConfig</code></td><td>接続直後だけ</td><td>接続した1人</td></tr>
           <tr><td><code>CommandError</code></td><td>コマンドを拒否したとき</td><td>要求元の1人だけ</td></tr>
           <tr><td><code>AppStatus</code></td><td>接続直後+pause/resumeで変わったとき</td><td>接続直後は1人、変更は全員</td></tr>
           <tr><td><code>TrackList</code></td><td>接続直後+シミュレーションが進んでいる間、3フレームに1回(約20Hz)</td><td>接続直後は1人、以後は全員</td></tr>
         </tbody>
       </table>
       </div>
+      <p><code>VabConfig</code>・<code>StatusPanelConfig</code>という、かつて存在した2つのメッセージは、いまのワイヤ形式には無い(5節)。</p>
 
       <h3>35.3 「あるけれど、いまは使われていない」もの</h3>
       <p>読んでいて迷わないよう、コードにはあるのに、現状の動きには関わらないものを一覧にします。</p>
@@ -2234,21 +2294,105 @@ stateDiagram-v2
       <table>
         <thead><tr><th>もの</th><th>状態</th></tr></thead>
         <tbody>
-          <tr><td><code>pause</code>/<code>resume</code>コマンド</td><td>左パネルの「開始」「一時停止」ボタンが送る(以前は送る部品が無く、sampleは「一時停止中」のまま動かなかった)</td></tr>
-          <tr><td><code>set_param</code>コマンド・<code>ClientCommand.value</code></td><td>サーバーはログを出すだけ。フロントは送らない</td></tr>
-          <tr><td><code>vab_press</code></td><td>サーバーはログを出すだけ(実アクチュエーション対象が無い)</td></tr>
-          <tr><td><code>SimState.positions</code></td><td>サーバーはダミーの円軌道を送るが、フロントは受け取って捨てる。物体の位置は、代わりに<code>TrackList</code>(38節)で送って描く</td></tr>
-          <tr><td><code>VabConfig.rows</code>・<code>StatusItem.id</code></td><td>フロントは読まない(配列の位置合わせのため型には残す)</td></tr>
-          <tr><td><code>protocol::read_msg_type</code>・<code>decode_body</code>(C++)</td><td>どこからも呼ばれていない</td></tr>
+          <tr><td><code>Command::SetParam</code>・<code>ClientCommand.value</code></td><td>ワイヤには存在するが、C++側は該当する分岐が無く<code>unsupported</code>相当。フロントは送信APIを持たない</td></tr>
+          <tr><td><code>protocol::SimState.positions</code>(内部専用)</td><td>サーバーはダミーの円軌道を作るが、<code>to_wire_state</code>が先頭3要素だけ<code>position_x/y/z</code>に詰め、フロントはそれも受け取って捨てる。物体の位置は、代わりに<code>TrackList</code>(38節)で送って描く</td></tr>
+          <tr><td>内部の<code>protocol::StatusPanelConfig</code>(C++)・<code>StatusItem.id</code>(Rust)</td><td>C++・Rustそれぞれが独自に持つだけで、通信でつながっていない(27.2節)</td></tr>
           <tr><td><code>ConnectionStatus</code>の<code>Display</code>(Rust)</td><td>どこからも使われていない</td></tr>
-          <tr><td>VABの中段・下段</td><td>フロントだけのダミー。サーバーは存在を知らない(25節)</td></tr>
+          <tr><td>VABの先頭行・中段・下段(先頭4枠を除く)</td><td>フロントだけのダミー。サーバーはVABという概念自体を知らない(25節)</td></tr>
+          <tr><td><code>webtransport_bridge/</code>(リポジトリ直下)</td><td><code>src/</code>が空の、実体の無いディレクトリ。ビルド設定からも参照されていない、初期検討の名残</td></tr>
         </tbody>
       </table>
       </div>
     </section>
 
+    <div class="part-divider">
+      <span class="tag">第9部・0から作る</span><span class="rule"></span>
+    </div>
+
+    <section id="build-order">
+      <h2><span class="num">41</span> sampleを0から実装する手順</h2>
+      <p class="section-lede">
+        ここまでの節は「動いているものを部品ごとに読む」構成でした。この節は逆に、<strong>依存順に何を先に作るか</strong>
+        を示す索引です。仕様の正は<a href="DETAILED_DESIGN.md">サンプル設計書</a>8節で、この節はそこへ辿るための
+        読み方の道案内と、つまずきやすい点の補足です(ライブラリ<code>sim3dview</code>自体の再実装は
+        <a href="../../docs/DETAILED_DESIGN.md">ライブラリ設計書</a>10節を先に見てください)。
+      </p>
+
+      <div class="callout">
+        <div class="label">📚 前提: 地形データ</div>
+        <p>
+          C++側の1(<code>protocol.hpp</code>)から6(<code>main.cpp</code>)までは、地形データ(<code>assets/terrain/</code>)が
+          無くても書き進められます(<code>Simulation</code>のコンストラクタは<code>metadata.json</code>が読めなくても、
+          警告を出して範囲チェックを無効にするだけで動きます)。ただし実機で地形が映るところまで確認するには、
+          <a href="../../docs/DETAILED_DESIGN.md">ライブラリ設計書</a>10節Aフェーズの<code>geotiff_preprocess</code>で
+          作った出力が要ります。
+        </p>
+      </div>
+
+      <ol>
+        <li>
+          <strong>C++の内部型を書く</strong>(<code>include/protocol.hpp</code>)。<code>SimState</code>・<code>OriginState</code>・
+          <code>Track</code>・<code>TrackList</code>・<code>ClientCommand</code>等、<code>std::string</code>/<code>std::vector</code>を
+          使ってよい内部専用の値オブジェクトです。ワイヤ形式はまだ考えなくてよい(32.2節)。
+        </li>
+        <li>
+          <strong>ワイヤ形式を決める</strong>(<code>include/webtransport_protocol.hpp</code>、5節)。8バイトヘッダー
+          (<code>message_id</code>・<code>reserved</code>・<code>payload_size</code>)と、6種の固定長構造体。<strong>ここが一番間違えやすい</strong>
+          ので、フィールドを1つ足したら必ず<code>static_assert(sizeof(...) == N)</code>も直す習慣にする。
+        </li>
+        <li>
+          <strong>送受信レイヤーを書く</strong>(<code>include/websocket_messaging.hpp</code>/<code>.cpp</code>、32.2節)。
+          フレームの組み立て(<code>make_frame</code>)・検証つき受信振り分け(<code>receive</code>)・<code>send_struct</code>/<code>broadcast_struct</code>。
+          HTTPやシミュレーションを一切知らない、独立してテストできる層にする。
+        </li>
+        <li>
+          <strong>シミュレーション状態機械を書く</strong>(<code>include/simulation.hpp</code>/<code>src/simulation.cpp</code>、32.3節)。
+          コマンドキュー・原点変更ガード・デモシナリオ。<code>Simulation::step()</code>単体でCTestが書ける設計にしておくと、
+          uWSの結線より先にロジックを固められる(<code>simulation_test.cpp</code>が実例)。
+        </li>
+        <li>
+          <strong>サーバー本体を結線する</strong>(<code>include/ws_server.hpp</code>/<code>src/ws_server.cpp</code>、32.4節)。
+          <code>/sim</code>のWebSocket・地形4ルートのHTTP配信(<code>http_utils.hpp</code>のRange/ETag/gzipを先に単体で書いておく)・
+          simスレッドの60Hzループ・<strong>SimState専用の1個だけの保留スロット</strong>(<code>queue_latest_state</code>)。
+        </li>
+        <li>
+          <strong>起動引数を書く</strong>(<code>src/main.cpp</code>、32.1節)。ここまで来て初めて<code>sim_server</code>単体が
+          <code>cargo</code>を待たずに手動WebSocketクライアントやcurlで疎通確認できる。
+        </li>
+        <li>
+          <strong>Rust側のワイヤ復号を書く</strong>(<code>src/protocol.rs</code>、33.2節)。C++の2と<strong>1バイトも違わず</strong>
+          同じオフセット・サイズにする。C++側のCTestと同じテストケース(既知バイト列→期待する値)を
+          Rust側にも作ると、ずれに早く気づける。
+        </li>
+        <li>
+          <strong>接続管理を書く</strong>(<code>src/ws.rs</code>、33.3節)。<code>WsConnection</code>・再接続の指数バックオフ・
+          タブ非表示時の停止。この時点で6のサーバーと繋いで、5メッセージ(35.2節)が届くことを確認できる。
+        </li>
+        <li>
+          <strong>組み立てを書く</strong>(<code>src/app.rs</code>、33.4節)。<code>WsSignals</code>を<code>provide_context</code>した
+          <strong>あとに</strong>、それに依存するライブラリ側のcontext・状態(<code>track_bridge.rs</code>のEffect等)を用意する順序を守る。
+        </li>
+        <li>
+          <strong>画面部品を1つずつ足す</strong>(<code>src/components/*.rs</code>、23〜30節)。メニュー→状況パネル→VAB→
+          メイン(地形)→右パネル→ダイアログ→レイアウトの順が、依存(<code>use_context</code>で何を読むか)に沿っている。
+          VAB・状況パネルの項目は<strong>ワイヤでは配らず、フロント側にハードコードする</strong>(25節・27.2節)ことを
+          最初から前提にすると、あとで手戻りしない。
+        </li>
+        <li>
+          <strong>Electron配布</strong>(<code>sim_desktop/</code>、DETAILED_DESIGN.md 7.9節)。6の<code>sim_server</code>が出す
+          <code>SIM3DVIEW_READY &lt;port&gt;</code>行を読んで起動確認する契約に合わせる。ここは1〜10がひととおり動く
+          ようになってから着手すれば十分。
+        </li>
+      </ol>
+
+      <p>
+        各ステップの受け入れ基準・検証コマンドは<a href="DETAILED_DESIGN.md">サンプル設計書</a>8節の表にまとめてあります。
+        つまずいたときは<a href="DEVELOPMENT_HISTORY.md">開発履歴</a>に類似の失敗例が無いか探すと早いことがあります。
+      </p>
+    </section>
+
     <footer>
-      Sim3dView 技術解説ノート(sample編) — 2026-09-22時点のコード(コミット f90c6b9。ノートはVersion 22)に基づくスナップショットです。
+      Sim3dView 技術解説ノート(sample編) — 2026-09-26時点のコード(コミット db29ed8。ノートはVersion 23)に基づくスナップショットです。
       現行仕様の正は sample/docs/DETAILED_DESIGN.md です。
     </footer>
   </main>
