@@ -326,7 +326,7 @@ C++シミュレータ本体・Web UI(サンプルアプリ)とも実装・動作
 - [docs/DEVELOPMENT_HISTORY.md](docs/DEVELOPMENT_HISTORY.md) — 実装の経緯・ハマりどころの記録(機能ごとの「要望→原因→修正→確認」)
 - [../docs/DETAILED_DESIGN.md](../docs/DETAILED_DESIGN.md) — ライブラリ設計書(地形形式・描画・実装仕様・再実装ガイド)
 - [THIRD_PARTY_NOTICE.md](THIRD_PARTY_NOTICE.md) — 利用しているサードパーティ(Rustクレート・C++ライブラリ・ALOS地形データ)の一覧・著作権表示・ライセンス。依存を変えたら`python sample/scripts/gen_third_party_notice.py`で再生成する
-- [CLAUDE.md](CLAUDE.md) — AIエージェント向けの作業方針・要点(短い索引)
+- [AGENTS.md](AGENTS.md) — AIエージェント向けの作業方針・要点(短い索引)
 
 ## デモモデルの再生成
 
