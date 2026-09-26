@@ -77,5 +77,6 @@ if (BUILD_TESTING)
 
     add_executable(http_utils_test tests/http_utils_test.cpp)
     target_include_directories(http_utils_test PRIVATE include)
+    target_link_libraries(http_utils_test PRIVATE ZLIB::ZLIB)
     add_test(NAME http_utils COMMAND http_utils_test)
 endif()

@@ -3,8 +3,11 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
+
+#include <zlib.h>
 
 namespace sim3dview::http_utils {
 
@@ -48,6 +51,55 @@ inline bool is_safe_path_component(std::string_view name) {
     return std::all_of(name.begin(), name.end(), [](unsigned char c) {
         return std::isalnum(c) || c == '_' || c == '.';
     });
+}
+
+// `Accept-Encoding`ヘッダに、重み0(`;q=0`)ではない`gzip`(または`*`)が含まれるか。
+// 地形データはHTTP Rangeでの部分取得(206)を除き、この判定に応じてgzip圧縮して返す。
+inline bool accepts_gzip(std::string_view accept_encoding) {
+    size_t pos = 0;
+    while (pos <= accept_encoding.size()) {
+        size_t comma = accept_encoding.find(',', pos);
+        if (comma == std::string_view::npos) comma = accept_encoding.size();
+        std::string_view token = accept_encoding.substr(pos, comma - pos);
+        pos = comma + 1;
+        const size_t semi = token.find(';');
+        std::string_view name = token.substr(0, semi);
+        while (!name.empty() && name.front() == ' ') name.remove_prefix(1);
+        while (!name.empty() && name.back() == ' ') name.remove_suffix(1);
+        std::string lower(name);
+        std::transform(lower.begin(), lower.end(), lower.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (lower != "gzip" && lower != "*") continue;
+        if (semi != std::string_view::npos) {
+            const std::string_view params = token.substr(semi);
+            // "q=0"かつ"q=0.xxx"ではない(=完全な重み0)場合だけ拒否扱いにする。
+            if (params.find("q=0") != std::string_view::npos && params.find("q=0.") == std::string_view::npos) {
+                continue;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+// gzip形式(zlibのwindowBits=15+16)で圧縮する。失敗したら`std::nullopt`
+// (呼び出し側は無圧縮のまま返す)。
+inline std::optional<std::string> gzip_compress(std::string_view data) {
+    z_stream stream{};
+    if (deflateInit2(&stream, Z_DEFAULT_COMPRESSION, Z_DEFLATED, 15 + 16, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        return std::nullopt;
+    }
+    std::string out(deflateBound(&stream, static_cast<uLong>(data.size())), '\0');
+    stream.next_in = reinterpret_cast<Bytef*>(const_cast<char*>(data.data()));
+    stream.avail_in = static_cast<uInt>(data.size());
+    stream.next_out = reinterpret_cast<Bytef*>(out.data());
+    stream.avail_out = static_cast<uInt>(out.size());
+    const int result = deflate(&stream, Z_FINISH);
+    const auto produced = out.size() - stream.avail_out;
+    deflateEnd(&stream);
+    if (result != Z_STREAM_END) return std::nullopt;
+    out.resize(produced);
+    return out;
 }
 
 } // namespace sim3dview::http_utils

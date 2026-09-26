@@ -579,7 +579,7 @@ flowchart LR
   (150msを待つと取得の補充が周期的に間延びし、全タイルのレベル1の取得だけで約4.7秒かかっていた)。必要なグリッドが取得済みならメッシュ(頂点+インデックス+縁のスカート)を作って`set_mesh`で差し替える。
   取得済みの範囲でより細かければ先にそこまで上げ、目標のグリッドが届いたらさらに上げる(レベル1→2→3→4と段階的)。1回の更新でメッシュを作る量は時間の目安(12ms)で区切り、残りは次の更新へ回す(速い端末では1回で多く進み、遅い端末では自動的に細かく刻まれる)
 - **取得**: レベル2以下はタイル1枚分のファイルをまとめて取得してチャンクごとに分割し、レベル3以上はHTTP Rangeでチャンク1個分だけ取得する(最細で約0.7MB)。同時16件まで
-  (ブラウザの同一ホストへのHTTP/1.1接続は通常6本だが、全タイルのレベル1を起動後に取得するので6件だと1分ほどかかった)。失敗は再試行しない。取得済みグリッドは合計300MBまで残し、超えたら画面に出していないものから古い順に捨てる
+  (ブラウザの同一ホストへのHTTP/1.1接続は通常6本だが、全タイルのレベル1を起動後に取得するので6件だと1分ほどかかった)。失敗は数回までバックオフを挟んで自動的に再試行し(9.2・9.13)、それでも失敗が続けば諦める。取得済みグリッドは合計300MBまで残し、超えたら画面に出していないものから古い順に捨てる
 - **標高サンプリングとの一致**: 各チャンクの「いま画面に出しているレベル」(`TerrainData::set_chunk_level`)のグリッドで`sample_heightmap`が標高を引く。描画されている地形と、
   観測点・見通し計算・クリック判定・注視点の高さが一致する。細かいレベルに切り替わった直後は、注視点の高さと観測点・覆域を合わせ直す
 - **継ぎ目**: 解像度の違う隣のメッシュ同士は縁のノードの高さが食い違い、隙間から背景の黒が見える。各メッシュの縁から下向きの壁(スカート。深さはレベル0が800m、以降400/250/150/100m)を付けて隠す。
@@ -909,7 +909,11 @@ record_bytes = (n+1)² × 2
 チャンク(cx, cy)のグリッド内ノード(i, j)は、タイル全体のノード(cx*n + i, cy*n + j)に等しい(隣のチャンクとは縁のノードを共有する)。
 
 **サーバーへの要件**: 静的配信(JSONは`application/json`、binは`application/octet-stream`)。**HTTP Range**(単一範囲`bytes=a-b`)に`206`で対応するのが望ましい(未対応でも動くが毎回全体を転送する。
-単純な`bytes=a-b`ならCORSのプリフライトは不要。別オリジンなら`Access-Control-Allow-Origin`を付ける)。フロントは失敗(HTTPエラー・サイズ不一致)を**再試行しない**(`failed`集合。9.13)。
+単純な`bytes=a-b`ならCORSのプリフライトは不要。別オリジンなら`Access-Control-Allow-Origin`を付ける)。フロントは失敗(HTTPエラー・サイズ不一致)を数回まで再試行する(9.2)。
+
+低速回線向けに、以下を推奨する(`sample/sim_server`は実装済み。参照実装は`serve_terrain_file`/`http_utils::accepts_gzip`/`http_utils::gzip_compress`):
+- **圧縮**: Range指定の無い(206ではない)応答は、リクエストの`Accept-Encoding`に`gzip`があれば`Content-Encoding: gzip`で圧縮して返す(JSON・`base.bin`・`WHOLE_FILE_MAX_LEVEL`以下のタイルファイル全体取得が対象になる)。**Rangeでの部分取得(206)は圧縮しない**(圧縮後のバイト位置はチャンクのレコード境界と対応しなくなるため)。あわせて`Vary: Accept-Encoding`を付け、キャッシュがエンコーディング違いの応答を混同しないようにする。
+- **キャッシュ**: 地形データは同一サーバープロセスの生存期間中は不変なので、`Cache-Control: public, max-age=<長め>, must-revalidate`のように長期キャッシュ可能として返してよい(`no-cache`だと同じデータでも毎回条件付きGETの往復が発生し、高遅延回線でのRTTがそのまま無駄になる)。`ETag`による再検証(`If-None-Match`→`304`)は引き続き行い、プロセス再起動でデータセットが変わった場合に正しく更新されるようにする。
 
 ### 9.2 データ取得(`terrain::fetch`)と保持(`terrain::loader`)
 
@@ -918,12 +922,14 @@ record_bytes = (n+1)² × 2
 | 関数 | 動作 |
 |---|---|
 | `fetch_metadata(base_url)` | `{base}/metadata.json`を`TerrainMetadata`へ |
-| `load_terrain(base_url)` | metadata取得→9.1の検証→`tile_index.json`→`base.bin`(サイズ検証)→`TerrainData::new(...)` |
+| `load_terrain(base_url)` | `metadata.json`・`tile_index.json`・`base.bin`を**同時に取得**(`futures_util::join!`。高遅延回線でのラウンドトリップを減らすため、3つとも他の結果に依存せず発行できる)、全部揃ってから9.1の検証→サイズ検証→`TerrainData::new(...)` |
 | `fetch_tile_level(base_url, key, level, chunk_cells, chunk_count)` | `tiles/L{level}/{名前}.bin`全体。期待長=`chunk_count*(chunk_cells+1)²*2`、不一致は`Err` |
 | `fetch_chunk_grid(base_url, key, level, chunk, chunk_cells)` | 同ファイルからRangeでチャンク1個分(`start=chunk*record_bytes`)。長さ不一致は`Err` |
 | `tile_name(key)` | 9.1の名前 |
 
 `decode_i16_le`は`chunks_exact(2)`を`i16::from_le_bytes`へ(端数は捨てる)。Range取得でサーバーが**200(全体)を返した場合**は返ってきた全体から`[start..=end]`を切り出す(範囲外は`Err`)。`!response.ok()`は`Err("… HTTP {status}")`。
+
+**細かいレベルの取得失敗時の再試行**(`ui::terrain_view::lod_driver`): 1回の失敗で恒久的に諦めず、`retry_backoff_ms(attempt) = min(RETRY_BACKOFF_INITIAL_MS * 2^(attempt-1), RETRY_BACKOFF_MAX_MS)`(初期500ms・上限4秒)だけ待って自動的に取り直す。`MAX_FETCH_RETRIES`(=3)回失敗したら、そこで初めて`LodState::failed`へ恒久登録し(存在しない・壊れたファイルへの無駄な再送を止める)、以後は要求されなくなる。バックオフ待ち中は`LodState::retry_after`(`js_sys::Date::now()`基準の再試行可能時刻)で他の`update_lod`呼び出しからの重複取得を防ぎ、待ち時間経過後は専用のタイマーで`schedule_lod_soon`を呼んで再試行を保証する(カメラ操作などの他の予約を待たない)。
 
 **型**: `TileKey=(i32,i32)`(南西角の緯度・経度)、`MeshKey=(i32,i32,u8)`(タイル緯度・経度・チャンク番号。GPUメッシュの識別子)、`WHOLE_TILE: u8 = u8::MAX`(チャンク番号がこれ=タイル全体(レベル0)の1枚メッシュ)、
 `NO_DATA: i16 = i16::MIN`、`WHOLE_FILE_MAX_LEVEL = 2`(このレベル以下はタイル1ファイルをまとめて取得、超えるレベルはRangeでチャンク単位)。
@@ -1379,7 +1385,8 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 
 - **`ViewState`**(`Rc<RefCell<..>>`。GPUを含むので`Send`でない): `renderer`・`terrain`・`mesh_origin`(現在GPUにあるメッシュの原点)・`camera: OrbitCamera`・`target_up`(注視点の地表標高)・
   `interaction: InteractionState`(`DragTracker`と入力状態)・`radar_markers`/`drawings`/`tracks`・`labels`・`pick_anchors`・`hillshade`・`lod: LodState`。
-  `LodState`は`resident: HashMap<TileKey, TileLayout>`(いまGPUにある状態)・`loading`/`failed: HashSet<FetchKey>`(取得中/失敗=再試行しない)・予約フラグをまとめる。
+  `LodState`は`resident: HashMap<TileKey, TileLayout>`(いまGPUにある状態)・`loading`/`failed: HashSet<FetchKey>`(取得中/再試行の上限に達し恒久的に諦めた)・
+  `retry_counts: HashMap<FetchKey, u8>`(`failed`へ移る前の失敗回数)・`retry_after: HashMap<FetchKey, f64>`(バックオフの再試行可能時刻。`js_sys::Date::now()`基準)・予約フラグをまとめる。
   `FetchKey = (TileKey, level, Option<chunk>)`(`None`=タイル1ファイル(level≤2))
 - **DOM**: `div.terrain-view > canvas.terrain-canvas`+原点指定/図形作成のヒントバー(`.origin-pick-hint`)+`.terrain-track-labels`(航跡ラベルの層)+`.terrain-view-controls`(2D/3D切替ボタン)+`.map-status`(状態文言。初期は「地形データを読み込み中...」)
 - **初期化 `try_init`**: canvasのサイズ確定(ResizeObserver)と地形データ取得(`TerrainStore`)は非同期かつ独立に完了するので、両方から呼び、揃った時点で初期化する(`canvas`が0サイズ・`data`なし・初期化済み/中は何もしない)。
@@ -1426,16 +1433,20 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 | `MAX_UPLOAD_VERTICES_PER_ROUND` | 600,000 | 頂点数の安全上限 |
 | `MAX_CONCURRENT_TILE_FETCHES` | 16 | 同時取得数(6だと全タイルのレベル1取得に1分ほど) |
 | `DETAIL_CACHE_LIMIT_BYTES` | 300 MiB | 取得済みグリッドの保持上限 |
+| `MAX_FETCH_RETRIES` | 3 | 恒久的に諦める(`failed`へ入れる)までに許す再試行の回数 |
+| `RETRY_BACKOFF_INITIAL_MS` / `RETRY_BACKOFF_MAX_MS` | 500 / 4,000 | 再試行までの待ち(失敗のたびに倍々に伸ばし、上限で頭打ち) |
 
 `schedule_lod`(`lod.pending`か地形未取得なら何もしない。150ms後に`update_lod`)、`schedule_lod_soon`(同様に8ms)。`update_lod`: `interaction.drag.is_active()`なら`schedule_lod`して終了(ドラッグ中は重い処理を避ける)。
 `plan = lod::plan_levels(...)`(優先度順)。`over_budget(uploaded, cost) = uploaded > 0 && (経過 >= 12ms || uploaded + cost > 600,000)`(**1個は必ず進める**。0個だと永遠に終わらない)。
-`request(key, level, chunk)`は`failed`か`loading`に含まれれば何もせず、`loading.len() >= 16`なら後回し(`deferred`)、それ以外は`loading`に入れて取得予定へ積む。
+`request(key, level, chunk)`は`failed`か`loading`に含まれれば何もせず、`retry_after`が記録されていてまだその時刻に達していなければ(バックオフ待ち中)何もせず、`loading.len() >= 16`なら後回し(`deferred`)、それ以外は`loading`に入れて取得予定へ積む。
 
 - メッシュの差し替えはすべてクロスフェード(`set_mesh_faded`・`remove_mesh_faded`。6.10節)。
 - **`Whole`**: 現在`Chunks`なら`build_whole_tile_mesh`→`set_mesh_faded(WHOLE)`+全チャンクの`remove_mesh_faded`、`resident=Whole`、`terrain.set_whole_tile`
 - **`Chunks(targets)`**: ①`available[c] = best_cached_level(tile, c, targets[c])`。②現在`Whole`なら**全チャンクのレベル1が要る**(足りなければ`request(key,1,0)`して次へ。揃っていれば予算内でチャンクメッシュを作って`set_mesh_faded`+`set_chunk_level`、`remove_mesh_faded(WHOLE)`)。
   ③各チャンクを目標に近づける(`new_level = now==0 ? have : (want < have ? now : max(now, have))`。目標のグリッドが未取得なら`request`。予算内ならメッシュを作って差し替え)。取得済みの範囲でより細かければ先にそこまで上げ、届いたらさらに上げる(レベル1→2→3→4と段階的)
-- 取得予定のキーは`spawn_local`で取得(`chunk=None`→`fetch_tile_level`+`insert_tile_level`、`Some(c)`→`fetch_chunk_grid`+`insert_chunk_grid`)。完了後に`loading`から外し、エラーは`log::warn`+`failed`へ。**デバウンスなしで`schedule_lod_soon`**
+- 取得予定のキーは`spawn_local`で取得(`chunk=None`→`fetch_tile_level`+`insert_tile_level`、`Some(c)`→`fetch_chunk_grid`+`insert_chunk_grid`)。完了後に`loading`から外し、
+  成功なら`retry_counts`/`retry_after`を消す。失敗なら`log::warn`+`retry_counts`を+1し、`MAX_FETCH_RETRIES`を超えていれば`failed`へ(以後要求されない)、超えていなければ`retry_after`に`今+retry_backoff_ms(attempts)`を積んで、
+  その待ち時間ぶん`TimeoutFuture`してから`schedule_lod_soon`(バックオフ待ち中は他の予約に頼らず、このタイマー自身が再試行を保証する)。成功時・恒久失敗時は**デバウンスなしで`schedule_lod_soon`**
 - **`changed`のとき**: `target_up`・`camera.target.z`を新しい地形で更新、`terrain.evict_unused(keep=画面に出しているもの, 300MiB)`、観測点・地表基準の作図・トラックの`rebuild_*`、`render_frame`。最後に、反映を次に回したなら`schedule_lod_soon`、取得の上限で始められなかったなら`schedule_lod`
 
 #### 9.13.1 状態の一括初期化(`viewer::ViewerState`)

@@ -36,6 +36,24 @@ pub(super) const MAX_CONCURRENT_TILE_FETCHES: usize = 16;
 /// 古い順に捨てる。
 pub(super) const DETAIL_CACHE_LIMIT_BYTES: usize = 300 * 1024 * 1024;
 
+/// 1つのグリッドの取得が失敗したとき、恒久的に諦める(`LodState::failed`へ入れる)までに
+/// 許す再試行の回数。不安定な低速回線での一時的なタイムアウト・切断を自動的に取り直しつつ、
+/// 存在しないファイル(404など)への無駄な再送はどこかで打ち切るためのもの。
+pub(super) const MAX_FETCH_RETRIES: u8 = 3;
+/// 再試行までの待ち時間(ミリ秒)。失敗のたびに倍々に伸ばし(`sample/sim_frontend`のWebSocket
+/// 再接続と同じ考え方)、`RETRY_BACKOFF_MAX_MS`で頭打ちにする。裏で進む地形取得の再試行なので、
+/// WebSocket再接続(最大30秒)より短めにしてある。
+pub(super) const RETRY_BACKOFF_INITIAL_MS: u32 = 500;
+pub(super) const RETRY_BACKOFF_MAX_MS: u32 = 4000;
+
+/// `attempt`回目(1始まり)の失敗の後、次の再試行まで待つ時間(ミリ秒)。倍々に伸ばし、
+/// `RETRY_BACKOFF_MAX_MS`で頭打ちにする。
+fn retry_backoff_ms(attempt: u8) -> u32 {
+    RETRY_BACKOFF_INITIAL_MS
+        .saturating_mul(1 << (attempt.saturating_sub(1)).min(4))
+        .min(RETRY_BACKOFF_MAX_MS)
+}
+
 /// 少し待ってからLODを更新する。待っている間に来た予約はまとめる(操作が続く間は
 /// メッシュ生成・取得を繰り返さず、操作が落ち着いた時点の最新のカメラで一度だけ計画し直す)。
 pub(super) fn schedule_lod(state: &Rc<RefCell<ViewState>>) {
@@ -126,6 +144,13 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
         let mut s = state.borrow_mut();
         if s.lod.failed.contains(&fetch_key) || s.lod.loading.contains(&fetch_key) {
             return false;
+        }
+        if s.lod
+            .retry_after
+            .get(&fetch_key)
+            .is_some_and(|&at| js_sys::Date::now() < at)
+        {
+            return false; // 再試行のバックオフ待ち中(取得が失敗し続けているグリッド)。
         }
         if s.lod.loading.len() >= MAX_CONCURRENT_TILE_FETCHES {
             return true; // 上限に達したので、あとの更新に回す。
@@ -287,16 +312,50 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
                 .await
                 .map(|grid| terrain.insert_chunk_grid(key, level, c, grid)),
             };
-            {
+            let retry_backoff_ms = {
                 let mut s = state.borrow_mut();
                 s.lod.loading.remove(&fetch_key);
-                if let Err(e) = result {
-                    log::warn!("[terrain] tile fetch failed: {e}");
-                    s.lod.failed.insert(fetch_key);
+                match result {
+                    Ok(()) => {
+                        s.lod.retry_counts.remove(&fetch_key);
+                        s.lod.retry_after.remove(&fetch_key);
+                        None
+                    }
+                    Err(e) => {
+                        let attempts = s.lod.retry_counts.entry(fetch_key).or_insert(0);
+                        *attempts += 1;
+                        if *attempts > MAX_FETCH_RETRIES {
+                            log::warn!(
+                                "[terrain] tile fetch failed after {attempts} attempts, giving up: {e}"
+                            );
+                            s.lod.retry_counts.remove(&fetch_key);
+                            s.lod.retry_after.remove(&fetch_key);
+                            s.lod.failed.insert(fetch_key);
+                            None
+                        } else {
+                            let backoff_ms = retry_backoff_ms(*attempts);
+                            log::warn!(
+                                "[terrain] tile fetch failed (attempt {attempts}/{MAX_FETCH_RETRIES}), retrying in {backoff_ms}ms: {e}"
+                            );
+                            s.lod
+                                .retry_after
+                                .insert(fetch_key, js_sys::Date::now() + backoff_ms as f64);
+                            Some(backoff_ms)
+                        }
+                    }
                 }
+            };
+            match retry_backoff_ms {
+                // バックオフ待ちのぶんは、待ち時間の後に専用のタイマーで取得を再度促す
+                // (カメラ操作などの他の予約を待たずに、確実に再試行されるようにする)。
+                Some(backoff_ms) => {
+                    gloo_timers::future::TimeoutFuture::new(backoff_ms).await;
+                    schedule_lod_soon(&state);
+                }
+                // 成功・恒久失敗のいずれも、取得が終わったらデバウンスを待たず続き
+                // (反映と、次の取得の補充)へ進む。
+                None => schedule_lod_soon(&state),
             }
-            // 取得が終わったら、デバウンスを待たずに続き(反映と、次の取得の補充)へ進む。
-            schedule_lod_soon(&state);
         });
     }
 
@@ -356,5 +415,25 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
     } else if deferred {
         // 取得の同時数が上限だった分。取得が終わるたびに`schedule_lod_soon`されるので、これは念のため。
         schedule_lod(state);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_doubles_each_attempt_and_caps_at_the_max() {
+        assert_eq!(retry_backoff_ms(1), RETRY_BACKOFF_INITIAL_MS);
+        assert_eq!(retry_backoff_ms(2), RETRY_BACKOFF_INITIAL_MS * 2);
+        assert_eq!(retry_backoff_ms(3), RETRY_BACKOFF_INITIAL_MS * 4);
+        assert_eq!(retry_backoff_ms(20), RETRY_BACKOFF_MAX_MS);
+    }
+
+    #[test]
+    fn backoff_never_exceeds_the_max_even_for_attempt_zero() {
+        // `attempt`は1始まりの想定だが、0でもパニックしないことを確認する
+        // (`saturating_sub`で下限を守っている)。
+        assert_eq!(retry_backoff_ms(0), RETRY_BACKOFF_INITIAL_MS);
     }
 }

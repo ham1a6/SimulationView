@@ -59,9 +59,30 @@ pub(crate) async fn fetch_binary(
     }
 }
 
+async fn fetch_tile_index(base_url: &str) -> Result<TileIndex, String> {
+    gloo_net::http::Request::get(&format!("{base_url}/tile_index.json"))
+        .send()
+        .await
+        .map_err(|e| format!("tile_index.json fetch failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("tile_index.json parse failed: {e}"))
+}
+
 /// 起動時の取得: metadata.json・tile_index.json・base.bin(全タイルの最粗レベル)。
+/// 3つとも他の結果に依存せず取得できる(検証にだけ互いの値を使う)ので、高遅延回線での
+/// ラウンドトリップを減らすため同時に発行して待つ。
 pub async fn load_terrain(base_url: &str) -> Result<TerrainData, String> {
-    let metadata = fetch_metadata(base_url).await?;
+    let base_bin_url = format!("{base_url}/base.bin");
+    let (metadata, index, bytes) = futures_util::join!(
+        fetch_metadata(base_url),
+        fetch_tile_index(base_url),
+        fetch_binary(&base_bin_url, None),
+    );
+    let metadata = metadata?;
+    let index = index?;
+    let bytes = bytes?;
+
     // レベル0(タイル全体)に加えて、チャンクで持つ細かいレベルが1つ以上必要(LODの計画が前提にする)。
     // レベル1以上はチャンク分割数で割り切れること。
     let chunks = metadata.chunks_per_tile;
@@ -75,15 +96,6 @@ pub async fn load_terrain(base_url: &str) -> Result<TerrainData, String> {
         );
     }
 
-    let index: TileIndex = gloo_net::http::Request::get(&format!("{base_url}/tile_index.json"))
-        .send()
-        .await
-        .map_err(|e| format!("tile_index.json fetch failed: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("tile_index.json parse failed: {e}"))?;
-
-    let bytes = fetch_binary(&format!("{base_url}/base.bin"), None).await?;
     let nodes0 = metadata.tile_levels[0] as usize + 1;
     let expected_len = index.tile_count() * nodes0 * nodes0 * 2;
     if bytes.len() != expected_len {

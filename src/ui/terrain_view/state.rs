@@ -28,7 +28,13 @@ pub(super) struct InteractionState {
 pub(super) struct LodState {
     pub(super) resident: HashMap<TileKey, TileLayout>,
     pub(super) loading: HashSet<FetchKey>,
+    /// 再試行の上限(`lod_driver::MAX_FETCH_RETRIES`)に達し、恒久的に諦めたグリッド。
     pub(super) failed: HashSet<FetchKey>,
+    /// 再試行の残り待ち時間中のグリッドの、いま何回失敗したか(`failed`へ移る前の状態)。
+    pub(super) retry_counts: HashMap<FetchKey, u8>,
+    /// 再試行してよい時刻(`js_sys::Date::now()`基準、ミリ秒)。低速・不安定な回線での
+    /// 一時的な失敗(タイムアウトや切断)を、バックオフを挟んで自動的に取り直すためのもの。
+    pub(super) retry_after: HashMap<FetchKey, f64>,
     pub(super) update_pending: bool,
     pub(super) update_soon_pending: bool,
 }

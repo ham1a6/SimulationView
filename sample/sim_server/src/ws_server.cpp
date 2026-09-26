@@ -93,6 +93,12 @@ std::string make_etag(const std::string& path, std::uintmax_t size) {
     return "\"" + std::to_string(size) + "-" + std::to_string(modified.time_since_epoch().count()) + "\"";
 }
 
+// 地形データ(metadata.json・tile_index.json・base.bin・tiles/*)はterrain_dirがプロセス
+// 生存期間中固定なので不変として扱い、長めにキャッシュしてよい(データセットの差し替えは
+// プロセス再起動を伴うため、ファイルサイズ・更新時刻から作るETagが変わりrevalidationで
+// 正しく更新される)。
+constexpr const char* kTerrainCacheControl = "public, max-age=86400, must-revalidate";
+
 void serve_terrain_file(uWS::HttpResponse<false>* response, uWS::HttpRequest* request,
                         const std::string& path, const char* content_type) {
     std::ifstream file(path, std::ios::binary | std::ios::ate);
@@ -100,14 +106,24 @@ void serve_terrain_file(uWS::HttpResponse<false>* response, uWS::HttpRequest* re
     const auto total = static_cast<std::uintmax_t>(file.tellg());
     const auto etag = make_etag(path, total);
     if (http_utils::etag_matches(request->getHeader("if-none-match"), etag)) {
-        response->writeStatus("304 Not Modified")->writeHeader("ETag", etag)->writeHeader("Cache-Control", "no-cache")->writeHeader("Access-Control-Allow-Origin", "*")->end(); return;
+        response->writeStatus("304 Not Modified")->writeHeader("ETag", etag)->writeHeader("Cache-Control", kTerrainCacheControl)->writeHeader("Vary", "Accept-Encoding")->writeHeader("Access-Control-Allow-Origin", "*")->end(); return;
     }
     std::uintmax_t start = 0, end = total == 0 ? 0 : total - 1;
     const bool partial = !request->getHeader("range").empty() && http_utils::parse_byte_range(request->getHeader("range"), total, start, end);
     std::string body(total == 0 ? 0 : static_cast<std::size_t>(end - start + 1), '\0');
     file.seekg(static_cast<std::streamoff>(start)); file.read(body.data(), static_cast<std::streamsize>(body.size()));
+
+    // Rangeでの部分取得(206)はバイト位置がそのままチャンクのレコード境界と対応するため圧縮
+    // しない。全体取得(200)だけ、クライアントが受け入れるならgzip圧縮する(ETagは圧縮の
+    // 有無で分けず共通のままにし、キャッシュの区別は`Vary: Accept-Encoding`に任せる)。
+    bool compressed = false;
+    if (!partial && http_utils::accepts_gzip(request->getHeader("accept-encoding"))) {
+        if (auto gz = http_utils::gzip_compress(body)) { body = std::move(*gz); compressed = true; }
+    }
+
     if (partial) response->writeStatus("206 Partial Content")->writeHeader("Content-Range", "bytes " + std::to_string(start) + "-" + std::to_string(end) + "/" + std::to_string(total));
-    response->writeHeader("Accept-Ranges", "bytes")->writeHeader("Content-Type", content_type)->writeHeader("Cache-Control", "no-cache")->writeHeader("Access-Control-Allow-Origin", "*");
+    response->writeHeader("Accept-Ranges", "bytes")->writeHeader("Content-Type", content_type)->writeHeader("Cache-Control", kTerrainCacheControl)->writeHeader("Vary", "Accept-Encoding")->writeHeader("Access-Control-Allow-Origin", "*");
+    if (compressed) response->writeHeader("Content-Encoding", "gzip");
     if (!etag.empty()) response->writeHeader("ETag", etag);
     response->end(body);
 }
