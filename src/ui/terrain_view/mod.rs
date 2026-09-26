@@ -427,10 +427,15 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
 
     let state_wheel = state.clone();
     let on_wheel = move |ev: leptos::ev::WheelEvent| {
-        // ページのスクロールを止め、wheelイベント1回ごとにカメラの距離を1.12倍(下スクロール
-        // `delta_y > 0`)か1/1.12倍にする。`delta_y`の大きさは見ず、向きだけを使う。
+        // ページのスクロールを止め(横スクロールでページが動いたり戻ったりしないよう、ズームしない
+        // イベントでも止める)、縦の量に比例してカメラの距離を変える(`input::wheel_zoom_factor`)。
         ev.prevent_default();
-        let factor = if ev.delta_y() > 0.0 { 1.12 } else { 1.0 / 1.12 };
+        // `deltaMode`を`deltaY`より先に読む(Firefoxは、先に`deltaMode`を読んだページには行単位の値を、
+        // そうでなければピクセルに換算した値を返すため。行単位のほうが1ノッチの量が一定)。
+        let delta_mode = ev.delta_mode();
+        let Some(factor) = input::wheel_zoom_factor(ev.delta_y(), delta_mode) else {
+            return;
+        };
         state_wheel.borrow_mut().camera.zoom(factor);
         render_now(&state_wheel);
     };

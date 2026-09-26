@@ -11,6 +11,37 @@ use crate::terrain::heightmap;
 /// 3Dモードの通常のドラッグで、1pxあたりに回す角度(ラジアン)。
 const ORBIT_SENSITIVITY: f32 = 0.0075;
 
+/// ホイール1ノッチ(`WHEEL_PX_PER_NOTCH`ぶん)でカメラの距離を何倍にするか。
+const ZOOM_PER_NOTCH: f32 = 1.12;
+/// ホイール1ノッチとみなすピクセル量。Windowsの多くのブラウザは、マウスホイール1ノッチを
+/// `deltaMode=0`(ピクセル)の`deltaY=100`で通知する。トラックパッドは小さな値を多数通知するので、
+/// 量に比例させることで、どちらでも同じ手応えになる。
+const WHEEL_PX_PER_NOTCH: f64 = 100.0;
+/// `deltaMode=1`(行単位)の1行をピクセルに換算する量。Firefoxはマウスホイール1ノッチを
+/// (既定の設定では)3行で通知するので、3行で1ノッチになるようにしてある。
+const WHEEL_PX_PER_LINE: f64 = WHEEL_PX_PER_NOTCH / 3.0;
+/// `deltaMode=2`(ページ単位)の1ページをピクセルに換算する量(まれ。画面1枚ぶんほど)。
+const WHEEL_PX_PER_PAGE: f64 = 800.0;
+/// 1回のwheelイベントで進めるノッチ数の上限(ホイールを勢いよく回した・異常に大きな値で、
+/// 一気に最大・最小まで飛ばないように)。
+const MAX_NOTCHES_PER_WHEEL_EVENT: f64 = 3.0;
+
+/// wheelイベント(`deltaY`・`deltaMode`)から、カメラの距離に掛ける倍率を求める。下スクロール
+/// (`delta_y > 0`)で遠ざかる(1より大きい)。縦の量が無い(横スクロールだけ)・値が不正ならNone。
+pub(super) fn wheel_zoom_factor(delta_y: f64, delta_mode: u32) -> Option<f32> {
+    if delta_y == 0.0 || !delta_y.is_finite() {
+        return None;
+    }
+    let px = match delta_mode {
+        1 => delta_y * WHEEL_PX_PER_LINE,
+        2 => delta_y * WHEEL_PX_PER_PAGE,
+        _ => delta_y,
+    };
+    let notches =
+        (px / WHEEL_PX_PER_NOTCH).clamp(-MAX_NOTCHES_PER_WHEEL_EVENT, MAX_NOTCHES_PER_WHEEL_EVENT);
+    Some(ZOOM_PER_NOTCH.powf(notches as f32))
+}
+
 /// ドラッグ量(`dx`, `dy`、CSSピクセル)をカメラへ反映する。3Dは回転(`shift`なら注視点の平行移動)、
 /// 2Dは平行移動。シミュレーション原点(`OriginState`)には触れない。
 pub(super) fn apply_drag(s: &mut ViewState, dx: f32, dy: f32, shift: bool) {
@@ -70,5 +101,45 @@ pub(super) fn handle_draw_key(tool: DrawToolState, ev: &web_sys::KeyboardEvent) 
             tool.undo();
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn one_mouse_notch_zooms_by_the_notch_factor() {
+        // Chrome・Edge(ピクセル100)とFirefox(3行)の1ノッチは、同じ倍率になる。
+        assert!(close(wheel_zoom_factor(100.0, 0).unwrap(), ZOOM_PER_NOTCH));
+        assert!(close(
+            wheel_zoom_factor(-100.0, 0).unwrap(),
+            1.0 / ZOOM_PER_NOTCH
+        ));
+        assert!(close(wheel_zoom_factor(3.0, 1).unwrap(), ZOOM_PER_NOTCH));
+    }
+
+    #[test]
+    fn horizontal_only_or_invalid_scroll_does_not_zoom() {
+        assert_eq!(wheel_zoom_factor(0.0, 0), None);
+        assert_eq!(wheel_zoom_factor(-0.0, 0), None);
+        assert_eq!(wheel_zoom_factor(f64::NAN, 0), None);
+        assert_eq!(wheel_zoom_factor(f64::INFINITY, 0), None);
+    }
+
+    #[test]
+    fn small_trackpad_deltas_zoom_proportionally_and_large_ones_are_capped() {
+        // トラックパッドの小さな値は、1ノッチの一部だけ進む(10回で1ノッチ)。
+        let step = wheel_zoom_factor(10.0, 0).unwrap();
+        assert!(step > 1.0 && step < ZOOM_PER_NOTCH);
+        assert!(close(step.powi(10), ZOOM_PER_NOTCH));
+        // 異常に大きな値でも、1回で3ノッチまで。
+        let cap = ZOOM_PER_NOTCH.powf(MAX_NOTCHES_PER_WHEEL_EVENT as f32);
+        assert!(close(wheel_zoom_factor(1.0e6, 0).unwrap(), cap));
+        assert!(close(wheel_zoom_factor(-1.0e6, 2).unwrap(), 1.0 / cap));
     }
 }
