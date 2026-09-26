@@ -7,9 +7,8 @@ use std::rc::Rc;
 
 use leptos::prelude::*;
 
-use crate::terrain::los::{LosParams, LosPoint, RangeComputation, RangeKind};
+use crate::terrain::los::{LosPoint, RangeComputation, RangeKind};
 use crate::terrain::markers::{coverage_colors, RadarMarker, RadarMarkersState};
-use crate::terrain::origin::Origin;
 use crate::terrain::store::TerrainStore;
 use crate::ui::util::run_in_slices;
 
@@ -168,18 +167,10 @@ pub fn LosView() -> impl IntoView {
         };
         let generation = generation.clone();
         wasm_bindgen_futures::spawn_local(async move {
-            let origin = Origin {
-                lat_deg: marker.lat_deg,
-                lon_deg: marker.lon_deg,
-            };
-            let params = LosParams {
-                observer_height_m: marker.height_m,
-                max_range_m: marker.max_range_m,
-            };
             let mut computation = RangeComputation::new(
                 &data,
-                &origin,
-                &params,
+                &marker.origin(),
+                &marker.los_params(),
                 RangeKind::Visible,
                 CHART_AZIMUTH_STEP,
             );

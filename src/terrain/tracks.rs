@@ -190,13 +190,7 @@ impl TracksState {
 
     /// `selected_track`と同じだが、**リアクティブに追跡しない**(位置の更新のたびに再計算したくない、重い処理から読む用)。
     pub fn selected_track_untracked(&self) -> Option<Track> {
-        let id = self.selected.get_untracked()?;
-        self.entries.with_untracked(|entries| {
-            entries
-                .iter()
-                .find(|e| e.track.id == id)
-                .map(|e| e.track.clone())
-        })
+        untrack(|| self.selected_track())
     }
 
     /// トラックを選択する(`None`で解除)。
@@ -257,7 +251,7 @@ const SELECT_RING_INNER_PX: f32 = 21.0;
 const SELECT_RING_BAND_PX: f32 = 3.0;
 const SELECT_RING_SEGMENTS: usize = 40;
 /// シンボルの当たり判定の半径(画面のpx。シンボルの縁取りより少し大きい)。
-pub const PICK_RADIUS_PX: f32 = 20.0;
+pub(crate) const PICK_RADIUS_PX: f32 = 20.0;
 
 /// シンボルの形(ポリゴンの集まり)。座標は進行方向が+y・その右が+x、全体がおよそ[-1,1]の範囲。
 fn glyph(kind: SymbolKind) -> Vec<Vec<[f64; 2]>> {
@@ -354,7 +348,7 @@ fn push_symbol(
 
 /// ラベル1つぶん: 表示位置(ENU座標。メッシュ原点基準)と、名前・詳細・色。`TerrainView`が毎フレーム画面へ射影して置く。
 #[derive(Debug, Clone, PartialEq)]
-pub struct TrackLabel {
+pub(crate) struct TrackLabel {
     pub id: TrackId,
     /// 選択中か(ラベルを強調する)。
     pub selected: bool,
@@ -365,8 +359,8 @@ pub struct TrackLabel {
 }
 
 /// 表示するもの(`TracksState`の設定+2D/3D)。
-#[derive(Debug, Clone, Copy)]
-pub struct TrackOptions<'a> {
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct TrackOptions<'a> {
     /// 強調の輪を付けるトラック。
     pub selected: Option<TrackId>,
     pub trails: bool,
@@ -378,7 +372,7 @@ pub struct TrackOptions<'a> {
 
 /// `build_track_geometry`の結果。
 #[derive(Default)]
-pub struct TrackGeometry {
+pub(crate) struct TrackGeometry {
     /// 描画用の頂点(TriangleList。シンボル・航跡・高度線)。
     pub vertices: Vec<DrawVertex>,
     pub labels: Vec<TrackLabel>,
@@ -411,7 +405,7 @@ fn push_ring(
 
 /// 画面上の点`point`(canvas内のpx、左上原点)に最も近いシンボルのIDを返す。`anchors`は(ID, シンボルの位置(ENU座標))、
 /// `radius_px`以内に無ければ`None`。カメラの後ろのシンボルは対象外。地形の陰に隠れたシンボルも対象になる(深度は見ない)。
-pub fn pick_track(
+pub(crate) fn pick_track(
     anchors: &[(TrackId, [f32; 3])],
     view_proj: &glam::Mat4,
     viewport_px: (f32, f32),
@@ -443,14 +437,14 @@ fn label_detail(track: &Track) -> String {
 }
 
 /// トラック一覧から、描画用の頂点とラベルを作る。
-pub fn build_track_geometry(
+pub(crate) fn build_track_geometry(
     ctx: &BuildContext,
     entries: &[TrackEntry],
     options: TrackOptions<'_>,
 ) -> TrackGeometry {
     let mut geometry = TrackGeometry::default();
     // 種別ごとの三角形(同じ形を何度も三角形分割しないよう、種別ごとに1回だけ作る)。
-    let mut glyphs: HashMap<u8, Vec<[f64; 2]>> = HashMap::new();
+    let mut glyphs: HashMap<SymbolKind, Vec<[f64; 2]>> = HashMap::new();
     let out = &mut geometry.vertices;
 
     for entry in entries {
@@ -525,7 +519,7 @@ pub fn build_track_geometry(
             .symbols_hidden
             .is_some_and(|hidden| hidden.contains(&track.id))
         {
-            let triangles = glyphs.entry(track.kind as u8).or_insert_with(|| {
+            let triangles = glyphs.entry(track.kind).or_insert_with(|| {
                 glyph(track.kind)
                     .iter()
                     .flat_map(|polygon| triangulate(polygon))
@@ -658,15 +652,7 @@ mod tests {
             track: track(1, 35.4, 138.9, Altitude::Msl(3000.0)),
             trail: vec![],
         }];
-        let geometry = build(
-            &entries,
-            TrackOptions {
-                selected: None,
-                trails: false,
-                altitude_lines: false,
-                symbols_hidden: None,
-            },
-        );
+        let geometry = build(&entries, TrackOptions::default());
         assert_eq!(geometry.labels.len(), 1);
         let v = &geometry.vertices;
         assert!(
@@ -712,10 +698,9 @@ mod tests {
             },
         ];
         let options = |hidden| TrackOptions {
-            selected: None,
             trails: true,
-            altitude_lines: false,
             symbols_hidden: hidden,
+            ..Default::default()
         };
         let all = build(&entries, options(None));
         let hidden = HashSet::from([1]);
@@ -755,10 +740,8 @@ mod tests {
             build(
                 std::slice::from_ref(entry),
                 TrackOptions {
-                    selected: None,
-                    trails: false,
                     altitude_lines,
-                    symbols_hidden: None,
+                    ..Default::default()
                 },
             )
             .vertices
@@ -816,10 +799,8 @@ mod tests {
             trail,
         };
         let options = TrackOptions {
-            selected: None,
             trails: true,
-            altitude_lines: false,
-            symbols_hidden: None,
+            ..Default::default()
         };
         let with = build(std::slice::from_ref(&entry), options).vertices;
         let without = build(
@@ -857,22 +838,12 @@ mod tests {
                 trail: vec![],
             },
         ];
-        let none = build(
-            &entries,
-            TrackOptions {
-                selected: None,
-                trails: false,
-                altitude_lines: false,
-                symbols_hidden: None,
-            },
-        );
+        let none = build(&entries, TrackOptions::default());
         let one = build(
             &entries,
             TrackOptions {
                 selected: Some(2),
-                trails: false,
-                altitude_lines: false,
-                symbols_hidden: None,
+                ..Default::default()
             },
         );
         // 輪は縁取りと白の2本の円環(1本=分割数x三角形2枚x3頂点)。

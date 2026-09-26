@@ -971,11 +971,11 @@ record_bytes = (n+1)² × 2
 
 **標高サンプリング**:
 
-- `sample_heightmap(data, lat, lon) -> Option<f32>`: `geodetic_bounds`の外なら`None`。`lat0 = min(floor(lat), max_lat-1)`(東端・北端ちょうどは内側のタイルの端として扱う)。
-  タイルが無ければ`Some(0.0)`(海)。あれば`u=clamp(lon-lon0,0,1)`, `v=clamp(lat-lat0,0,1)`で`sample_bilinear`
+- `sample_heightmap(data, lat, lon) -> f32`: `geodetic_bounds`の外なら`0.0`。`lat0 = min(floor(lat), max_lat-1)`(東端・北端ちょうどは内側のタイルの端として扱う)。
+  タイルが無ければ`0.0`(海)。あれば`u=clamp(lon-lon0,0,1)`, `v=clamp(lat-lat0,0,1)`で`sample_bilinear`。`sample_surface_height`も同じ規則で`sample_surface`を引く
 - `ground_at_enu(data, transform, east, north) -> (lat, lon, up_f32)`: 「ENUの水平位置を通る鉛直線と地表の交点」。**標高ではなく丸み込みのENU上座標**を返す。
-  `up = -(e²+n²)/(2a)`から始め、**4回**、`(lat,lon,_) = enu_to_geodetic(e,n,up)`→`elevation = sample_heightmap(..) or 0`→`up = transform_f64(lat,lon,elevation)[2]`を繰り返す。遠方の地表の高さ・クリック判定・注視点の高さはこれを使う
-- `ground_at_geodetic(data, transform, lat, lon) -> (east,north,up)`: `elevation = sample_heightmap(..) or 0`→`transform(lat,lon,elevation)`
+  `up = -(e²+n²)/(2a)`から始め、**4回**、`(lat,lon,_) = enu_to_geodetic(e,n,up)`→`elevation = sample_heightmap(..)`→`up = transform_f64(lat,lon,elevation)[2]`を繰り返す。遠方の地表の高さ・クリック判定・注視点の高さはこれを使う
+- `ground_at_geodetic(data, transform, lat, lon) -> (east,north,up)`: `elevation = sample_heightmap(..)`→`transform(lat,lon,elevation)`
 
 検証: 平坦で400km離れた点の`up`は`-d²/(2a)`と3%以内。標高1000mの丘なら`up`の差は1000mから10m以内。原点を変えても`ground_at_geodetic`→`ground_at_enu`で緯度経度が1e-5度以内で戻る。
 
@@ -1105,8 +1105,8 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 `diff(t) = p.z - ground_at_enu(p.xy).up`(`p = ray_origin + dir*t`)。`diff(0) < 0`なら`None`。刻みごとに、点が`elevation_max`より上なら地表評価を省き、`diff(t) <= 0`になった区間を24回二分探索。
 交点は`ground_at_enu`で緯度経度に戻す(**接平面近似は使わない**。数百km離れると数十kmずれる)。`geodetic_bounds`の外なら`None`。
 
-**断面** `build_profile(data, origin, azimuth_deg) -> Vec<ProfilePoint{distance_m, elevation_m, lat_deg, lon_deg}>`: `NUM_SAMPLES = 300`(301点)、`max_valid_distance`(方位方向にデータ範囲内でいられる最大距離。上限1,000,000mを30回二分探索。losも共有)まで等間隔、
-位置は`inverse`(1,000km以内なので接平面近似で許容)、標高は`sample_heightmap or 0`。方位は北=0・東=90・時計回り。
+**断面** `build_profile_span(data, center, azimuth_deg, back_m, forward_m) -> Vec<ProfilePoint{distance_m, elevation_m, lat_deg, lon_deg}>`: `NUM_SAMPLES = 300`(301点)、方位の向きに`forward_m`・反対に`back_m`まで(それぞれ`max_valid_distance`=方位方向にデータ範囲内でいられる最大距離で打ち切る。上限1,000,000mを30回二分探索。losも共有)等間隔、
+位置は`inverse`(1,000km以内なので接平面近似で許容)、標高は`sample_heightmap`。方位は北=0・東=90・時計回り。
 
 **検証**: 反転Z(視線上`z_near`の点の深度≈1、`z_far`≈0、`[10..4e6]`mで**単調減少**)、`screen_to_ray`のレイ上の点を`view_proj`で射影し直すと元のNDCに戻る(複数距離・3D/2D)、`water_ray_basis`が`screen_to_ray`と一致、
 `orbit/zoom/pan`のクランプ、`keep_above_ground`(高い地形の上なら仰角を上げ、届かなければ持ち上げる。2Dは変更なし)。ピッキング: 中央画素が注視点を拾う・空を向く画素は`None`・範囲外の交点は`None`。
@@ -1414,7 +1414,7 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
   `wheel`=`zoom`。`contextmenu`=`prevent_default`。図形作成中なら`undo`。`ContextMenuState`と`MapMenuState`の**両方**があれば`position`(pick)と`track`(pick_track。あれば先に選択)を`MapMenuTarget`にしてメニューを出す(どちらもNoneなら出さない)。どちらか無ければ従来どおり観測点を追加。
   `dblclick`=`draw_tool.finish()`。`keydown`(window。ツール選択中のみ、`INPUT/TEXTAREA/SELECT`上は無視)=`Escape`→`cancel`、`Enter`→`finish`、`Backspace`→`undo`
 - **ピッキング(`picking.rs`)**: `pick_at_client`は`getBoundingClientRect`でcanvas内座標にして`pick::pick_lat_lon`。`pick_track_at_client`はCSS pxからcanvas内部解像度へ変換して`tracks::pick_track`(`PICK_RADIUS_PX`)
-- **オーバーレイの再構築(`overlay.rs`)**: `GeometryInputs`から`BuildContext`(`ground = sample_heightmap or 0`)を作る。`rebuild_markers`はピン(`rebuild_marker_pins`。軽い)を作り直し、覆域は`coverage::refresh_coverage`に任せる。地形のレベル切り替えからは`rebuild_markers_for_terrain`(覆域は300ms待つ)。
+- **オーバーレイの再構築(`overlay.rs`)**: `GeometryInputs`から`BuildContext`(`ground = sample_heightmap`)を作る。`rebuild_markers`はピン(`rebuild_marker_pins`。軽い)を作り直し、覆域は`coverage::refresh_coverage`に任せる。地形のレベル切り替えからは`rebuild_markers_for_terrain`(覆域は300ms待つ)。
   **`refresh_coverage`**(`coverage.rs`): 表示する観測点(選択中の1つ、`show_all_coverage`ならすべて)ごとに、観測点・モード・高度・地形(`terrain_signature`=観測点の最大観測範囲に重なるチャンクの`(tile, chunk, level)`のハッシュ)から`CoverageKey`を作る。
   キャッシュ(`CoverageCache`)が同じキーなら、`show_coverage`でジオメトリを作って`update_dome`/`update_coverage_2d`(すでに同じキー・同じメッシュ原点で載っていれば何もしない)。
   違えば、進行中に同じキーの計算があれば待ち、無ければ`generation`を増やして(古い計算を取り消し)`spawn_local`で計算する: 地形の切り替え起因なら`TERRAIN_DEBOUNCE_MS`(300ms)待ち、`run_in_slices(.., AZIMUTHS_PER_STEP=4)`で進め、

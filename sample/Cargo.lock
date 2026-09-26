@@ -2024,6 +2024,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "earcutr",
+ "futures-util",
  "geographiclib-rs",
  "glam",
  "gloo-net 0.7.0",

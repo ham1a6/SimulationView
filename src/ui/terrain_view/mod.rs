@@ -275,8 +275,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
             // 表示が飛んでしまわないよう、同じ緯度経度を見続けるよう新しいENU座標へ変換し直す。
             let follows_origin = s.camera.target.x == 0.0 && s.camera.target.y == 0.0;
             s.target_up =
-                heightmap::sample_heightmap(&terrain, new_origin.lat_deg, new_origin.lon_deg)
-                    .unwrap_or(0.0);
+                heightmap::sample_heightmap(&terrain, new_origin.lat_deg, new_origin.lon_deg);
             if follows_origin {
                 // 高さも新しい原点の地表標高へ更新する(古い標高のままだと、原点移動後に
                 // ズームインした際カメラが地面に埋まって真っ黒になりうる)。
@@ -589,7 +588,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                             let canvas_h = s
                                 .renderer
                                 .as_ref()
-                                .map(|r| r.canvas_height_px())
+                                .map(|r| r.canvas_size_px().1)
                                 .unwrap_or(1)
                                 .max(1);
                             s.camera.pan_orbit_target(dx, dy, canvas_h as f32);
@@ -621,7 +620,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                         let canvas_h = s
                             .renderer
                             .as_ref()
-                            .map(|r| r.canvas_height_px())
+                            .map(|r| r.canvas_size_px().1)
                             .unwrap_or(1)
                             .max(1);
                         let world_per_px = s.camera.distance / canvas_h as f32;

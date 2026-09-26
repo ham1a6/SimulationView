@@ -241,8 +241,7 @@ mod tests {
             lon_deg: 138.0,
         };
         let transform = EnuTransform::new(&origin, &Ellipsoid::WGS84);
-        let ground =
-            |lat, lon| heightmap::sample_surface_height(&terrain, lat, lon).unwrap_or(0.0) as f64;
+        let ground = |lat, lon| heightmap::sample_surface_height(&terrain, lat, lon) as f64;
         let ctx = BuildContext {
             terrain: Some(&terrain),
             mesh_transform: &transform,

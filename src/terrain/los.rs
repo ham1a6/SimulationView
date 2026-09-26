@@ -18,6 +18,9 @@ const EARTH_RADIUS_M: f64 = 6_371_000.0;
 /// (レーダー・無線工学の標準的な近似。実際の大気状態によって変動するが、v1では固定値とする)。
 const K_FACTOR: f64 = 4.0 / 3.0;
 
+/// 等価地球半径(メートル)。
+const R_EFF_M: f64 = EARTH_RADIUS_M * K_FACTOR;
+
 /// 計算する方位角の刻み数。1周=6400mil(NATO式)で、1mil刻み(=360/6400度≒0.05625度)。
 /// 50km先で約49m幅、地形の最細解像度(30m)と同程度の細かさ。
 const NUM_AZIMUTHS: usize = 6400;
@@ -27,11 +30,22 @@ fn azimuth_deg_of(az_i: usize) -> f64 {
     az_i as f64 * 360.0 / NUM_AZIMUTHS as f64
 }
 
-/// 方位角インデックスの(方位角(度), 東向き成分, 北向き成分)。
-fn azimuth_direction(az_i: usize) -> (f64, f64, f64) {
-    let azimuth_deg = azimuth_deg_of(az_i);
-    let az_rad = azimuth_deg.to_radians();
-    (azimuth_deg, az_rad.sin(), az_rad.cos())
+/// 方位角インデックスの(東向き成分, 北向き成分)。
+fn azimuth_direction(az_i: usize) -> (f64, f64) {
+    let az_rad = azimuth_deg_of(az_i).to_radians();
+    (az_rad.sin(), az_rad.cos())
+}
+
+/// 方位(出力の番号`j`)ごとの距離に方位角を付ける。
+fn to_points(ranges: Vec<f64>, azimuth_step: usize) -> Vec<LosPoint> {
+    ranges
+        .into_iter()
+        .enumerate()
+        .map(|(j, range_m)| LosPoint {
+            azimuth_deg: azimuth_deg_of(j * azimuth_step),
+            range_m,
+        })
+        .collect()
 }
 
 /// 観測点から対象地点(緯度経度)までの水平距離と、東向き・北向きの単位ベクトル
@@ -53,18 +67,65 @@ struct RayContext {
     transform: EnuTransform,
     /// 観測点(アンテナ)の海抜高度(メートル)= 観測点の地表の標高 + アンテナ高。
     observer_altitude_msl: f64,
-    /// 等価地球半径(メートル)。
-    r_eff: f64,
 }
 
 impl RayContext {
     fn new(data: &TerrainData, origin: &Origin, antenna_height_m: f64) -> Self {
-        let ground = sample_heightmap(data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0) as f64;
+        let ground = sample_heightmap(data, origin.lat_deg, origin.lon_deg) as f64;
         Self {
             transform: EnuTransform::new(origin, &data.metadata.ellipsoid),
             observer_altitude_msl: ground + antenna_height_m,
-            r_eff: EARTH_RADIUS_M * K_FACTOR,
         }
+    }
+
+    /// 水平距離`d`にある海抜高度`height_m`の点の見かけの仰角(地球曲率による低下を差し引いた角度の正接の近似)。
+    fn angle_of(&self, height_m: f64, d: f64) -> f64 {
+        (height_m - curvature_drop_m(d, R_EFF_M) - self.observer_altitude_msl) / d
+    }
+
+    /// (東, 北)向きに水平距離`d`だけ進んだ地表点の見かけの仰角。
+    fn angle_at(&self, data: &TerrainData, dir_east: f64, dir_north: f64, d: f64) -> f64 {
+        let (lat, lon) = self.transform.inverse(dir_east * d, dir_north * d);
+        self.angle_of(sample_heightmap(data, lat, lon) as f64, d)
+    }
+}
+
+/// 観測点から対象地点(緯度経度)へ向かう1本のレイ(`is_visible`・`min_visible_altitude`)。
+struct TargetRay {
+    ctx: RayContext,
+    /// 対象地点までの水平距離(メートル)。
+    distance: f64,
+    dir_east: f64,
+    dir_north: f64,
+}
+
+impl TargetRay {
+    fn new(
+        data: &TerrainData,
+        radar: &Origin,
+        antenna_height_m: f64,
+        target_lat_deg: f64,
+        target_lon_deg: f64,
+    ) -> Self {
+        let ctx = RayContext::new(data, radar, antenna_height_m);
+        let (distance, dir_east, dir_north) =
+            transform_to_target(&ctx.transform, target_lat_deg, target_lon_deg);
+        Self {
+            ctx,
+            distance,
+            dir_east,
+            dir_north,
+        }
+    }
+
+    /// 観測点と対象地点の間(両端を除く)の地表サンプルそれぞれの見かけの仰角。
+    /// 500m間隔で、10〜`MAX_TARGET_SAMPLES`区間に分ける。
+    fn terrain_angles<'a>(&'a self, data: &'a TerrainData) -> impl Iterator<Item = f64> + 'a {
+        let samples = ((self.distance / 500.0).ceil() as usize).clamp(10, MAX_TARGET_SAMPLES);
+        (1..samples).map(move |i| {
+            let d = self.distance * i as f64 / samples as f64;
+            self.ctx.angle_at(data, self.dir_east, self.dir_north, d)
+        })
     }
 }
 
@@ -149,10 +210,6 @@ impl RangeComputation {
         }
     }
 
-    pub fn is_finished(&self) -> bool {
-        self.done >= self.ranges.len()
-    }
-
     /// 次の方位から最大`count`個を計算する。終わったら`true`。
     /// `data`は毎回渡す(計算の途中で地形のレベルが切り替わっても、そのときの地形で続ける)。
     pub fn advance(&mut self, data: &TerrainData, count: usize) -> bool {
@@ -161,19 +218,15 @@ impl RangeComputation {
             self.ranges[j] = self.trace(data, j * self.azimuth_step);
         }
         self.done = end;
-        self.is_finished()
+        end == self.ranges.len()
     }
 
     /// 1方位(方位角インデックス`az_i`)の距離。
     fn trace(&self, data: &TerrainData, az_i: usize) -> f64 {
-        let RayContext {
-            transform,
-            observer_altitude_msl,
-            r_eff,
-        } = &self.ctx;
-        let (_, dir_east, dir_north) = azimuth_direction(az_i);
+        let ctx = &self.ctx;
+        let (dir_east, dir_north) = azimuth_direction(az_i);
 
-        let data_max = max_valid_distance(data, transform, dir_east, dir_north);
+        let data_max = max_valid_distance(data, &ctx.transform, dir_east, dir_north);
         let ray_max = data_max.min(self.max_range_m);
         if ray_max <= 0.0 {
             return 0.0;
@@ -183,10 +236,7 @@ impl RangeComputation {
         let mut visible_range = 0.0_f64;
         for i in 1..=SAMPLES_PER_RAY {
             let d = ray_max * i as f64 / SAMPLES_PER_RAY as f64;
-            let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
-            let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
-            let apparent_height = elevation - curvature_drop_m(d, *r_eff);
-            let angle = (apparent_height - observer_altitude_msl) / d;
+            let angle = ctx.angle_at(data, dir_east, dir_north, d);
             match self.kind {
                 RangeKind::Visible => {
                     if angle >= max_angle {
@@ -198,10 +248,7 @@ impl RangeComputation {
                     if angle > max_angle {
                         max_angle = angle;
                     }
-                    let target_angle =
-                        (target_altitude_m - curvature_drop_m(d, *r_eff) - observer_altitude_msl)
-                            / d;
-                    if target_angle >= max_angle {
+                    if ctx.angle_of(target_altitude_m, d) >= max_angle {
                         visible_range = d;
                     } else {
                         break;
@@ -214,15 +261,7 @@ impl RangeComputation {
 
     /// 結果(方位角つき)。未計算の方位は距離0。
     pub fn finish(self) -> Vec<LosPoint> {
-        let step = self.azimuth_step;
-        self.ranges
-            .into_iter()
-            .enumerate()
-            .map(|(j, range_m)| LosPoint {
-                azimuth_deg: azimuth_deg_of(j * step),
-                range_m,
-            })
-            .collect()
+        to_points(self.ranges, self.azimuth_step)
     }
 
     /// 全方位を一度に計算する(単体テスト用。画面を固めないよう、UIからは`advance`で小分けにすること)。
@@ -255,49 +294,28 @@ pub fn compute_los(data: &TerrainData, origin: &Origin, params: &LosParams) -> V
 /// レーダーから見えるかを判定するために使う。
 pub fn is_visible(
     data: &TerrainData,
-    radar_lat_deg: f64,
-    radar_lon_deg: f64,
-    radar_height_m: f64,
-    max_range_m: f64,
+    radar: &Origin,
+    params: &LosParams,
     target_lat_deg: f64,
     target_lon_deg: f64,
 ) -> bool {
-    let radar_origin = Origin {
-        lat_deg: radar_lat_deg,
-        lon_deg: radar_lon_deg,
-    };
-    let RayContext {
-        transform,
-        observer_altitude_msl,
-        r_eff,
-    } = RayContext::new(data, &radar_origin, radar_height_m);
-
-    let (target_distance, dir_east, dir_north) =
-        transform_to_target(&transform, target_lat_deg, target_lon_deg);
-    if target_distance < 1.0 {
+    let ray = TargetRay::new(
+        data,
+        radar,
+        params.observer_height_m,
+        target_lat_deg,
+        target_lon_deg,
+    );
+    if ray.distance < 1.0 {
         return true;
     }
-    if target_distance > max_range_m {
+    if ray.distance > params.max_range_m {
         return false;
     }
-
-    let target_elevation =
-        sample_heightmap(data, target_lat_deg, target_lon_deg).unwrap_or(0.0) as f64;
-    let target_angle =
-        (target_elevation - curvature_drop_m(target_distance, r_eff) - observer_altitude_msl)
-            / target_distance;
-
-    let samples = ((target_distance / 500.0).ceil() as usize).clamp(10, MAX_TARGET_SAMPLES);
-    for i in 1..samples {
-        let d = target_distance * i as f64 / samples as f64;
-        let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
-        let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
-        let angle = (elevation - curvature_drop_m(d, r_eff) - observer_altitude_msl) / d;
-        if angle > target_angle {
-            return false;
-        }
-    }
-    true
+    let target_elevation = sample_heightmap(data, target_lat_deg, target_lon_deg) as f64;
+    let target_angle = ray.ctx.angle_of(target_elevation, ray.distance);
+    let blocked = ray.terrain_angles(data).any(|angle| angle > target_angle);
+    !blocked
 }
 
 /// 単一の観測点(レーダー)から見て、指定した地表座標の真上で「これ以上の高度(標高、m)なら
@@ -308,51 +326,38 @@ pub fn is_visible(
 /// 対象地点までの距離がレーダーの最大観測範囲を超える場合はNone(どんな高度でも覆域外)。
 pub fn min_visible_altitude(
     data: &TerrainData,
-    radar_lat_deg: f64,
-    radar_lon_deg: f64,
-    radar_height_m: f64,
-    max_range_m: f64,
+    radar: &Origin,
+    params: &LosParams,
     target_lat_deg: f64,
     target_lon_deg: f64,
 ) -> Option<f64> {
-    let radar_origin = Origin {
-        lat_deg: radar_lat_deg,
-        lon_deg: radar_lon_deg,
-    };
-    let RayContext {
-        transform,
-        observer_altitude_msl,
-        r_eff,
-    } = RayContext::new(data, &radar_origin, radar_height_m);
-
-    let (target_distance, dir_east, dir_north) =
-        transform_to_target(&transform, target_lat_deg, target_lon_deg);
-    if target_distance > max_range_m {
+    let ray = TargetRay::new(
+        data,
+        radar,
+        params.observer_height_m,
+        target_lat_deg,
+        target_lon_deg,
+    );
+    if ray.distance > params.max_range_m {
         return None;
     }
-    if target_distance < 1.0 {
-        return Some(observer_altitude_msl);
+    if ray.distance < 1.0 {
+        return Some(ray.ctx.observer_altitude_msl);
     }
 
     // 観測点から対象地点までの間の地形が作る最大の見かけ仰角(=対象が見えるために
     // 必要な最低仰角)を求める。target自身の標高には依存しない点がis_visibleと異なる。
-    let samples = ((target_distance / 500.0).ceil() as usize).clamp(10, MAX_TARGET_SAMPLES);
-    let mut required_angle = f64::NEG_INFINITY;
-    for i in 1..samples {
-        let d = target_distance * i as f64 / samples as f64;
-        let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
-        let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
-        let angle = (elevation - curvature_drop_m(d, r_eff) - observer_altitude_msl) / d;
-        if angle > required_angle {
-            required_angle = angle;
-        }
-    }
+    let required_angle =
+        ray.terrain_angles(data).fold(
+            f64::NEG_INFINITY,
+            |max, angle| if angle > max { angle } else { max },
+        );
     // angle(h) = (h - curvature_drop(d) - observer_altitude_msl) / d が対象高度hについて線形なので、
     // angle(h) == required_angle となるhを直接解く(それ以上の高度なら見える下限)。
     Some(
-        required_angle * target_distance
-            + curvature_drop_m(target_distance, r_eff)
-            + observer_altitude_msl,
+        required_angle * ray.distance
+            + curvature_drop_m(ray.distance, R_EFF_M)
+            + ray.ctx.observer_altitude_msl,
     )
 }
 
@@ -440,18 +445,15 @@ impl DomeComputation {
         azimuth_count(self.azimuth_step)
     }
 
-    pub fn is_finished(&self) -> bool {
-        self.done >= self.total()
-    }
-
     /// 次の方位から最大`count`個を計算する。終わったら`true`。
     pub fn advance(&mut self, data: &TerrainData, count: usize) -> bool {
-        let end = (self.done + count).min(self.total());
+        let total = self.total();
+        let end = (self.done + count).min(total);
         for j in self.done..end {
             self.trace(data, j);
         }
         self.done = end;
-        self.is_finished()
+        end == total
     }
 
     /// 1方位(出力の番号`j`)について、全リングのスラントレンジを求めて`ring_slant_ranges`へ書く。
@@ -465,14 +467,9 @@ impl DomeComputation {
             ring_slant_ranges,
             ..
         } = self;
-        let RayContext {
-            transform,
-            observer_altitude_msl,
-            r_eff,
-        } = &*ctx;
         let num_rings = ring_tans.len();
-        let (_, dir_east, dir_north) = azimuth_direction(j * *azimuth_step);
-        let data_max = max_valid_distance(data, transform, dir_east, dir_north);
+        let (dir_east, dir_north) = azimuth_direction(j * *azimuth_step);
+        let data_max = max_valid_distance(data, &ctx.transform, dir_east, dir_north);
 
         // 仰角が大きいほど、同じスラントレンジ上限に対応する水平距離の上限は小さくなる
         // (horizontal = スラントレンジ * cos(仰角))。
@@ -513,11 +510,7 @@ impl DomeComputation {
         let mut max_angle = f64::NEG_INFINITY;
         let mut first_alive = 0;
         for i in 1..=SAMPLES_PER_RAY {
-            let d = sample_distance(i);
-            let (lat, lon) = transform.inverse(dir_east * d, dir_north * d);
-            let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
-            let apparent_height = elevation - curvature_drop_m(d, *r_eff);
-            let angle = (apparent_height - observer_altitude_msl) / d;
+            let angle = ctx.angle_at(data, dir_east, dir_north, sample_distance(i));
             if angle > max_angle {
                 max_angle = angle;
                 while first_alive < num_rings && max_angle > ring_tans[first_alive] {
@@ -540,19 +533,9 @@ impl DomeComputation {
         self.elevation_degs
             .into_iter()
             .zip(self.ring_slant_ranges)
-            .map(|(elevation_deg, ranges)| {
-                let points = ranges
-                    .into_iter()
-                    .enumerate()
-                    .map(|(j, range_m)| LosPoint {
-                        azimuth_deg: azimuth_deg_of(j * step),
-                        range_m,
-                    })
-                    .collect();
-                DomeRing {
-                    elevation_deg,
-                    points,
-                }
+            .map(|(elevation_deg, ranges)| DomeRing {
+                elevation_deg,
+                points: to_points(ranges, step),
             })
             .collect()
     }
@@ -608,9 +591,50 @@ mod tests {
         })
     }
 
+    /// 観測点(`lat`, `lon`)・アンテナ高・最大観測範囲を個別に渡す`is_visible`。
+    fn visible(
+        data: &TerrainData,
+        lat: f64,
+        lon: f64,
+        height_m: f64,
+        max_range_m: f64,
+        target_lat: f64,
+        target_lon: f64,
+    ) -> bool {
+        let (radar, params) = radar(lat, lon, height_m, max_range_m);
+        is_visible(data, &radar, &params, target_lat, target_lon)
+    }
+
+    /// 観測点(`lat`, `lon`)・アンテナ高・最大観測範囲を個別に渡す`min_visible_altitude`。
+    fn min_altitude(
+        data: &TerrainData,
+        lat: f64,
+        lon: f64,
+        height_m: f64,
+        max_range_m: f64,
+        target_lat: f64,
+        target_lon: f64,
+    ) -> Option<f64> {
+        let (radar, params) = radar(lat, lon, height_m, max_range_m);
+        min_visible_altitude(data, &radar, &params, target_lat, target_lon)
+    }
+
+    fn radar(lat: f64, lon: f64, height_m: f64, max_range_m: f64) -> (Origin, LosParams) {
+        (
+            Origin {
+                lat_deg: lat,
+                lon_deg: lon,
+            },
+            LosParams {
+                observer_height_m: height_m,
+                max_range_m,
+            },
+        )
+    }
+
     /// 平坦地で高さhのアンテナから見える地平線までの距離 √(2 r_eff h)(電波の地平線)。
     fn radio_horizon_m(height_m: f64) -> f64 {
-        (2.0 * EARTH_RADIUS_M * K_FACTOR * height_m).sqrt()
+        (2.0 * R_EFF_M * height_m).sqrt()
     }
 
     #[test]
@@ -623,7 +647,7 @@ mod tests {
 
     #[test]
     fn curvature_drop_grows_with_the_square_of_distance() {
-        let r = EARTH_RADIUS_M * K_FACTOR;
+        let r = R_EFF_M;
         assert_eq!(curvature_drop_m(0.0, r), 0.0);
         assert!((curvature_drop_m(20_000.0, r) - 4.0 * curvature_drop_m(10_000.0, r)).abs() < 1e-9);
     }
@@ -635,13 +659,13 @@ mod tests {
         // 高さ10mのアンテナの地平線は約13km。その内側の地表は見え、外側は見えない。
         assert!((radio_horizon_m(10.0) - 13_000.0).abs() < 100.0);
         let at = |km: f64| lon + km / 94.9; // この緯度の経度1度は約94.9km
-        assert!(is_visible(&data, lat, lon, 10.0, 200_000.0, lat, at(5.0)));
-        assert!(!is_visible(&data, lat, lon, 10.0, 200_000.0, lat, at(30.0)));
+        assert!(visible(&data, lat, lon, 10.0, 200_000.0, lat, at(5.0)));
+        assert!(!visible(&data, lat, lon, 10.0, 200_000.0, lat, at(30.0)));
         // アンテナが高ければ30km先も見える(100mなら地平線は約41km)。
-        assert!(is_visible(&data, lat, lon, 100.0, 200_000.0, lat, at(30.0)));
+        assert!(visible(&data, lat, lon, 100.0, 200_000.0, lat, at(30.0)));
         // 最大観測範囲の外は常に見えない。真上(距離0)は見える。
-        assert!(!is_visible(&data, lat, lon, 100.0, 20_000.0, lat, at(30.0)));
-        assert!(is_visible(&data, lat, lon, 10.0, 20_000.0, lat, lon));
+        assert!(!visible(&data, lat, lon, 100.0, 20_000.0, lat, at(30.0)));
+        assert!(visible(&data, lat, lon, 10.0, 20_000.0, lat, lon));
     }
 
     #[test]
@@ -650,27 +674,11 @@ mod tests {
         let (lat, lon) = (31.5, 121.5);
         let at = |km: f64| lon + km / 94.9;
         // 尾根(東16km)の向こう25km地点は、41kmの地平線の内側でも尾根に遮られる。
-        assert!(!is_visible(
-            &data,
-            lat,
-            lon,
-            100.0,
-            200_000.0,
-            lat,
-            at(25.0)
-        ));
+        assert!(!visible(&data, lat, lon, 100.0, 200_000.0, lat, at(25.0)));
         // 反対側(西25km)は遮るものがなく見える。
-        assert!(is_visible(
-            &data,
-            lat,
-            lon,
-            100.0,
-            200_000.0,
-            lat,
-            at(-25.0)
-        ));
+        assert!(visible(&data, lat, lon, 100.0, 200_000.0, lat, at(-25.0)));
         // 尾根の手前は見える。
-        assert!(is_visible(&data, lat, lon, 100.0, 200_000.0, lat, at(8.0)));
+        assert!(visible(&data, lat, lon, 100.0, 200_000.0, lat, at(8.0)));
     }
 
     #[test]
@@ -679,15 +687,15 @@ mod tests {
         let (lat, lon) = (origin.lat_deg, origin.lon_deg);
         let at = |km: f64| lon + km / 94.9;
         // 10mのアンテナで30km先を見るには、地表より少し(約17m)高くないと見えない。
-        let alt = min_visible_altitude(&data, lat, lon, 10.0, 200_000.0, lat, at(30.0)).unwrap();
+        let alt = min_altitude(&data, lat, lon, 10.0, 200_000.0, lat, at(30.0)).unwrap();
         assert!(alt > 10.0 && alt < 25.0, "alt={alt}");
         // 100mのアンテナなら地表(0m)でほぼ見える。
-        let low = min_visible_altitude(&data, lat, lon, 100.0, 200_000.0, lat, at(30.0)).unwrap();
+        let low = min_altitude(&data, lat, lon, 100.0, 200_000.0, lat, at(30.0)).unwrap();
         assert!(low < 5.0 && low > -20.0, "low={low}");
         // 最大観測範囲の外はNone、真上は観測点の高さ。
-        assert!(min_visible_altitude(&data, lat, lon, 10.0, 20_000.0, lat, at(30.0)).is_none());
+        assert!(min_altitude(&data, lat, lon, 10.0, 20_000.0, lat, at(30.0)).is_none());
         assert_eq!(
-            min_visible_altitude(&data, lat, lon, 10.0, 20_000.0, lat, lon),
+            min_altitude(&data, lat, lon, 10.0, 20_000.0, lat, lon),
             Some(10.0)
         );
     }

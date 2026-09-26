@@ -6,7 +6,7 @@
 
 use leptos::prelude::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct CaptureState {
     /// スクリーンショット要求のたびに増える(`TerrainView`はこの変化を見てPNGを保存する)。
     /// 初期値0は「まだ要求なし」を表す(`recenter::RecenterRequestState`と同じ約束)。
@@ -22,11 +22,7 @@ pub struct CaptureState {
 
 impl CaptureState {
     pub fn new() -> Self {
-        Self {
-            screenshot_requests: RwSignal::new(0),
-            recording_requested: RwSignal::new(false),
-            is_recording: RwSignal::new(false),
-        }
+        Self::default()
     }
 
     /// スクリーンショットを1枚保存する。
@@ -37,11 +33,5 @@ impl CaptureState {
     /// 画面録画の開始/停止を切り替える。
     pub fn toggle_recording(&self) {
         self.recording_requested.update(|on| *on = !*on);
-    }
-}
-
-impl Default for CaptureState {
-    fn default() -> Self {
-        Self::new()
     }
 }

@@ -5,21 +5,22 @@
 use super::geodesy::EnuTransform;
 use super::loader::TerrainData;
 
-/// 標高を双線形補間でサンプリングする。範囲外ならNone。タイルが無い・海域(周辺4ノードの
+/// 標高(メートル)を双線形補間でサンプリングする。地形データの範囲外・タイルが無い・海域(周辺4ノードの
 /// いずれかがデータなし)は標高0mとして扱う(欠損をそのまま返すと呼び出し側の計算が破綻するため)。
 /// 各タイル(のチャンク)は、いま画面に出しているレベルのグリッド(`TerrainData::set_chunk_level`)
 /// で引くので、描画されている地形と観測点・見通し計算・クリック判定の標高が一致する。
 /// `terrain/los.rs`(見通し)・`terrain/markers.rs`(観測点)・`terrain/profile.rs`(断面図)・
 /// `terrain/pick.rs`(クリック判定)・`ui/terrain_view.rs`(カメラ注視点の高さ)から使う。
-pub fn sample_heightmap(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> Option<f32> {
-    sample(data, lat_deg, lon_deg, false)
+pub fn sample_heightmap(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> f32 {
+    sample(data, lat_deg, lon_deg, false).unwrap_or(0.0)
 }
 
-/// 地表に貼り付ける描画用。表示LODの三角形と同じ補間で標高を求める。
-pub(crate) fn sample_surface_height(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> Option<f32> {
-    sample(data, lat_deg, lon_deg, true)
+/// 地表に貼り付ける描画用。表示LODの三角形と同じ補間で標高を求める(範囲外は0m)。
+pub(crate) fn sample_surface_height(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> f32 {
+    sample(data, lat_deg, lon_deg, true).unwrap_or(0.0)
 }
 
+/// 範囲外ならNone。
 fn sample(data: &TerrainData, lat_deg: f64, lon_deg: f64, surface: bool) -> Option<f32> {
     let b = &data.metadata.geodetic_bounds;
     if lat_deg < b.min_lat || lat_deg > b.max_lat || lon_deg < b.min_lon || lon_deg > b.max_lon {
@@ -58,7 +59,7 @@ pub fn ground_at_enu(
     let mut lat_lon = (0.0, 0.0);
     for _ in 0..4 {
         let (lat, lon, _h) = transform.enu_to_geodetic(east, north, up);
-        let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0);
+        let elevation = sample_heightmap(data, lat, lon);
         up = transform.transform_f64(lat, lon, elevation as f64)[2];
         lat_lon = (lat, lon);
     }
@@ -73,7 +74,7 @@ pub fn ground_at_geodetic(
     lat_deg: f64,
     lon_deg: f64,
 ) -> (f32, f32, f32) {
-    let elevation = sample_heightmap(data, lat_deg, lon_deg).unwrap_or(0.0);
+    let elevation = sample_heightmap(data, lat_deg, lon_deg);
     let [east, north, up] = transform.transform(lat_deg, lon_deg, elevation as f64);
     (east, north, up)
 }
@@ -102,11 +103,11 @@ mod tests {
     #[test]
     fn heightmap_is_sampled_inside_bounds_only() {
         let data = TerrainData::synthetic(30, 120, 1, 1, east_slope);
-        assert!((sample_heightmap(&data, 30.5, 120.25).unwrap() - 150.0).abs() < 1e-3);
+        assert!((sample(&data, 30.5, 120.25, false).unwrap() - 150.0).abs() < 1e-3);
         // 東端・北端ちょうどは範囲内(内側のタイルの端として扱う)。
-        assert!((sample_heightmap(&data, 31.0, 121.0).unwrap() - 600.0).abs() < 1e-3);
-        assert!(sample_heightmap(&data, 29.99, 120.5).is_none());
-        assert!(sample_heightmap(&data, 30.5, 121.01).is_none());
+        assert!((sample(&data, 31.0, 121.0, false).unwrap() - 600.0).abs() < 1e-3);
+        assert!(sample(&data, 29.99, 120.5, false).is_none());
+        assert!(sample(&data, 30.5, 121.01, false).is_none());
     }
 
     #[test]
@@ -147,7 +148,7 @@ mod tests {
     fn same_ground_point_regardless_of_origin() {
         let data = TerrainData::synthetic(30, 130, 10, 10, |lat, lon| ((lat + lon) * 3.0) as i16);
         let (lat, lon) = (33.3, 137.7);
-        let expected = sample_heightmap(&data, lat, lon).unwrap();
+        let expected = sample_heightmap(&data, lat, lon);
         for origin in [(35.0, 135.0), (31.0, 139.0), (39.0, 131.0)] {
             let t = transform_at(origin.0, origin.1);
             let (east, north, _) = ground_at_geodetic(&data, &t, lat, lon);
@@ -157,7 +158,7 @@ mod tests {
                 (lat2 - lat).abs() < 1e-5 && (lon2 - lon).abs() < 1e-5,
                 "{origin:?}: {lat2},{lon2}"
             );
-            assert!((sample_heightmap(&data, lat2, lon2).unwrap() - expected).abs() < 0.05);
+            assert!((sample_heightmap(&data, lat2, lon2) - expected).abs() < 0.05);
         }
     }
 }

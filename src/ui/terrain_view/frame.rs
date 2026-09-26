@@ -49,8 +49,7 @@ pub(super) fn try_init(
     });
     // 注視点は原点の実際の地表標高に置く(Vec3::ZEROのままだと、原点が高山の
     // 斜面にある場合にズームインした際カメラが地面に埋まって真っ黒になる)。
-    let target_up =
-        heightmap::sample_heightmap(&data, origin.lat_deg, origin.lon_deg).unwrap_or(0.0);
+    let target_up = heightmap::sample_heightmap(&data, origin.lat_deg, origin.lon_deg);
 
     wasm_bindgen_futures::spawn_local(async move {
         match TerrainRenderer::new(canvas).await {

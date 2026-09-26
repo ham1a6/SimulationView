@@ -7,7 +7,7 @@
 
 use leptos::prelude::*;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub struct RecenterRequestState {
     /// 要求のたびに増える(`TerrainView`はこの変化を見て中心点を動かす)。初期値0は「まだ要求なし」。
     pub count: RwSignal<u32>,
@@ -17,10 +17,7 @@ pub struct RecenterRequestState {
 
 impl RecenterRequestState {
     pub fn new() -> Self {
-        Self {
-            count: RwSignal::new(0),
-            target: RwSignal::new(None),
-        }
+        Self::default()
     }
 
     /// 中心点を原点の位置へ戻す。
@@ -42,11 +39,5 @@ impl RecenterRequestState {
 
     fn bump(&self) {
         self.count.update(|v| *v = v.wrapping_add(1));
-    }
-}
-
-impl Default for RecenterRequestState {
-    fn default() -> Self {
-        Self::new()
     }
 }

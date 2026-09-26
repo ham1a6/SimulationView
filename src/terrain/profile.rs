@@ -52,14 +52,6 @@ pub(super) fn max_valid_distance(
     lo
 }
 
-/// 原点から方位角(度、北=0・東=90・時計回り)方向へ、地形データの範囲内(最大で
-/// `SEARCH_UPPER_BOUND_M`)まで地表をサンプリングする(片側だけ)。原点変更・方位角変更のたびに呼び直す想定。
-/// (片側だけの断面は、単体テストで`build_profile_span`との一致を確かめるために残してある。)
-#[cfg(test)]
-pub fn build_profile(data: &TerrainData, origin: &Origin, azimuth_deg: f64) -> Vec<ProfilePoint> {
-    build_profile_span(data, origin, azimuth_deg, 0.0, SEARCH_UPPER_BOUND_M)
-}
-
 /// `center`を通る、方位角(度、北=0・東=90・時計回り)の直線に沿って、地形データの範囲内で、
 /// 方位角の向きに`forward_m`、その反対に`back_m`まで(それぞれ地形データの端で打ち切る)地表をサンプリングする。
 /// 点の`distance_m`は中心が0で、方位角の向きが正・反対が負(先頭が`-back`、末尾が`+forward`)。
@@ -91,7 +83,7 @@ pub fn build_profile_span(
         .map(|i| {
             let distance = -back + total * (i as f64) / (NUM_SAMPLES as f64);
             let (lat, lon) = transform.inverse(dir_east * distance, dir_north * distance);
-            let elevation = sample_heightmap(data, lat, lon).unwrap_or(0.0);
+            let elevation = sample_heightmap(data, lat, lon);
             ProfilePoint {
                 distance_m: distance,
                 elevation_m: elevation,
@@ -179,14 +171,6 @@ mod tests {
         let narrow = build_profile_span(&data, &center, 90.0, 10_000.0, 5_000.0);
         assert!((narrow[0].distance_m + 10_000.0).abs() < 1e-6);
         assert!((narrow[NUM_SAMPLES].distance_m - 5_000.0).abs() < 1e-6);
-        // 片側だけ(back=0)は、従来の`build_profile`と同じ。
-        let one_way = build_profile_span(&data, &center, 90.0, 0.0, SEARCH_UPPER_BOUND_M);
-        let old = build_profile(&data, &center, 90.0);
-        assert_eq!(one_way.len(), old.len());
-        assert!(one_way
-            .iter()
-            .zip(&old)
-            .all(|(a, b)| a.distance_m == b.distance_m));
     }
 
     #[test]
@@ -196,7 +180,7 @@ mod tests {
             lat_deg: 30.5,
             lon_deg: 120.5,
         };
-        let east = build_profile(&data, &origin, 90.0);
+        let east = build_profile_span(&data, &origin, 90.0, 0.0, SEARCH_UPPER_BOUND_M);
         assert_eq!(east.len(), NUM_SAMPLES + 1);
         assert_eq!(east[0].distance_m, 0.0);
         assert!((east[0].elevation_m - 300.0).abs() < 1.0); // 原点の標高
@@ -213,7 +197,7 @@ mod tests {
         let step = east[1].distance_m;
         assert!((east[NUM_SAMPLES].distance_m - step * NUM_SAMPLES as f64).abs() < 1e-6);
         // 北向きは東西方向に傾斜のない斜面の上なので標高が変わらない。
-        let north = build_profile(&data, &origin, 0.0);
+        let north = build_profile_span(&data, &origin, 0.0, 0.0, SEARCH_UPPER_BOUND_M);
         assert!(north.iter().all(|p| (p.elevation_m - 300.0).abs() < 25.0));
     }
 }

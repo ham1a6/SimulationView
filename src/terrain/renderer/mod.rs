@@ -469,13 +469,6 @@ impl TerrainRenderer {
         self.config.width as f32 / self.config.height.max(1) as f32
     }
 
-    /// canvasの内部解像度の縦幅(ピクセル)。2Dモードのドラッグ操作(パン)で、
-    /// 画面上のピクセル移動量をワールド座標(メートル)へ変換するのに使う
-    /// (`components/terrain_view.rs`参照)。
-    pub fn canvas_height_px(&self) -> u32 {
-        self.config.height
-    }
-
     /// 陰影(ヒルシェード)を付けるかを切り替える。次の`render`から反映される(メッシュの作り直しは不要)。
     pub fn set_hillshade(&mut self, enabled: bool) {
         self.hillshade = enabled;
@@ -716,13 +709,12 @@ impl TerrainRenderer {
         self.models.draw(&mut render_pass, &self.draw_world);
 
         // 覆域ドーム(半透明)は他の不透明な描画がすべて終わった後に描く。
+        // `update_dome`は空の頂点列ならバッファを持たない。
         if let Some(dome_buffer) = self.dome_vertex_buffer.as_ref() {
-            if self.num_dome_vertices > 0 {
-                render_pass.set_pipeline(&self.pipelines.dome);
-                render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-                render_pass.set_vertex_buffer(0, dome_buffer.slice(..));
-                render_pass.draw(0..self.num_dome_vertices, 0..1);
-            }
+            render_pass.set_pipeline(&self.pipelines.dome);
+            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, dome_buffer.slice(..));
+            render_pass.draw(0..self.num_dome_vertices, 0..1);
         }
 
         self.world_blend.draw(

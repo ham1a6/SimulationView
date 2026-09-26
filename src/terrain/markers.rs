@@ -34,6 +34,24 @@ pub struct RadarMarker {
     pub max_range_m: f64,
 }
 
+impl RadarMarker {
+    /// 観測点の位置。
+    pub(crate) fn origin(&self) -> Origin {
+        Origin {
+            lat_deg: self.lat_deg,
+            lon_deg: self.lon_deg,
+        }
+    }
+
+    /// 見通し計算のパラメータ(アンテナ高・最大観測範囲)。
+    pub(crate) fn los_params(&self) -> LosParams {
+        LosParams {
+            observer_height_m: self.height_m,
+            max_range_m: self.max_range_m,
+        }
+    }
+}
+
 /// メインパネル(3D地形)上への右クリックで追加するレーダー観測点(見通し範囲)の一覧・選択状態。
 /// `ui::terrain_view::TerrainView`(追加・3D/2D描画)・`ui::los_view::LosView`
 /// (一覧・編集・削除)で共有する。アプリ側は`leptos::prelude::provide_context`で
@@ -115,13 +133,8 @@ const COVERAGE_PALETTE: [([f32; 3], [f32; 3]); 6] = [
 pub fn coverage_colors(marker_id: u64) -> ([f32; 3], [f32; 3], [f32; 4]) {
     let (dome, area) = COVERAGE_PALETTE[(marker_id.max(1) as usize - 1) % COVERAGE_PALETTE.len()];
     // 輪郭線は、塗りの色を白へ寄せた不透明色。
-    let outline = [
-        0.5 * area[0] + 0.5,
-        0.5 * area[1] + 0.5,
-        0.5 * area[2] + 0.5,
-        1.0,
-    ];
-    (dome, area, outline)
+    let [r, g, b] = area.map(|c| 0.5 * c + 0.5);
+    (dome, area, [r, g, b, 1.0])
 }
 
 /// ピンの頭の円の中心の高さ(先端から、画面のpx)と半径・縁取りの太さ・中の点の半径。
@@ -137,16 +150,16 @@ const PIN_HEAD_SEGMENTS: usize = 24;
 /// 形が出る低い仰角(遮蔽物の仰角は多くの場合10〜20度以下)を細かく、開けた上空側を粗くしてあるが、
 /// 最上部でも4度刻み以下にして、輪郭が多角形に見えないようにしてある。
 /// リング数が多いほどドームの頂点数(リング数 x 方位数 x 6/リング間)が増える。
-pub const DOME_RING_ELEVATIONS_DEG: [f64; 38] = [
+const DOME_RING_ELEVATIONS_DEG: [f64; 38] = [
     0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, // 1度刻み
     12.0, 14.0, 16.0, 18.0, 20.0, 22.0, 24.0, 26.0, 28.0, 30.0, // 2度刻み
     33.0, 36.0, 39.0, 42.0, 45.0, 48.0, 51.0, 54.0, 57.0, 60.0, // 3度刻み
     64.0, 68.0, 72.0, 76.0, 80.0, 84.0, 87.0, // 4度刻み(最上段は87度)
 ];
 /// ドームの方位角の刻み(mil)。4なら1,600方位(50km先で約196m間隔)。計算量(方位数に比例)と頂点数を減らすために間引く。
-pub const DOME_AZIMUTH_STEP: usize = 4;
+const DOME_AZIMUTH_STEP: usize = 4;
 /// 2D覆域の境界の方位角の刻み(mil)。2なら3,200方位(50km先で約98m間隔)。
-pub const COVERAGE_AZIMUTH_STEP: usize = 2;
+const COVERAGE_AZIMUTH_STEP: usize = 2;
 /// 最上段リングを1点(アペックス)に閉じる傘の三角形の数。全方位角を傘に使うと、
 /// 極端に細い三角形が大量に1点へ重なり、半透明合成(アルファブレンド)の描画順依存の副作用で
 /// カメラ操作中にチカチカして見えることが分かった(360方位角のときに確認)ので、方位角を間引いて
@@ -207,6 +220,23 @@ fn push_tri(out: &mut Vec<DrawVertex>, anchor: [f32; 3], color: [f32; 4], points
     }
 }
 
+/// ピンの頭の中心(先端から`PIN_HEAD_CENTER_PX`上)に、半径`radius`pxの円を扇状の三角形で積む。
+fn push_head_disc(out: &mut Vec<DrawVertex>, anchor: [f32; 3], color: [f32; 4], radius: f32) {
+    let center_y = PIN_HEAD_CENTER_PX;
+    let circle = |i: usize| {
+        let t = std::f32::consts::TAU * i as f32 / PIN_HEAD_SEGMENTS as f32;
+        [radius * t.cos(), center_y + radius * t.sin()]
+    };
+    for i in 0..PIN_HEAD_SEGMENTS {
+        push_tri(
+            out,
+            anchor,
+            color,
+            [[0.0, center_y], circle(i), circle(i + 1)],
+        );
+    }
+}
+
 /// ピンの形(頭の円+先端の三角形)を、`anchor`の画面上に大きさ`head_radius`px・先端の高さ`tip_y`pxで積む。
 /// 座標は先端の基準位置(0,0)から画面のpx(右・上が正)。先端の三角形の辺は頭の円の接線。
 fn push_pin_shape(
@@ -217,18 +247,7 @@ fn push_pin_shape(
     tip_y: f32,
 ) {
     let center_y = PIN_HEAD_CENTER_PX;
-    let circle = |i: usize| {
-        let t = std::f32::consts::TAU * i as f32 / PIN_HEAD_SEGMENTS as f32;
-        [head_radius * t.cos(), center_y + head_radius * t.sin()]
-    };
-    for i in 0..PIN_HEAD_SEGMENTS {
-        push_tri(
-            out,
-            anchor,
-            color,
-            [[0.0, center_y], circle(i), circle(i + 1)],
-        );
-    }
+    push_head_disc(out, anchor, color, head_radius);
     // 先端(0,tip_y)から頭の円へ引いた接線の接点。
     let beta = (head_radius / (center_y - tip_y)).acos();
     let tangent_x = head_radius * beta.sin();
@@ -254,8 +273,7 @@ fn push_marker_pin(
     marker: &RadarMarker,
     color: [f32; 4],
 ) {
-    let ground_elevation =
-        sample_heightmap(data, marker.lat_deg, marker.lon_deg).unwrap_or(0.0) as f64;
+    let ground_elevation = sample_heightmap(data, marker.lat_deg, marker.lon_deg) as f64;
     let anchor =
         mesh_transform.transform(marker.lat_deg, marker.lon_deg, ground_elevation + MARKER_M);
     push_pin_shape(
@@ -266,27 +284,19 @@ fn push_marker_pin(
         -PIN_OUTLINE_PX * 1.4,
     );
     push_pin_shape(out, anchor, color, PIN_HEAD_RADIUS_PX, 0.0);
-    for i in 0..PIN_HEAD_SEGMENTS {
-        let point = |i: usize| {
-            let t = std::f32::consts::TAU * i as f32 / PIN_HEAD_SEGMENTS as f32;
-            [
-                PIN_DOT_RADIUS_PX * t.cos(),
-                PIN_HEAD_CENTER_PX + PIN_DOT_RADIUS_PX * t.sin(),
-            ]
-        };
-        push_tri(
-            out,
-            anchor,
-            MARKER_OUTLINE_COLOR,
-            [[0.0, PIN_HEAD_CENTER_PX], point(i), point(i + 1)],
-        );
-    }
+    push_head_disc(out, anchor, MARKER_OUTLINE_COLOR, PIN_DOT_RADIUS_PX);
+}
+
+/// 観測点を原点とするENU変換`local`で、方位角`azimuth_deg`・水平距離`horizontal_m`の地点の(緯度, 経度)。
+fn polar_to_geodetic(local: &EnuTransform, azimuth_deg: f64, horizontal_m: f64) -> (f64, f64) {
+    let az_rad = azimuth_deg.to_radians();
+    local.inverse(horizontal_m * az_rad.sin(), horizontal_m * az_rad.cos())
 }
 
 /// マーカー一覧 + 選択状態から、マーカー(ピン)の頂点列を作る。
 /// `mesh_origin`は現在GPUにアップロードされている地形メッシュの原点(マーカー自体の
 /// 緯度経度とは無関係。マーカー位置をこの原点基準のENU座標へ変換するために使う)。
-pub fn build_marker_geometry(
+pub(crate) fn build_marker_geometry(
     data: &TerrainData,
     mesh_origin: &Origin,
     markers: &[RadarMarker],
@@ -308,19 +318,11 @@ pub fn build_marker_geometry(
 
 /// 観測点の覆域ドームの計算(`compute_los_dome`)を始める(`azimuth_step`は`DOME_AZIMUTH_STEP`)。結果は`dome_geometry`へ渡す。
 /// 全方位の計算は重いので、`advance`を時間で区切って呼ぶこと(`ui::terrain_view::coverage`)。
-pub fn start_dome_computation(data: &TerrainData, marker: &RadarMarker) -> DomeComputation {
-    let origin = Origin {
-        lat_deg: marker.lat_deg,
-        lon_deg: marker.lon_deg,
-    };
-    let params = LosParams {
-        observer_height_m: marker.height_m,
-        max_range_m: marker.max_range_m,
-    };
+pub(crate) fn start_dome_computation(data: &TerrainData, marker: &RadarMarker) -> DomeComputation {
     DomeComputation::new(
         data,
-        &origin,
-        &params,
+        &marker.origin(),
+        &marker.los_params(),
         &DOME_RING_ELEVATIONS_DEG,
         DOME_AZIMUTH_STEP,
     )
@@ -328,23 +330,15 @@ pub fn start_dome_computation(data: &TerrainData, marker: &RadarMarker) -> DomeC
 
 /// 観測点の2D覆域(指定した海抜高度での探知可能領域)の計算を始める(`azimuth_step`は`COVERAGE_AZIMUTH_STEP`)。
 /// 結果は`coverage_2d_geometry`へ渡す。
-pub fn start_coverage_computation(
+pub(crate) fn start_coverage_computation(
     data: &TerrainData,
     marker: &RadarMarker,
     target_altitude_m: f64,
 ) -> RangeComputation {
-    let origin = Origin {
-        lat_deg: marker.lat_deg,
-        lon_deg: marker.lon_deg,
-    };
-    let params = LosParams {
-        observer_height_m: marker.height_m,
-        max_range_m: marker.max_range_m,
-    };
     RangeComputation::new(
         data,
-        &origin,
-        &params,
+        &marker.origin(),
+        &marker.los_params(),
         RangeKind::AtAltitude(target_altitude_m),
         COVERAGE_AZIMUTH_STEP,
     )
@@ -359,7 +353,7 @@ pub fn start_coverage_computation(
 /// 埋めて球面状の面を作る(「ワイヤーフレームではなくSurfaceが存在する多面体に」という要望による)。
 /// 高いリングほど方位の頂点を間引き(`ring_stride`)、最上段リングは、その半径の平均を高さとする頂点(アペックス)へ
 /// 傘状に閉じて、開いた穴のない多面体にする。
-pub fn dome_geometry(
+pub(crate) fn dome_geometry(
     data: &TerrainData,
     mesh_origin: &Origin,
     marker: &RadarMarker,
@@ -373,14 +367,9 @@ pub fn dome_geometry(
         return out;
     }
     let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
-    let radar_origin = Origin {
-        lat_deg: marker.lat_deg,
-        lon_deg: marker.lon_deg,
-    };
-    let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
-    let observer_height = sample_heightmap(data, marker.lat_deg, marker.lon_deg).unwrap_or(0.0)
-        as f64
-        + marker.height_m;
+    let local_transform = EnuTransform::new(&marker.origin(), &data.metadata.ellipsoid);
+    let observer_height =
+        sample_heightmap(data, marker.lat_deg, marker.lon_deg) as f64 + marker.height_m;
     let (dome_color, _, _) = coverage_colors(marker.id);
 
     // ドーム上の頂点(リングごと・方位ごと。高いリングは間引く)を、地形メッシュのENU座標へ変換しておく。
@@ -393,11 +382,12 @@ pub fn dome_geometry(
             (0..num_azimuths)
                 .step_by(stride)
                 .map(|az_i| {
-                    let az_rad = ring.points[az_i].azimuth_deg.to_radians();
-                    let range_m = ring.points[az_i].range_m;
-                    let horizontal = range_m * el_rad.cos();
-                    let (lat, lon) = local_transform
-                        .inverse(horizontal * az_rad.sin(), horizontal * az_rad.cos());
+                    let LosPoint {
+                        azimuth_deg,
+                        range_m,
+                    } = ring.points[az_i];
+                    let (lat, lon) =
+                        polar_to_geodetic(&local_transform, azimuth_deg, range_m * el_rad.cos());
                     let absolute_height = observer_height + range_m * el_rad.sin() + DOME_M;
                     TerrainVertex::unlit(
                         mesh_transform.transform(lat, lon, absolute_height),
@@ -444,7 +434,7 @@ pub fn dome_geometry(
 /// 観測点を中心とした星形(star-shaped)領域なので、観測点から境界上の隣接2点への三角形
 /// (ファン)を並べるだけで自己交差のない面になる(3Dの覆域ドームのアペックス付近のような、
 /// 視点回転時の半透明合成チカチカ対策の間引きは、2Dは常に真上固定視点で回転しないため不要)。
-pub fn coverage_2d_geometry(
+pub(crate) fn coverage_2d_geometry(
     data: &TerrainData,
     mesh_origin: &Origin,
     marker: &RadarMarker,
@@ -455,37 +445,27 @@ pub fn coverage_2d_geometry(
         return out;
     }
     let mesh_transform = EnuTransform::new(mesh_origin, &data.metadata.ellipsoid);
-    let radar_origin = Origin {
-        lat_deg: marker.lat_deg,
-        lon_deg: marker.lon_deg,
-    };
-    let local_transform = EnuTransform::new(&radar_origin, &data.metadata.ellipsoid);
+    let local_transform = EnuTransform::new(&marker.origin(), &data.metadata.ellipsoid);
 
     // 地表面に沿わせるため、各点(観測点自身も含む)は「その地点の地表標高+バイアス」の
     // 高さに置く(覆域そのものの高度target_altitude_mではない。あくまで地図上に貼る
     // 塗り分けのオーバーレイであり、3Dドームのように空間中の実際の高度を表現するもの
     // ではないため)。
     let position_at = |lat: f64, lon: f64| -> [f32; 3] {
-        let ground = sample_heightmap(data, lat, lon).unwrap_or(0.0) as f64;
+        let ground = sample_heightmap(data, lat, lon) as f64;
         mesh_transform.transform(lat, lon, ground + COVERAGE_AREA_M)
     };
     let boundary: Vec<[f32; 3]> = points
         .iter()
         .map(|p| {
-            let az_rad = p.azimuth_deg.to_radians();
-            let (lat, lon) =
-                local_transform.inverse(p.range_m * az_rad.sin(), p.range_m * az_rad.cos());
+            let (lat, lon) = polar_to_geodetic(&local_transform, p.azimuth_deg, p.range_m);
             position_at(lat, lon)
         })
         .collect();
 
     let (_, area_color, outline_color) = coverage_colors(marker.id);
-    let fill = [
-        area_color[0],
-        area_color[1],
-        area_color[2],
-        COVERAGE_AREA_ALPHA,
-    ];
+    let [r, g, b] = area_color;
+    let fill = [r, g, b, COVERAGE_AREA_ALPHA];
     let center = position_at(marker.lat_deg, marker.lon_deg);
     let n = boundary.len();
     for i in 0..n {

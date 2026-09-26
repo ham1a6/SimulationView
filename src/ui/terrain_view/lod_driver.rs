@@ -112,7 +112,7 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
             &terrain,
             &transform,
             &camera,
-            renderer.canvas_height_px() as f32,
+            renderer.canvas_size_px().1 as f32,
             &s.lod.resident,
         );
         (terrain, origin, plan)
@@ -213,7 +213,7 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
                             continue;
                         }
                         let mut s = state.borrow_mut();
-                        for (c, &level) in available.iter().enumerate().take(chunk_count) {
+                        for (c, &level) in available.iter().enumerate() {
                             if let Some(m) =
                                 mesh::build_chunk_mesh(&terrain, tile, c, level, &transform)
                             {
@@ -364,8 +364,7 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
         // 地表に貼り付いている観測点・覆域を合わせ直す。
         {
             let mut s = state.borrow_mut();
-            s.target_up = heightmap::sample_heightmap(&terrain, origin.lat_deg, origin.lon_deg)
-                .unwrap_or(0.0);
+            s.target_up = heightmap::sample_heightmap(&terrain, origin.lat_deg, origin.lon_deg);
             let (tx, ty) = (s.camera.target.x as f64, s.camera.target.y as f64);
             s.camera.target.z = heightmap::ground_at_enu(&terrain, &transform, tx, ty).2;
             let chunks = terrain.chunks_per_tile() * terrain.chunks_per_tile();

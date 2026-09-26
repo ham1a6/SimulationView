@@ -101,17 +101,9 @@ fn compute_coverage(
     points
         .iter()
         .map(|p| {
-            markers.iter().any(|m| {
-                is_visible(
-                    data,
-                    m.lat_deg,
-                    m.lon_deg,
-                    m.height_m,
-                    m.max_range_m,
-                    p.lat_deg,
-                    p.lon_deg,
-                )
-            })
+            markers
+                .iter()
+                .any(|m| is_visible(data, &m.origin(), &m.los_params(), p.lat_deg, p.lon_deg))
         })
         .collect()
 }
@@ -172,15 +164,7 @@ fn compute_airspace_boundary(
             markers
                 .iter()
                 .filter_map(|m| {
-                    min_visible_altitude(
-                        data,
-                        m.lat_deg,
-                        m.lon_deg,
-                        m.height_m,
-                        m.max_range_m,
-                        p.lat_deg,
-                        p.lon_deg,
-                    )
+                    min_visible_altitude(data, &m.origin(), &m.los_params(), p.lat_deg, p.lon_deg)
                 })
                 .fold(None, |acc: Option<f64>, h| {
                     Some(acc.map_or(h, |a| a.min(h)))
