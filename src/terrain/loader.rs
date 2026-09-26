@@ -25,6 +25,7 @@ use std::rc::Rc;
 use serde::Deserialize;
 
 use super::geodesy::Ellipsoid;
+use super::origin::Origin;
 
 /// タイルの識別子: 南西角の(緯度, 経度)(整数度)。
 pub type TileKey = (i32, i32);
@@ -39,6 +40,11 @@ pub const WHOLE_TILE: u8 = u8::MAX;
 /// グリッド上の「データなし(海など)」を表す値。
 pub const NO_DATA: i16 = i16::MIN;
 
+/// 一辺`cells`セルのグリッドのノード数(`(cells+1)^2`)。
+pub(crate) fn grid_len(cells: usize) -> usize {
+    (cells + 1) * (cells + 1)
+}
+
 /// このレベル以下は、タイル1枚分(全チャンク)のファイルをまとめて取得する(小さいので1回で済ませる)。
 /// これより細かいレベルはファイルが大きいので、HTTP Rangeでチャンク1個分だけ取得する。
 pub const WHOLE_FILE_MAX_LEVEL: usize = 2;
@@ -49,12 +55,6 @@ pub struct GeodeticBounds {
     pub max_lat: f64,
     pub min_lon: f64,
     pub max_lon: f64,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct DefaultOrigin {
-    pub lat_deg: f64,
-    pub lon_deg: f64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -70,7 +70,7 @@ pub struct TerrainMetadata {
     pub ellipsoid: Ellipsoid,
     #[allow(dead_code)] // v1では常にfalse。texture.png読み込み分岐を実装する際に使う。
     pub has_texture: bool,
-    pub default_origin: DefaultOrigin,
+    pub default_origin: Origin,
 }
 
 #[derive(Debug, Deserialize)]
@@ -100,6 +100,12 @@ struct CachedGrid {
     last_used: Cell<u64>,
 }
 
+impl CachedGrid {
+    fn bytes(&self) -> usize {
+        self.data.len() * std::mem::size_of::<i16>()
+    }
+}
+
 /// 1タイル分の状態。`chunk_level`は「いま画面に出している(=標高サンプリングにも使う)レベル」で、
 /// 描画されているメッシュと標高の問い合わせ(観測点・見通し計算・クリック判定)を一致させる。
 pub struct TileEntry {
@@ -112,6 +118,13 @@ pub struct TileEntry {
     chunk_level: Vec<Cell<u8>>,
     /// 添字は(レベル-1)*チャンク数+チャンク番号。
     detail: RefCell<Vec<Option<CachedGrid>>>,
+}
+
+impl TileEntry {
+    /// チャンクの、いま画面に出しているレベル(0ならタイル全体をレベル0で出している)。
+    fn level(&self, chunk: usize) -> usize {
+        self.chunk_level[chunk].get() as usize
+    }
 }
 
 pub struct TerrainData {
@@ -137,8 +150,7 @@ impl TerrainData {
         let b = metadata.geodetic_bounds;
         let rows = (b.max_lat - b.min_lat).round() as i32;
         let cols = (b.max_lon - b.min_lon).round() as i32;
-        let nodes0 = metadata.tile_levels[0] as usize + 1;
-        let grid0 = nodes0 * nodes0;
+        let grid0 = grid_len(metadata.tile_levels[0] as usize);
         let chunks = (metadata.chunks_per_tile * metadata.chunks_per_tile) as usize;
         let num_detail = metadata.tile_levels.len() - 1;
 
@@ -183,7 +195,6 @@ impl TerrainData {
         bounds: GeodeticBounds,
         mut visit: impl FnMut([[f64; 3]; 3]),
     ) {
-        let k = self.chunks_per_tile();
         for lat in bounds.min_lat.floor() as i32..bounds.max_lat.ceil() as i32 {
             for lon in bounds.min_lon.floor() as i32..bounds.max_lon.ceil() as i32 {
                 let tile = self.tile((lat, lon));
@@ -204,12 +215,10 @@ impl TerrainData {
                         for i in begin[0]..end[0] {
                             if base
                                 && tile.is_some_and(|t| {
-                                    let cx =
-                                        (((i as f64 + 0.5) * step * k as f64) as usize).min(k - 1);
-                                    let cy =
-                                        (((j as f64 + 0.5) * step * k as f64) as usize).min(k - 1);
-                                    let level = t.chunk_level[cy * k + cx].get() as usize;
-                                    level > 0 && self.chunk_grid(t, level, cy * k + cx).is_some()
+                                    let chunk = self
+                                        .chunk_at((i as f64 + 0.5) * step, (j as f64 + 0.5) * step);
+                                    let level = t.level(chunk);
+                                    level > 0 && self.chunk_grid(t, level, chunk).is_some()
                                 })
                             {
                                 continue;
@@ -248,18 +257,20 @@ impl TerrainData {
                 );
                 if let Some(tile) = tile {
                     for chunk in 0..self.chunk_count() {
-                        let level = tile.chunk_level[chunk].get() as usize;
+                        let level = tile.level(chunk);
                         if level == 0 {
                             continue;
                         }
                         if let Some(values) = self.chunk_grid(tile, level, chunk) {
-                            let cells = self.chunk_cells(level);
-                            let step = 1.0 / self.level_cells(level) as f64;
-                            let start = [
-                                lon as f64 + (chunk % k * cells) as f64 * step,
-                                lat as f64 + (chunk / k * cells) as f64 * step,
-                            ];
-                            grid(Some(&values), cells, start, step, false);
+                            let (lat_start, lon_start, step) =
+                                self.chunk_placement(tile.key, level, chunk);
+                            grid(
+                                Some(&values),
+                                self.chunk_cells(level),
+                                [lon_start, lat_start],
+                                step,
+                                false,
+                            );
                         }
                     }
                 }
@@ -282,6 +293,11 @@ impl TerrainData {
         self.metadata.tile_levels.len()
     }
 
+    /// 最も細かいレベル。
+    pub fn max_level(&self) -> usize {
+        self.num_levels() - 1
+    }
+
     /// 1度タイルの一辺を何チャンクに分けるか。
     pub fn chunks_per_tile(&self) -> usize {
         self.metadata.chunks_per_tile as usize
@@ -302,10 +318,34 @@ impl TerrainData {
         self.level_cells(level) / self.chunks_per_tile()
     }
 
+    /// レベル(1以上)のチャンクの南西角の(緯度, 経度)と、ノードの間隔(度)。
+    pub(crate) fn chunk_placement(
+        &self,
+        key: TileKey,
+        level: usize,
+        chunk: usize,
+    ) -> (f64, f64, f64) {
+        let k = self.chunks_per_tile();
+        let cells = self.chunk_cells(level);
+        let step = 1.0 / self.level_cells(level) as f64;
+        (
+            key.0 as f64 + (chunk / k * cells) as f64 * step,
+            key.1 as f64 + (chunk % k * cells) as f64 * step,
+            step,
+        )
+    }
+
+    /// タイル内の位置(u=経度方向, v=緯度方向。ともに0〜1)を含むチャンクの番号(範囲外は端のチャンク)。
+    fn chunk_at(&self, u: f64, v: f64) -> usize {
+        let k = self.chunks_per_tile();
+        let cx = ((u * k as f64).floor().max(0.0) as usize).min(k - 1);
+        let cy = ((v * k as f64).floor().max(0.0) as usize).min(k - 1);
+        cy * k + cx
+    }
+
     /// タイル全体のグリッド(レベル0。常にある)。
     pub fn whole_grid(&self, tile: &TileEntry) -> &[i16] {
-        let n = self.level_cells(0) + 1;
-        &self.base[tile.base_offset..tile.base_offset + n * n]
+        &self.base[tile.base_offset..tile.base_offset + grid_len(self.level_cells(0))]
     }
 
     /// `detail`の添字。レベル0(タイル全体。チャンクを持たない)や範囲外のチャンクにはNone。
@@ -317,20 +357,25 @@ impl TerrainData {
     pub fn chunk_grid(&self, tile: &TileEntry, level: usize, chunk: usize) -> Option<Rc<Vec<i16>>> {
         let detail = tile.detail.borrow();
         let cached = detail.get(self.slot(level, chunk)?)?.as_ref()?;
-        self.stamp.set(self.stamp.get() + 1);
-        cached.last_used.set(self.stamp.get());
+        cached.last_used.set(self.next_stamp());
         Some(cached.data.clone())
+    }
+
+    /// 解放の優先順位に使う、使われた順の番号を1つ進めて返す。
+    fn next_stamp(&self) -> u64 {
+        let stamp = self.stamp.get() + 1;
+        self.stamp.set(stamp);
+        stamp
     }
 
     pub fn has_chunk_grid(&self, tile: &TileEntry, level: usize, chunk: usize) -> bool {
         self.slot(level, chunk)
-            .and_then(|slot| tile.detail.borrow().get(slot).map(|g| g.is_some()))
-            .unwrap_or(false)
+            .is_some_and(|slot| matches!(tile.detail.borrow().get(slot), Some(Some(_))))
     }
 
     /// このチャンクについて、取得済みで`max_level`以下の最も細かいレベル(1以上)。無ければ0。
     pub fn best_cached_level(&self, tile: &TileEntry, chunk: usize, max_level: usize) -> usize {
-        (1..=max_level.min(self.num_levels() - 1))
+        (1..=max_level.min(self.max_level()))
             .rev()
             .find(|&level| self.has_chunk_grid(tile, level, chunk))
             .unwrap_or(0)
@@ -346,28 +391,26 @@ impl TerrainData {
         let Some(slot) = self.slot(level, chunk) else {
             return;
         };
-        let nodes = self.chunk_cells(level) + 1;
-        if data.len() != nodes * nodes {
+        if data.len() != grid_len(self.chunk_cells(level)) {
             return;
         }
-        self.stamp.set(self.stamp.get() + 1);
-        let bytes = data.len() * std::mem::size_of::<i16>();
+        let grid = CachedGrid {
+            data: Rc::new(data),
+            last_used: Cell::new(self.next_stamp()),
+        };
         let mut detail = tile.detail.borrow_mut();
         let slot = &mut detail[slot];
         if slot.is_none() {
-            self.cached_bytes.set(self.cached_bytes.get() + bytes);
+            self.cached_bytes
+                .set(self.cached_bytes.get() + grid.bytes());
         }
-        *slot = Some(CachedGrid {
-            data: Rc::new(data),
-            last_used: Cell::new(self.stamp.get()),
-        });
+        *slot = Some(grid);
     }
 
     /// タイル1枚分・1レベルのファイル(全チャンクのレコードを連結したもの)を、チャンクごとに
     /// 分けて登録する。
     pub fn insert_tile_level(&self, key: TileKey, level: usize, all: &[i16]) {
-        let nodes = self.chunk_cells(level) + 1;
-        let record = nodes * nodes;
+        let record = grid_len(self.chunk_cells(level));
         for chunk in 0..self.chunk_count() {
             if let Some(slice) = all.get(chunk * record..(chunk + 1) * record) {
                 self.insert_chunk_grid(key, level, chunk, slice.to_vec());
@@ -405,10 +448,8 @@ impl TerrainData {
     }
 
     fn sample_grid(&self, tile: &TileEntry, u: f64, v: f64, surface: bool) -> f32 {
-        let k = self.chunks_per_tile();
-        let cx = ((u * k as f64).floor().max(0.0) as usize).min(k - 1);
-        let cy = ((v * k as f64).floor().max(0.0) as usize).min(k - 1);
-        let level = tile.chunk_level[cy * k + cx].get() as usize;
+        let chunk = self.chunk_at(u, v);
+        let level = tile.level(chunk);
 
         // (グリッドの参照, 一辺のセル数, グリッド内の連続座標fx/fy)を決める。
         let bilinear = |grid: &[i16], cells: usize, fx: f64, fy: f64| -> f32 {
@@ -437,7 +478,7 @@ impl TerrainData {
                     values.iter().zip(weights).map(|(&h, w)| h as f32 * w).sum()
                 };
             }
-            if v00 == NO_DATA || v10 == NO_DATA || v01 == NO_DATA || v11 == NO_DATA {
+            if [v00, v10, v01, v11].contains(&NO_DATA) {
                 return 0.0;
             }
             let (h00, h10, h01, h11) = (v00 as f32, v10 as f32, v01 as f32, v11 as f32);
@@ -448,17 +489,15 @@ impl TerrainData {
 
         if level > 0 {
             let detail = tile.detail.borrow();
-            if let Some(Some(cached)) = self
-                .slot(level, cy * k + cx)
-                .and_then(|slot| detail.get(slot))
-            {
+            if let Some(Some(cached)) = self.slot(level, chunk).and_then(|slot| detail.get(slot)) {
+                let k = self.chunks_per_tile();
                 let n_level = self.level_cells(level) as f64;
                 let cells = self.chunk_cells(level);
                 return bilinear(
                     &cached.data,
                     cells,
-                    u * n_level - (cx * cells) as f64,
-                    v * n_level - (cy * cells) as f64,
+                    u * n_level - (chunk % k * cells) as f64,
+                    v * n_level - (chunk / k * cells) as f64,
                 );
             }
         }
@@ -501,11 +540,8 @@ impl TerrainData {
             }
             let mut detail = self.tiles[ti].detail.borrow_mut();
             if let Some(g) = detail[si].take() {
-                self.cached_bytes.set(
-                    self.cached_bytes
-                        .get()
-                        .saturating_sub(g.data.len() * std::mem::size_of::<i16>()),
-                );
+                self.cached_bytes
+                    .set(self.cached_bytes.get().saturating_sub(g.bytes()));
             }
         }
     }
@@ -551,7 +587,7 @@ impl TerrainData {
             },
             ellipsoid: Ellipsoid::WGS84,
             has_texture: false,
-            default_origin: DefaultOrigin {
+            default_origin: Origin {
                 lat_deg: min_lat as f64 + 0.5,
                 lon_deg: min_lon as f64 + 0.5,
             },

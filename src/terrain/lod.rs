@@ -17,6 +17,7 @@
 //!   (カメラを戻したときにすぐ細かく見えるように)。残りが足りなければ全体表示(レベル0)に戻る。
 //! - 理想より1レベル細かいだけなら下げない(距離の境目でレベルが行き来しないヒステリシス)。
 
+use std::cmp::Ordering;
 use std::collections::HashMap;
 
 use glam::{Mat4, Vec3};
@@ -30,7 +31,7 @@ use super::mesh::tile_vertex_count;
 /// 後回しなので、視野が狭ければ見えているチャンクを細かくする分が大きく残る。最細(30m)のチャンクは
 /// 1個で約36万頂点。GPUメモリは頂点(28バイト)とインデックスで合計約1.2GBになる。
 /// 以前は600万頂点(下限は近いタイルだけ)だった。
-pub const DETAIL_VERTEX_BUDGET: usize = 25_000_000;
+const DETAIL_VERTEX_BUDGET: usize = 25_000_000;
 
 /// チャンクのレベル選択に使う: 画面(CSSピクセル)上で1セルがこのピクセル数以下になる最も粗い
 /// レベルを選ぶ。描画は2倍スーパーサンプリングなので、0.7ピクセルなら描画解像度では約1.4ピクセル分。
@@ -53,8 +54,23 @@ pub enum TileLayout {
     Chunks(Vec<u8>),
 }
 
+impl TileLayout {
+    /// チャンクごとのレベル(`Whole`ならNone)。
+    pub fn chunk_levels(&self) -> Option<&[u8]> {
+        match self {
+            Self::Whole => None,
+            Self::Chunks(levels) => Some(levels),
+        }
+    }
+}
+
+/// 並べる順: 見えているものが先、その中は(基準位置から)近い順。引数は(視野内か, 距離)。
+fn by_priority(a: (bool, f32), b: (bool, f32)) -> Ordering {
+    b.0.cmp(&a.0).then(a.1.total_cmp(&b.1))
+}
+
 /// レベルkのセルの大きさ(メートル、緯度方向)。
-pub fn cell_size_m(data: &TerrainData, level: usize) -> f32 {
+fn cell_size_m(data: &TerrainData, level: usize) -> f32 {
     METERS_PER_DEGREE / data.level_cells(level) as f32
 }
 
@@ -103,9 +119,7 @@ impl<'a> ViewInfo<'a> {
             ortho_pixel_m,
         }
     }
-}
 
-impl ViewInfo<'_> {
     /// 緯度経度の矩形について、基準位置から見て最も近い点までの距離と、視野に入るか。
     fn rect(&self, lat0: f64, lon0: f64, lat1: f64, lon1: f64, mid_h: f64) -> (f32, bool) {
         let nearest = Vec3::from(self.transform.transform(
@@ -163,7 +177,7 @@ impl ViewInfo<'_> {
 
 /// 1セルが画面上で`CHUNK_TARGET_CELL_PX`以下になる最も粗いレベル(`from`以上)。どれも満たさなければ最細。
 fn ideal_level(data: &TerrainData, pixel_m: f32, from: usize) -> usize {
-    let max_level = data.num_levels() - 1;
+    let max_level = data.max_level();
     (from..=max_level)
         .find(|&k| cell_size_m(data, k) <= CHUNK_TARGET_CELL_PX * pixel_m)
         .unwrap_or(max_level)
@@ -208,11 +222,7 @@ fn plan_levels_with_budget(
         .collect();
 
     // 見えているタイルを近い順に、その後に視野の外のタイルを近い順に並べる。
-    infos.sort_by(|a, b| {
-        b.visible
-            .cmp(&a.visible)
-            .then(a.distance.total_cmp(&b.distance))
-    });
+    infos.sort_by(|a, b| by_priority((a.visible, a.distance), (b.visible, b.distance)));
 
     let mut levels = allocate_levels(data, &infos, budget);
     infos
@@ -266,14 +276,11 @@ fn evaluate_tile(
 ) -> TileInfo {
     let k = data.chunks_per_tile();
     let chunk_count = data.chunk_count();
-    let max_level = data.num_levels() - 1;
+    let max_level = data.max_level();
     let (lat0, lon0) = (tile.key.0 as f64, tile.key.1 as f64);
     let mid_h = 0.5 * (tile.elevation_min + tile.elevation_max) as f64;
     let (distance, visible) = view.rect(lat0, lon0, lat0 + 1.0, lon0 + 1.0, mid_h);
-    let current: Option<&Vec<u8>> = match resident.get(&tile.key) {
-        Some(TileLayout::Chunks(v)) => Some(v),
-        _ => None,
-    };
+    let current = resident.get(&tile.key).and_then(TileLayout::chunk_levels);
     let have = |c: usize| current.map_or(0, |v| v[c] as usize);
 
     // タイルの一番近い点でも下限のレベル1で足りるなら、どのチャンクも目標はレベル1になる
@@ -374,17 +381,12 @@ fn allocate_group(
             })
         })
         .collect();
-    upgrades.sort_by(|a, b| {
-        b.visible
-            .cmp(&a.visible)
-            .then(a.distance.total_cmp(&b.distance))
-    });
+    upgrades.sort_by(|a, b| by_priority((a.visible, a.distance), (b.visible, b.distance)));
     // レベルごとの周回: 1周目で全チャンクをレベル2まで、2周目でレベル3まで、…と上げる。1個ずつ最細まで
     // 上げると、近くの少数の最細チャンク(1個で約36万頂点)が予算を使い切り、遠くのチャンクが
     // 理想のレベルに届かず最低のレベル1のまま残るため。予算が尽きた周回で打ち切る(それより上の
     // レベルは増分が大きく、どのチャンクも上げられない)。
-    let max_level = data.num_levels() - 1;
-    for level in 2..=max_level {
+    for level in 2..=data.max_level() {
         let delta = chunk_vertex_cost(data, level) - chunk_vertex_cost(data, level - 1);
         for up in upgrades.iter().filter(|up| up.target >= level) {
             if delta > *remaining {

@@ -1,6 +1,8 @@
 //! 地形メッシュ生成。DETAILED_DESIGN.md 6.5節(頂点構造)・6.7節(配色)。座標変換は`geodesy`、標高の
 //! サンプリングは`heightmap`。
 
+use std::rc::Rc;
+
 use super::geodesy::EnuTransform;
 use super::loader::{TerrainData, TileEntry, NO_DATA};
 
@@ -64,11 +66,7 @@ fn elevation_to_color(elevation: f32, min: f32, max: f32) -> [f32; 3] {
         let (t1, c1) = pair[1];
         if t <= t1 {
             let local_t = if t1 > t0 { (t - t0) / (t1 - t0) } else { 0.0 };
-            return [
-                c0[0] + (c1[0] - c0[0]) * local_t,
-                c0[1] + (c1[1] - c0[1]) * local_t,
-                c0[2] + (c1[2] - c0[2]) * local_t,
-            ];
+            return std::array::from_fn(|i| c0[i] + (c1[i] - c0[i]) * local_t);
         }
     }
     STOPS[STOPS.len() - 1].1
@@ -294,12 +292,11 @@ fn grid_indices(grid: &[i16], cells: usize) -> Vec<u32> {
     indices
 }
 
-/// タイル全体(レベル0)の頂点列。
-pub fn build_whole_tile_vertices(
-    data: &TerrainData,
+/// タイル全体(レベル0)のグリッド・一辺のセル数・配置。
+fn whole_tile_grid<'a>(
+    data: &'a TerrainData,
     tile: &TileEntry,
-    transform: &EnuTransform,
-) -> Vec<TerrainVertex> {
+) -> (&'a [i16], usize, GridPlacement) {
     let cells = data.level_cells(0);
     let place = GridPlacement {
         lat_start: tile.key.0 as f64,
@@ -307,13 +304,48 @@ pub fn build_whole_tile_vertices(
         step_deg: 1.0 / cells as f64,
         skirt_depth: skirt_depth_m(0),
     };
-    grid_vertices(
-        data.whole_grid(tile),
-        cells,
-        &place,
-        data.metadata.elevation_max,
-        transform,
-    )
+    (data.whole_grid(tile), cells, place)
+}
+
+/// チャンク・レベル(1以上)のグリッド・一辺のセル数・配置。グリッドが未取得ならNone。
+fn chunk_grid(
+    data: &TerrainData,
+    tile: &TileEntry,
+    chunk: usize,
+    level: usize,
+) -> Option<(Rc<Vec<i16>>, usize, GridPlacement)> {
+    let grid = data.chunk_grid(tile, level, chunk)?;
+    let (lat_start, lon_start, step_deg) = data.chunk_placement(tile.key, level, chunk);
+    let place = GridPlacement {
+        lat_start,
+        lon_start,
+        step_deg,
+        skirt_depth: skirt_depth_m(level),
+    };
+    Some((grid, data.chunk_cells(level), place))
+}
+
+fn mesh_of(
+    data: &TerrainData,
+    grid: &[i16],
+    cells: usize,
+    place: &GridPlacement,
+    transform: &EnuTransform,
+) -> TerrainMesh {
+    TerrainMesh {
+        vertices: grid_vertices(grid, cells, place, data.metadata.elevation_max, transform),
+        indices: grid_indices(grid, cells),
+    }
+}
+
+/// タイル全体(レベル0)の頂点列。
+pub fn build_whole_tile_vertices(
+    data: &TerrainData,
+    tile: &TileEntry,
+    transform: &EnuTransform,
+) -> Vec<TerrainVertex> {
+    let (grid, cells, place) = whole_tile_grid(data, tile);
+    grid_vertices(grid, cells, &place, data.metadata.elevation_max, transform)
 }
 
 /// タイル全体(レベル0)のメッシュ。
@@ -322,10 +354,8 @@ pub fn build_whole_tile_mesh(
     tile: &TileEntry,
     transform: &EnuTransform,
 ) -> TerrainMesh {
-    TerrainMesh {
-        vertices: build_whole_tile_vertices(data, tile, transform),
-        indices: grid_indices(data.whole_grid(tile), data.level_cells(0)),
-    }
+    let (grid, cells, place) = whole_tile_grid(data, tile);
+    mesh_of(data, grid, cells, &place, transform)
 }
 
 /// チャンク(行(南→北)*分割数+列(西→東))・レベル(1以上)の頂点列。グリッドが未取得ならNone。
@@ -336,17 +366,7 @@ pub fn build_chunk_vertices(
     level: usize,
     transform: &EnuTransform,
 ) -> Option<Vec<TerrainVertex>> {
-    let grid = data.chunk_grid(tile, level, chunk)?;
-    let k = data.chunks_per_tile();
-    let (cx, cy) = (chunk % k, chunk / k);
-    let cells = data.chunk_cells(level);
-    let step_deg = 1.0 / data.level_cells(level) as f64;
-    let place = GridPlacement {
-        lat_start: tile.key.0 as f64 + (cy * cells) as f64 * step_deg,
-        lon_start: tile.key.1 as f64 + (cx * cells) as f64 * step_deg,
-        step_deg,
-        skirt_depth: skirt_depth_m(level),
-    };
+    let (grid, cells, place) = chunk_grid(data, tile, chunk, level)?;
     Some(grid_vertices(
         &grid,
         cells,
@@ -364,12 +384,8 @@ pub fn build_chunk_mesh(
     level: usize,
     transform: &EnuTransform,
 ) -> Option<TerrainMesh> {
-    let vertices = build_chunk_vertices(data, tile, chunk, level, transform)?;
-    let grid = data.chunk_grid(tile, level, chunk)?;
-    Some(TerrainMesh {
-        vertices,
-        indices: grid_indices(&grid, data.chunk_cells(level)),
-    })
+    let (grid, cells, place) = chunk_grid(data, tile, chunk, level)?;
+    Some(mesh_of(data, &grid, cells, &place, transform))
 }
 
 #[cfg(test)]

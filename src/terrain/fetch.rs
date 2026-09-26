@@ -3,20 +3,19 @@
 //! 細かいレベルはカメラに近いチャンクだけ、必要に応じて取得する(`fetch_tile_level`・`fetch_chunk_grid`。
 //! `terrain::lod`が必要なレベルを決め、`ui::terrain_view`が呼ぶ)。
 
-use super::loader::{TerrainData, TerrainMetadata, TileIndex, TileKey};
+use serde::de::DeserializeOwned;
 
-/// metadata.jsonだけを取得する(タイル一覧・ベースは取得しない、軽量版)。
-/// 原点入力フォームのバリデーション(geodetic_bounds)用に使う。
-/// `base_url`はスキーム+ホスト+ルートパス(例: `"http://localhost:9001/terrain"`)。
-/// 末尾にスラッシュを付けない。
-pub async fn fetch_metadata(base_url: &str) -> Result<TerrainMetadata, String> {
-    gloo_net::http::Request::get(&format!("{base_url}/metadata.json"))
+use super::loader::{grid_len, TerrainData, TerrainMetadata, TileIndex, TileKey};
+
+/// `{base_url}/{file}`のJSONを取得する。
+async fn fetch_json<T: DeserializeOwned>(base_url: &str, file: &str) -> Result<T, String> {
+    gloo_net::http::Request::get(&format!("{base_url}/{file}"))
         .send()
         .await
-        .map_err(|e| format!("metadata.json fetch failed: {e}"))?
+        .map_err(|e| format!("{file} fetch failed: {e}"))?
         .json()
         .await
-        .map_err(|e| format!("metadata.json parse failed: {e}"))
+        .map_err(|e| format!("{file} parse failed: {e}"))
 }
 
 fn decode_i16_le(bytes: &[u8]) -> Vec<i16> {
@@ -59,24 +58,16 @@ pub(crate) async fn fetch_binary(
     }
 }
 
-async fn fetch_tile_index(base_url: &str) -> Result<TileIndex, String> {
-    gloo_net::http::Request::get(&format!("{base_url}/tile_index.json"))
-        .send()
-        .await
-        .map_err(|e| format!("tile_index.json fetch failed: {e}"))?
-        .json()
-        .await
-        .map_err(|e| format!("tile_index.json parse failed: {e}"))
-}
-
 /// 起動時の取得: metadata.json・tile_index.json・base.bin(全タイルの最粗レベル)。
 /// 3つとも他の結果に依存せず取得できる(検証にだけ互いの値を使う)ので、高遅延回線での
 /// ラウンドトリップを減らすため同時に発行して待つ。
+/// `base_url`はスキーム+ホスト+ルートパス(例: `"http://localhost:9001/terrain"`)。
+/// 末尾にスラッシュを付けない。
 pub async fn load_terrain(base_url: &str) -> Result<TerrainData, String> {
     let base_bin_url = format!("{base_url}/base.bin");
     let (metadata, index, bytes) = futures_util::join!(
-        fetch_metadata(base_url),
-        fetch_tile_index(base_url),
+        fetch_json::<TerrainMetadata>(base_url, "metadata.json"),
+        fetch_json::<TileIndex>(base_url, "tile_index.json"),
         fetch_binary(&base_bin_url, None),
     );
     let metadata = metadata?;
@@ -96,8 +87,7 @@ pub async fn load_terrain(base_url: &str) -> Result<TerrainData, String> {
         );
     }
 
-    let nodes0 = metadata.tile_levels[0] as usize + 1;
-    let expected_len = index.tile_count() * nodes0 * nodes0 * 2;
+    let expected_len = index.tile_count() * grid_len(metadata.tile_levels[0] as usize) * 2;
     if bytes.len() != expected_len {
         return Err(format!(
             "base.bin size mismatch: got {} bytes, expected {}",
@@ -114,7 +104,7 @@ pub async fn load_terrain(base_url: &str) -> Result<TerrainData, String> {
 }
 
 /// タイル名("N035E138"形式。`geotiff_preprocess`の出力ファイル名と一致させる)。
-pub fn tile_name(key: TileKey) -> String {
+fn tile_name(key: TileKey) -> String {
     format!(
         "{}{:03}{}{:03}",
         if key.0 >= 0 { 'N' } else { 'S' },
@@ -129,18 +119,16 @@ fn tile_level_url(base_url: &str, key: TileKey, level: usize) -> String {
     format!("{base_url}/tiles/L{level}/{}.bin", tile_name(key))
 }
 
-/// タイル1枚分・1レベル(1以上)のファイル(全チャンクのレコードを連結したもの)を取得する。
-/// サイズが期待と違えばエラー。
+/// タイル1枚分・1レベル(1以上)のファイル(全チャンクのレコードを連結したもの)を、
+/// `terrain.base_url`から取得する。サイズが期待と違えばエラー。
 pub async fn fetch_tile_level(
-    base_url: &str,
+    terrain: &TerrainData,
     key: TileKey,
     level: usize,
-    chunk_cells: usize,
-    chunk_count: usize,
 ) -> Result<Vec<i16>, String> {
-    let url = tile_level_url(base_url, key, level);
+    let url = tile_level_url(&terrain.base_url, key, level);
     let bytes = fetch_binary(&url, None).await?;
-    let expected = chunk_count * (chunk_cells + 1) * (chunk_cells + 1) * 2;
+    let expected = terrain.chunk_count() * grid_len(terrain.chunk_cells(level)) * 2;
     if bytes.len() != expected {
         return Err(format!(
             "{url} size mismatch: got {} bytes, expected {expected}",
@@ -152,14 +140,13 @@ pub async fn fetch_tile_level(
 
 /// チャンク1個分のグリッドを、タイルファイルからHTTP Rangeで取得する。
 pub async fn fetch_chunk_grid(
-    base_url: &str,
+    terrain: &TerrainData,
     key: TileKey,
     level: usize,
     chunk: usize,
-    chunk_cells: usize,
 ) -> Result<Vec<i16>, String> {
-    let url = tile_level_url(base_url, key, level);
-    let record_bytes = (chunk_cells + 1) * (chunk_cells + 1) * 2;
+    let url = tile_level_url(&terrain.base_url, key, level);
+    let record_bytes = grid_len(terrain.chunk_cells(level)) * 2;
     let start = chunk * record_bytes;
     let bytes = fetch_binary(&url, Some((start, start + record_bytes - 1))).await?;
     if bytes.len() != record_bytes {

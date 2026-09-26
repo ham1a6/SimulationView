@@ -39,6 +39,14 @@ pub(super) struct LodState {
     pub(super) update_soon_pending: bool,
 }
 
+impl LodState {
+    /// グリッドの再試行の状態(失敗回数・待ち時間)を消す。
+    pub(super) fn clear_retry(&mut self, key: &FetchKey) {
+        self.retry_counts.remove(key);
+        self.retry_after.remove(key);
+    }
+}
+
 pub(super) struct ViewState {
     pub(super) renderer: Option<TerrainRenderer>,
     pub(super) terrain: Option<Rc<TerrainData>>,

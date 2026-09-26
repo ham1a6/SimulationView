@@ -13,7 +13,7 @@ use crate::terrain::loader::{TerrainData, WHOLE_TILE};
 use crate::terrain::lod::TileLayout;
 use crate::terrain::markers::RadarMarkersState;
 use crate::terrain::mesh;
-use crate::terrain::origin::{Origin, OriginState};
+use crate::terrain::origin::OriginState;
 use crate::terrain::renderer::TerrainRenderer;
 
 /// 現在の状態でレンダラーを構築できるなら構築する。
@@ -43,10 +43,10 @@ pub(super) fn try_init(
     }
     state.borrow_mut().initializing = true;
 
-    let origin = origin_state.0.get_untracked().unwrap_or(Origin {
-        lat_deg: data.metadata.default_origin.lat_deg,
-        lon_deg: data.metadata.default_origin.lon_deg,
-    });
+    let origin = origin_state
+        .0
+        .get_untracked()
+        .unwrap_or(data.metadata.default_origin);
     // 注視点は原点の実際の地表標高に置く(Vec3::ZEROのままだと、原点が高山の
     // 斜面にある場合にズームインした際カメラが地面に埋まって真っ黒になる)。
     let target_up = heightmap::sample_heightmap(&data, origin.lat_deg, origin.lon_deg);

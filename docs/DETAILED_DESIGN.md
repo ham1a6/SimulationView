@@ -343,7 +343,7 @@ classDiagram
         +GeodeticBounds geodetic_bounds
         +Ellipsoid ellipsoid
         +bool has_texture
-        +DefaultOrigin default_origin
+        +Origin default_origin
     }
     class TerrainData {
         +TerrainMetadata metadata
@@ -921,10 +921,10 @@ record_bytes = (n+1)² × 2
 
 | 関数 | 動作 |
 |---|---|
-| `fetch_metadata(base_url)` | `{base}/metadata.json`を`TerrainMetadata`へ |
+| `fetch_json::<T>(base_url, file)` | `{base}/{file}`をJSONとして`T`へ(`metadata.json`→`TerrainMetadata`、`tile_index.json`→`TileIndex`) |
 | `load_terrain(base_url)` | `metadata.json`・`tile_index.json`・`base.bin`を**同時に取得**(`futures_util::join!`。高遅延回線でのラウンドトリップを減らすため、3つとも他の結果に依存せず発行できる)、全部揃ってから9.1の検証→サイズ検証→`TerrainData::new(...)` |
-| `fetch_tile_level(base_url, key, level, chunk_cells, chunk_count)` | `tiles/L{level}/{名前}.bin`全体。期待長=`chunk_count*(chunk_cells+1)²*2`、不一致は`Err` |
-| `fetch_chunk_grid(base_url, key, level, chunk, chunk_cells)` | 同ファイルからRangeでチャンク1個分(`start=chunk*record_bytes`)。長さ不一致は`Err` |
+| `fetch_tile_level(terrain, key, level)` | `{terrain.base_url}/tiles/L{level}/{名前}.bin`全体。期待長=`chunk_count*(chunk_cells+1)²*2`、不一致は`Err` |
+| `fetch_chunk_grid(terrain, key, level, chunk)` | 同ファイルからRangeでチャンク1個分(`start=chunk*record_bytes`)。長さ不一致は`Err` |
 | `tile_name(key)` | 9.1の名前 |
 
 `decode_i16_le`は`chunks_exact(2)`を`i16::from_le_bytes`へ(端数は捨てる)。Range取得でサーバーが**200(全体)を返した場合**は返ってきた全体から`[start..=end]`を切り出す(範囲外は`Err`)。`!response.ok()`は`Err("… HTTP {status}")`。

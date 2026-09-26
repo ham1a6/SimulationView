@@ -7,9 +7,10 @@
 //! (アプリ)が自前のプロトコルから受け取った値をこのシグナルへ反映する。
 
 use leptos::prelude::*;
+use serde::Deserialize;
 
-/// 基準位置(原点)。DETAILED_DESIGN.md 3.1節。
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// 基準位置(原点)。DETAILED_DESIGN.md 3.1節。地形の`metadata.json`の`default_origin`もこの形で読む。
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 pub struct Origin {
     pub lat_deg: f64,
     pub lon_deg: f64,

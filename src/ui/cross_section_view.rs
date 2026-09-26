@@ -358,10 +358,7 @@ pub fn CrossSectionView() -> impl IntoView {
         let azimuth_deg = azimuth.get();
         let range_m = range_km.get() * 1000.0;
         let markers = radar_markers.markers.get();
-        let base = origin_state.0.get().unwrap_or(Origin {
-            lat_deg: data.metadata.default_origin.lat_deg,
-            lon_deg: data.metadata.default_origin.lon_deg,
-        });
+        let base = origin_state.0.get().unwrap_or(data.metadata.default_origin);
         // 中心: コンボボックスで選んだ航跡の位置、無ければ基準位置(原点)。位置の更新では作り直さない
         // (`center_key`が刻む)ので、追跡しないで読む。
         let track = center_track_untracked();
