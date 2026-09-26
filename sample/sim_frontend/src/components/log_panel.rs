@@ -5,8 +5,9 @@
 //! `log_bridge.rs`が、`log`クレートの警告・エラー(ライブラリのものを含む)は`init_logger`で
 //! 差し込んだロガーがここへ流す。
 //!
-//! スクロール: 自動スクロール中は追記のたびに最下部へ移動する。ユーザーが上へスクロールすると
-//! 自動スクロールを止めて位置を保ち、最下部まで戻すと再開する。右端のボタンでも切り替えられる。
+//! スクロール: 最下部を表示している間だけ、追記のたびに最下部へ移動する(自動スクロール)。
+//! ユーザーが上へスクロールすると位置を保ち、最下部まで戻すと再開する。1件が改行・折り返しで
+//! 何行になっても追従できるよう、行数ではなく内容の実寸(ResizeObserver)の変化で最下部へ合わせる。
 
 use std::collections::VecDeque;
 use std::sync::{Arc, OnceLock};
@@ -84,7 +85,7 @@ impl LogState {
     }
 
     pub fn push(&self, level: LogLevel, text: impl Into<String>) {
-        let text = text.into();
+        let text = normalize_text(text.into());
         let time = now_hms();
         // ページ終了時など、シグナル破棄後に呼ばれても落とさない。
         let _ = self.buffer.try_update(|buffer| buffer.push(level, time, text));
@@ -115,6 +116,16 @@ impl LogState {
 impl Default for LogState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// 改行をLFへ揃え、末尾の改行・空白を落とす(末尾の改行で空行が出ないように)。
+/// 途中の改行はそのまま残し、`.log-text`の`white-space: pre-wrap`で複数行として表示する。
+fn normalize_text(text: String) -> String {
+    let text = if text.contains('\r') { text.replace("\r\n", "\n").replace('\r', "\n") } else { text };
+    match text.trim_end() {
+        trimmed if trimmed.len() == text.len() => text,
+        trimmed => trimmed.to_string(),
     }
 }
 
@@ -168,97 +179,132 @@ pub fn init_logger(level: log::Level) -> Result<(), log::SetLoggerError> {
     Ok(())
 }
 
-/// スクロール後の自動スクロールの状態を決める。最下部なら再開し、上へ動いたときだけ止める。
-/// 追記後の最下部への移動は下向きなので止めない。内容が減ってscrollTopが切り詰められた場合は
-/// 最下部に張り付くので、先に最下部を判定して止めないようにする。
-fn follow_after_scroll(
-    following: bool,
+/// スクロール後に、最下部へ張り付いている(自動スクロールする)かを決める。
+///
+/// 現在の内容の最下部、または前回レイアウトを見たときの内容の高さ(`laid_out_height`)での最下部なら
+/// 張り付く。スクロールイベントは次のフレームでまとめて届くため、その前に行が追記されて内容が
+/// 伸びていると、ユーザーが最下部まで動かしていても現在の高さでは最下部から外れて見えるので、
+/// 追記前の高さでも判定する。
+/// 最下部でなければ、上へ動いたときだけ外す(下へ動いたが最下部に届かないときは今の状態のまま)。
+/// 内容が減ってscrollTopが切り詰められた場合は最下部になるので、先に最下部を判定して外さない。
+fn pinned_after_scroll(
+    pinned: bool,
     previous_top: i32,
+    laid_out_height: i32,
     top: i32,
     scroll_height: i32,
     client_height: i32,
 ) -> bool {
-    if scroll_height - top - client_height <= BOTTOM_TOLERANCE_PX {
+    let at_bottom_of = |height: i32| height - top - client_height <= BOTTOM_TOLERANCE_PX;
+    if at_bottom_of(scroll_height) || at_bottom_of(laid_out_height) {
         true
     } else if top < previous_top {
         false
     } else {
-        following
+        pinned
     }
 }
 
 #[component]
 pub fn LogPanel() -> impl IntoView {
+    use wasm_bindgen::{closure::Closure, JsCast};
+
     let log = use_context::<LogState>().expect("LogState context not found");
     let list = NodeRef::<leptos::html::Div>::new();
-    let following = RwSignal::new(true);
+    let content = NodeRef::<leptos::html::Div>::new();
+    // 最下部を表示しているか(=自動スクロールするか)。スクロールイベントで更新する。
+    let pinned = RwSignal::new(true);
+    // 直前に見たscrollTop(ユーザーのスクロールか、こちらが最下部へ移動した位置)。
     let last_top = StoredValue::new(0_i32);
+    // 前回レイアウトを見たときの内容の高さ(`pinned_after_scroll`参照)。
+    let laid_out_height = StoredValue::new(0_i32);
 
-    // 追記・自動スクロールの再開のたびに、描画が済んでから最下部へ移動する。
+    // 内容の高さを記録し、張り付いていれば最下部へ移動する。移動先は`last_top`にも記録する。
+    // スクロールイベントは1フレームに1回へまとめられるので、記録しないと、この移動と同じフレームで
+    // ユーザーが少し上へ戻した操作が、前回の位置より下にあるせいで「上へ動いた」と判定されず、
+    // 最下部へ引き戻されてしまう。
+    let follow_content = move || {
+        let Some(element) = list.get_untracked() else { return };
+        if pinned.get_untracked() {
+            element.set_scroll_top(element.scroll_height());
+            last_top.set_value(element.scroll_top());
+        }
+        laid_out_height.set_value(element.scroll_height());
+    };
+
+    // 内容・表示領域の実寸が変わるたび(追記・複数行の本文・幅の変化による折り返し・クリア)に、
+    // 描画前に最下部へ合わせる。行数を数えないので、1件が何行になっても最下部に届く。
+    Effect::new(move |_| {
+        let (Some(list_element), Some(content_element)) = (list.get(), content.get()) else {
+            return;
+        };
+        let callback = Closure::<dyn FnMut(js_sys::Array)>::new(move |_| follow_content());
+        let observer = web_sys::ResizeObserver::new(callback.as_ref().unchecked_ref())
+            .expect("ログパネルのサイズ監視を開始できません");
+        observer.observe(&list_element);
+        observer.observe(&content_element);
+        let resources = StoredValue::new_local((observer, callback));
+        on_cleanup(move || resources.with_value(|(observer, _)| observer.disconnect()));
+    });
+
+    // 件数が上限に達すると、先頭の1行を捨てて1行足すため内容の高さが変わらないことがある。
+    // そのときはResizeObserverが通知しないので、追記のたびにも次の描画の前に合わせる。
     Effect::new(move |_| {
         log.buffer.track();
-        if following.get() {
-            request_animation_frame(move || {
-                if let Some(element) = list.get_untracked() {
-                    element.set_scroll_top(element.scroll_height());
-                }
-            });
-        }
+        request_animation_frame(follow_content);
     });
 
     let on_scroll = move |_| {
         let Some(element) = list.get_untracked() else { return };
         let top = element.scroll_top();
-        let next = follow_after_scroll(
-            following.get_untracked(),
+        let next = pinned_after_scroll(
+            pinned.get_untracked(),
             last_top.get_value(),
+            laid_out_height.get_value(),
             top,
             element.scroll_height(),
             element.client_height(),
         );
         last_top.set_value(top);
-        if next != following.get_untracked() {
-            following.set(next);
+        if next != pinned.get_untracked() {
+            pinned.set(next);
         }
     };
 
     let entries = move || log.buffer.with(|buffer| buffer.entries.iter().cloned().collect::<Vec<_>>());
-    let follow_title = move || {
-        if following.get() {
-            "自動スクロール中(クリックで停止)"
-        } else {
-            "自動スクロール停止中(クリックで再開)"
-        }
-    };
 
     view! {
         <div class="log-panel">
             <div class="log-list" node_ref=list on:scroll=on_scroll role="log" aria-label="ログ">
-                <For
-                    each=entries
-                    key=|entry| entry.id
-                    children=|entry| {
-                        let class = entry.level.class();
-                        let label = entry.level.label();
-                        view! {
-                            <div class=class>
-                                <span class="log-time">{entry.time.clone()}</span>
-                                <span class="log-level">{label}</span>
-                                <span class="log-text">{entry.text.clone()}</span>
-                            </div>
+                <div node_ref=content>
+                    <For
+                        each=entries
+                        key=|entry| entry.id
+                        children=|entry| {
+                            let class = entry.level.class();
+                            let label = entry.level.label();
+                            view! {
+                                <div class=class>
+                                    <span class="log-time">{entry.time.clone()}</span>
+                                    <span class="log-level">{label}</span>
+                                    <span class="log-text">{entry.text.clone()}</span>
+                                </div>
+                            }
                         }
-                    }
-                />
+                    />
+                </div>
             </div>
             <div class="log-tools">
                 <button
                     class="log-tool-button"
-                    class:active=move || following.get()
-                    aria-pressed=move || following.get().to_string()
-                    title=follow_title
-                    on:click=move |_| following.update(|value| *value = !*value)
+                    title="最新のログまでスクロールし、自動スクロールを再開する"
+                    disabled=move || pinned.get()
+                    on:click=move |_| {
+                        pinned.set(true);
+                        follow_content();
+                    }
                 >
-                    "自動スクロール"
+                    "最新へ"
                 </button>
                 <button
                     class="log-tool-button"
@@ -266,7 +312,7 @@ pub fn LogPanel() -> impl IntoView {
                     on:click=move |_| {
                         log.clear();
                         last_top.set_value(0);
-                        following.set(true);
+                        pinned.set(true);
                     }
                 >
                     "クリア"
@@ -292,16 +338,25 @@ mod tests {
     }
 
     #[test]
-    fn scrolling_up_stops_and_reaching_bottom_resumes_following() {
+    fn scrolling_up_unpins_and_reaching_bottom_pins() {
         // 高さ100の表示領域に300の内容。最下部はscrollTop=200。
-        assert!(!follow_after_scroll(true, 200, 150, 300, 100));
-        assert!(follow_after_scroll(false, 150, 199, 300, 100));
-        // 最下部への移動中に追記されて届かなかった場合(下向き)は止めない。
-        assert!(follow_after_scroll(true, 150, 200, 320, 100));
-        // 手動で止めた状態は、下へ動いても最下部に届くまでは止めたまま。
-        assert!(!follow_after_scroll(false, 100, 150, 300, 100));
-        // クリアで内容が減りscrollTopが0へ切り詰められても止めない。
-        assert!(follow_after_scroll(true, 200, 0, 100, 100));
+        assert!(!pinned_after_scroll(true, 200, 300, 150, 300, 100));
+        assert!(pinned_after_scroll(false, 150, 300, 199, 300, 100));
+        // 上へ戻した状態は、下へ動いても最下部に届くまでは外れたまま。
+        assert!(!pinned_after_scroll(false, 100, 300, 150, 300, 100));
+        // 最下部まで動かした後、イベントが届く前に複数行の本文が追記されて内容が360へ伸びても張り付く。
+        assert!(pinned_after_scroll(false, 150, 300, 200, 360, 100));
+        // こちらが最下部へ移動した後、同じフレームで少しだけ上へ戻されたら外す。
+        assert!(!pinned_after_scroll(true, 260, 360, 240, 360, 100));
+        // クリアや折り返しの解消で内容が減りscrollTopが切り詰められても外さない。
+        assert!(pinned_after_scroll(true, 200, 300, 0, 100, 100));
+        assert!(pinned_after_scroll(true, 200, 300, 120, 220, 100));
+    }
+
+    #[test]
+    fn text_keeps_inner_newlines_and_drops_trailing_ones() {
+        assert_eq!(normalize_text("a\r\nb\rc\n\n".into()), "a\nb\nc");
+        assert_eq!(normalize_text("一行".into()), "一行");
     }
 
     #[test]

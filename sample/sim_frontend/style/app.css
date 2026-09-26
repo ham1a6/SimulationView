@@ -406,7 +406,7 @@ body {
 /* 高さはちょうど3行分(emはこの要素の文字サイズ基準)。上下の余白をスクロール領域の中に
    持たせると、最下部で4行目の端が覗くので、余白は外側の.log-panelに持たせる。
    overflow-anchorを切るのは、先頭の古い行を捨てたときにブラウザが表示位置を補正して
-   上向きのスクロールとして扱われ、自動スクロールが止まるのを避けるため。 */
+   上向きのスクロールとして扱われ、自動スクロールが外れるのを避けるため。 */
 .log-list {
     flex: 1 1 auto;
     min-width: 0;
@@ -471,13 +471,14 @@ body {
     padding: 0.1rem 0.5rem;
 }
 
-.log-tool-button:hover {
+.log-tool-button:hover:not(:disabled) {
     background: #356;
     border-color: var(--accent);
 }
 
-.log-tool-button.active {
-    background: var(--accent);
-    color: #003;
-    border-color: var(--accent);
+/* 「最新へ」は最下部を表示している(自動スクロール中の)間は押せない。 */
+.log-tool-button:disabled {
+    background: #1a1a1a;
+    color: #555;
+    cursor: default;
 }
