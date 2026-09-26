@@ -23,6 +23,7 @@ use crate::ui::util::{client_xy, viewport_size};
 
 /// ドラッグ中でも、パネルのこれだけ(px)は必ず画面内に残す(タイトルバーをつかみ直せるように)。
 const KEEP_VISIBLE_X_PX: f64 = 80.0;
+/// `KEEP_VISIBLE_X_PX`の縦方向。上端は画面の外へ出さない(タイトルバーが上にあるため)。
 const KEEP_VISIBLE_Y_PX: f64 = 40.0;
 /// `initial_position`を省略したときの、ウインドウの左上の位置(px)。
 const DEFAULT_WINDOW_POSITION: (f64, f64) = (80.0, 60.0);
@@ -30,11 +31,15 @@ const DEFAULT_WINDOW_POSITION: (f64, f64) = (80.0, 60.0);
 /// ドラッグの開始時点の状態(移動量の許容範囲は、開始時のパネルの位置から決めておく)。
 #[derive(Debug, Clone, Copy)]
 struct Drag {
+    /// ドラッグを始めたときの`offset`(px)。
     base: (f64, f64),
+    /// 横方向に動かしてよい量の範囲(最小, 最大。px)。
     dx_range: (f64, f64),
+    /// 縦方向に動かしてよい量の範囲(最小, 最大。px)。
     dy_range: (f64, f64),
 }
 
+/// タイトルバー(見出し`title`と✕ボタン)つきのフローティングパネル。種類・ドラッグの挙動はモジュールの説明を参照。
 #[component]
 pub fn FloatingPanel(
     /// パネルの開閉状態。呼び出し側が`RwSignal<bool>`を持ち、メニュー項目のクリック等で
@@ -50,6 +55,7 @@ pub fn FloatingPanel(
     /// ウインドウ(`modal=false`)の初期位置(画面左上からの(x, y)、px)。モーダルでは使わない(中央に出す)。
     #[prop(optional)]
     initial_position: Option<(f64, f64)>,
+    /// パネルの本文。
     children: Children,
 ) -> impl IntoView {
     let panel_ref: NodeRef<leptos::html::Div> = NodeRef::new();
@@ -57,6 +63,7 @@ pub fn FloatingPanel(
     let offset = RwSignal::new((0.0_f64, 0.0_f64));
     // ドラッグの状態(描画には使わないので、変更を通知しない`StoredValue`に置く)。
     let drag = StoredValue::new(DragTracker::default());
+    // ドラッグ中の、開始時の位置と動かせる範囲(ドラッグしていなければNone)。
     let drag_limits = StoredValue::new(None::<Drag>);
     let (left, top) = if modal {
         (0.0, 0.0)
@@ -76,6 +83,8 @@ pub fn FloatingPanel(
         let Some(panel) = panel_ref.get_untracked() else {
             return;
         };
+        // 左右は`KEEP_VISIBLE_X_PX`だけ画面に残る範囲、上は画面の上端まで、下は`KEEP_VISIBLE_Y_PX`だけ
+        // 残る範囲に、開始時のパネルの位置から移動量を制限する。
         let rect = panel.get_bounding_client_rect();
         let (vw, vh) = viewport_size();
         let (x, y) = client_xy(&ev);
@@ -106,6 +115,7 @@ pub fn FloatingPanel(
         let Some(d) = drag_limits.get_value() else {
             return;
         };
+        // 開始位置からの移動量を範囲に収める(ウインドウが画面より大きく範囲が逆転したら、最小に寄せる)。
         let dx = update
             .total
             .0
@@ -140,6 +150,7 @@ pub fn FloatingPanel(
                 let (x, y) = offset.get();
                 (x != 0.0 || y != 0.0).then(|| format!("translate({x}px, {y}px)"))
             }
+            // パネル内のクリックが背景へ伝わって(モーダルが)閉じないようにする。
             on:click=|ev| ev.stop_propagation()
         >
             <div

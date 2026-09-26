@@ -4,8 +4,11 @@
 
 use leptos::prelude::*;
 
+/// タブ1個分(`tab`で作る)。
 pub struct Tab {
+    /// タブのボタンに出す文言。
     label: &'static str,
+    /// タブの内容。
     view: AnyView,
 }
 
@@ -17,6 +20,8 @@ pub fn tab(label: &'static str, view: impl IntoView + 'static) -> Tab {
     }
 }
 
+/// タブパネル。`tabs`の順にタブのボタンを並べ、選択中のタブの内容だけを表示する(他のタブも
+/// マウントしたまま`display`で隠すので、切り替えても中身の状態は保たれる)。
 #[component]
 pub fn TabbedPanel(
     /// パネル見出し。省略(または空文字)なら見出しは出さず、タブバーだけを表示する。

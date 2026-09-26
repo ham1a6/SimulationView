@@ -3,12 +3,13 @@
 use wasm_bindgen::JsCast;
 
 /// テキストをクリップボードへコピーする(ブラウザの許可がない・非対応なら何もしない)。
-/// `Clipboard`のAPIはWebアクセス(https・localhost)でだけ使える。
+/// `Clipboard`のAPIは安全なコンテキスト(https・localhost)でだけ使える。
 pub fn copy_to_clipboard(text: &str) {
     let Some(window) = web_sys::window() else {
         return;
     };
     let navigator = window.navigator();
+    // 安全なコンテキストでないと`navigator.clipboard`自体が無いので、プロパティとして動的に引いて確かめる。
     let clipboard = js_sys::Reflect::get(&navigator, &"clipboard".into())
         .unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
     if clipboard.is_undefined() || clipboard.is_null() {
@@ -78,6 +79,7 @@ pub async fn run_in_slices(mut step: impl FnMut() -> bool, cancelled: impl Fn() 
                 break;
             }
         }
+        // タイマーで一度イベントループへ戻る(その間に描画・入力のイベントが処理される)。
         gloo_timers::future::TimeoutFuture::new(0).await;
     }
 }

@@ -18,6 +18,7 @@ pub async fn upload_blob(
     for &(name, value) in headers {
         request = request.header(name, value);
     }
+    // 本文にBlobをそのまま渡す(ブラウザがBlobから読み出して送る)。
     let response = request
         .body(blob)
         .map_err(|e| format!("送信要求を作成できません: {e}"))?
@@ -30,6 +31,7 @@ pub async fn upload_blob(
             response.status()
         ));
     }
+    // 成功時のレスポンス本文は文字列のまま返す(解釈は呼び出し側)。
     response
         .text()
         .await

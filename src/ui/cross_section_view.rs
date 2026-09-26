@@ -24,21 +24,33 @@ use crate::terrain::store::TerrainStore;
 use crate::terrain::tracks::{Track, TrackId, TracksState};
 use crate::ui::util::{event_f64, push_path_point};
 
+/// SVGの`viewBox`の幅。
 const VIEW_W: f64 = 400.0;
+/// SVGの`viewBox`の高さ。
 const VIEW_H: f64 = 220.0;
+/// グラフの描画領域の左の余白(標高の目盛りの文字を置く)。
 const PAD_L: f64 = 46.0;
+/// 右の余白。
 const PAD_R: f64 = 10.0;
+/// 上の余白。
 const PAD_T: f64 = 10.0;
+/// 下の余白(距離の文字を置く)。
 const PAD_B: f64 = 22.0;
-/// グラフの描画領域の幅・高さと、右端・下端。
+/// グラフの描画領域の幅(以下、高さ・右端・下端)。
 const PLOT_W: f64 = VIEW_W - PAD_L - PAD_R;
+/// 描画領域の高さ。
 const PLOT_H: f64 = VIEW_H - PAD_T - PAD_B;
+/// 描画領域の右端のx。
 const PLOT_RIGHT: f64 = VIEW_W - PAD_R;
+/// 描画領域の下端のy。
 const PLOT_BOTTOM: f64 = PAD_T + PLOT_H;
-/// 軸の目盛り・ラベルの位置。
+/// 軸の目盛り・ラベルの位置。これは標高の目盛りの線の左端のx。
 const TICK_X: f64 = PAD_L - 3.0;
+/// 標高の文字の右端のx。
 const AXIS_LABEL_X: f64 = PAD_L - 4.0;
+/// 上端の標高の文字のy。
 const TOP_LABEL_Y: f64 = PAD_T + 8.0;
+/// 距離の文字(と下端の標高の文字)のy。
 const BOTTOM_LABEL_Y: f64 = VIEW_H - 4.0;
 
 /// 距離(m)・標高(m)から、SVGの座標への変換。
@@ -46,13 +58,16 @@ const BOTTOM_LABEL_Y: f64 = VIEW_H - 4.0;
 struct Scale {
     /// グラフの左端の距離と、左端から右端までの距離。
     start_m: f64,
+    /// 左端から右端までの距離(m)。
     span_m: f64,
     /// グラフの下端の標高と、下端から上端までの標高差(1m以上)。
     min_elev: f32,
+    /// 下端から上端までの標高差(m。0除算を避けるため1m以上)。
     elev_range: f32,
 }
 
 impl Scale {
+    /// 左端の距離`start_m`・幅`span_m`・標高の範囲`min_elev..max_elev`から作る。
     fn new(start_m: f64, span_m: f64, min_elev: f32, max_elev: f32) -> Self {
         Self {
             start_m,
@@ -68,14 +83,17 @@ impl Scale {
         Self::new(start, span_m, min_elev, max_elev)
     }
 
+    /// 距離→SVGのx。
     fn x(&self, distance_m: f64) -> f64 {
         PAD_L + ((distance_m - self.start_m) / self.span_m) * PLOT_W
     }
 
+    /// 標高→SVGのy(上ほど高い)。
     fn y(&self, elev: f32) -> f64 {
         PLOT_BOTTOM - ((elev - self.min_elev) as f64 / self.elev_range as f64) * PLOT_H
     }
 
+    /// 断面の点→SVGの(x, y)。
     fn xy(&self, p: &ProfilePoint) -> (f64, f64) {
         (self.x(p.distance_m), self.y(p.elevation_m))
     }
@@ -113,6 +131,7 @@ fn build_svg_paths(
     for (i, p) in points.iter().enumerate() {
         push_path_point(&mut line_d, i == 0, scale.xy(p));
     }
+    // 塗りつぶしは、折れ線の右端から描画領域の右下・左下を回って閉じる。
     let area_d = format!(
         "{line_d} L{:.1},{:.1} L{:.1},{:.1} Z",
         PAD_L + PLOT_W,
@@ -238,25 +257,36 @@ const CENTER_STEP_DEG: f64 = 0.005;
 /// 計算済みの断面(SVGのパスと、目盛りに使う値)。
 #[derive(Clone)]
 struct Section {
+    /// 地表断面の折れ線のパス。
     line_d: String,
+    /// 地表断面の塗りつぶしのパス。
     area_d: String,
+    /// 覆域内の地表の折れ線のパス(覆域内の区間が無ければNone)。
     coverage_d: Option<String>,
+    /// 上空を含む探知可能領域の塗りつぶしのパス(無ければNone)。
     airspace_d: Option<String>,
+    /// 断面の地表の最低標高(グラフの下端)。
     min_elev: f32,
+    /// 断面の地表の最高標高。
     max_elev: f32,
     /// グラフの上端(空側)の標高。選択中のシンボルの高度が入るように広げることがある。
     sky_ceiling: f32,
     /// 中心から、方位角の反対側・方位角の向きの長さ(m)。
     back_m: f64,
+    /// 中心から方位角の向きの長さ(m)。
     forward_m: f64,
     /// 中心の地表の標高(`AboveGround`のシンボルの高度を海抜にするのに使う)。
     center_ground_m: f32,
 }
 
+/// 断面の計算の状態。
 #[derive(Clone)]
 enum SectionState {
+    /// 地形データの読み込み中。
     Loading,
+    /// 断面を作れなかった(点が足りない)。
     Failed,
+    /// 計算済み。
     Ready(Section),
 }
 
@@ -268,6 +298,8 @@ fn symbol_altitude_msl(track: &Track, center_ground_m: f32) -> f32 {
     }
 }
 
+/// 断面図のタブ(内容はモジュールの説明を参照)。`OriginState`・`TerrainStore`・`RadarMarkersState`の
+/// contextが必要で、`TracksState`は任意(無ければ中心は常に基準位置)。
 #[component]
 pub fn CrossSectionView() -> impl IntoView {
     let origin_state = use_context::<OriginState>().expect("OriginState context not found");
@@ -362,8 +394,10 @@ pub fn CrossSectionView() -> impl IntoView {
             section.set(SectionState::Failed);
             return;
         }
+        // 地形データの範囲の端では片側が短くなることがあるので、実際の点の両端から幅を取る。
         let span = (points.last().unwrap().distance_m - points[0].distance_m).max(1.0);
         let (min_elev, max_elev) = elevation_bounds(&points);
+        // 中心の地表の標高は、距離0に最も近い点の標高で代用する。
         let center_ground_m = points
             .iter()
             .min_by(|a, b| a.distance_m.abs().total_cmp(&b.distance_m.abs()))
@@ -559,6 +593,7 @@ pub fn CrossSectionView() -> impl IntoView {
                     disabled=move || center_track().is_none()
                     on:click=move |_| {
                         if let Some(track) = center_track_untracked() {
+                            // スライダーの範囲(0〜359の整数)に収める(359.6°は丸めると360→0°)。
                             azimuth.set(track.heading_deg.rem_euclid(360.0).round() % 360.0);
                         }
                     }

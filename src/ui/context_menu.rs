@@ -8,7 +8,7 @@
 //! - 項目の種類: 操作(`action`。無効にもできる)・サブメニュー(`submenu`。入れ子にできる)・見出し(`label`。押せない)・区切り線(`separator`)
 //! - 項目を選ぶと、メニューを閉じてから`on_select`を呼ぶ。メニューの外(背景)のクリック・右クリック・Escでも閉じる
 //! - 画面の右端・下端にはみ出すときは、収まるようにずらす。サブメニューは右へ、収まらなければ左へ開く
-//! - 地図(`TerrainView`)の右クリックにつなぐには、`ui::terrain_view::MapMenuState`を使う
+//! - 地図(`TerrainView`)の右クリックにつなぐには、このモジュールの`MapMenuState`を使う
 
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
@@ -26,17 +26,23 @@ const SUBMENU_WIDTH_ESTIMATE_PX: f64 = 240.0;
 pub enum MenuItem {
     /// 押せる項目。`enabled`がfalseなら灰色で押せない。
     Action {
+        /// 表示する文言。
         label: String,
+        /// 押せるか。
         enabled: bool,
+        /// 選ばれたときに呼ぶ処理。
         on_select: UnsyncCallback<()>,
     },
     /// 子のメニューを右に開く項目。
     Submenu {
+        /// 表示する文言。
         label: String,
+        /// 子のメニューの項目。
         items: Vec<MenuItem>,
     },
     /// 押せない見出し・情報の行。
     Label(String),
+    /// 区切り線。
     Separator,
 }
 
@@ -67,6 +73,7 @@ impl MenuItem {
         self
     }
 
+    /// 子のメニュー`items`を開く項目(入れ子にできる)。
     pub fn submenu(label: impl Into<String>, items: Vec<MenuItem>) -> Self {
         Self::Submenu {
             label: label.into(),
@@ -74,10 +81,12 @@ impl MenuItem {
         }
     }
 
+    /// 押せない見出し・情報の行。
     pub fn label(text: impl Into<String>) -> Self {
         Self::Label(text.into())
     }
 
+    /// 区切り線。
     pub fn separator() -> Self {
         Self::Separator
     }
@@ -86,18 +95,23 @@ impl MenuItem {
 /// いま開いているメニュー(位置と項目)。
 #[derive(Clone)]
 struct OpenMenu {
+    /// 出す位置(client座標のx、px)。
     x: f64,
+    /// 出す位置(client座標のy、px)。
     y: f64,
+    /// 並べる項目。
     items: Vec<MenuItem>,
 }
 
 /// 右クリックメニューの状態。`Copy`なので、そのままクロージャへ持ち込める。
 #[derive(Clone, Copy)]
 pub struct ContextMenuState {
+    /// 開いているメニュー(閉じていればNone)。
     open: RwSignal<Option<OpenMenu>>,
 }
 
 impl ContextMenuState {
+    /// 閉じた状態で作る。
     pub fn new() -> Self {
         Self {
             open: RwSignal::new(None),
@@ -111,12 +125,14 @@ impl ContextMenuState {
         }
     }
 
+    /// メニューを閉じる(閉じていれば何もしない。無駄な通知を出さない)。
     pub fn close(&self) {
         if self.open.get_untracked().is_some() {
             self.open.set(None);
         }
     }
 
+    /// メニューが開いているか(リアクティブに読む)。
     pub fn is_open(&self) -> bool {
         self.open.with(|m| m.is_some())
     }
@@ -158,6 +174,8 @@ fn menu_view(items: Vec<MenuItem>, state: ContextMenuState) -> AnyView {
             MenuItem::Submenu { label, items } => {
                 // 右に収まらなければ左へ開く(項目の上へカーソルが来たときに判定する)。
                 let flip = RwSignal::new(false);
+                // サブメニューは項目にカーソルを乗せる(またはクリックする)と開く。同じ段の他の項目に
+                // 乗ると閉じる(`open_sub`はこの段で1つ)。
                 let on_enter = move |ev: leptos::ev::MouseEvent| {
                     if let Some(el) = ev.current_target().and_then(|t| t.dyn_into::<web_sys::Element>().ok()) {
                         let (vw, _) = viewport_size();
@@ -203,6 +221,7 @@ pub fn ContextMenu() -> impl IntoView {
         let Some(menu) = state.open.get() else { return };
         pos.set((menu.x, menu.y));
         placed.set(false);
+        // 描いたあと(大きさが決まってから)、はみ出していれば画面内へずらして見せる。
         request_animation_frame(move || {
             let Some(el) = menu_ref.get_untracked() else {
                 placed.set(true);
@@ -288,6 +307,7 @@ pub struct MapMenuTarget {
 pub struct MapMenuState(pub UnsyncCallback<MapMenuTarget, Vec<MenuItem>>);
 
 impl MapMenuState {
+    /// 項目を作る関数`build`から作る。
     pub fn new(build: impl Fn(MapMenuTarget) -> Vec<MenuItem> + 'static) -> Self {
         Self(UnsyncCallback::new(build))
     }

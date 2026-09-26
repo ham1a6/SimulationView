@@ -14,6 +14,7 @@ pub struct DragUpdate {
 /// pointer upで確定したドラッグの情報。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DragEnd {
+    /// ドラッグ開始位置から、離した位置までの差分。
     pub total: (f64, f64),
 }
 
@@ -24,20 +25,26 @@ impl DragEnd {
     }
 }
 
+/// 追跡中のドラッグ。
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ActiveDrag {
+    /// 追跡しているpointer(`PointerEvent::pointer_id`)。
     pointer_id: i32,
+    /// 押した位置。
     start: (f64, f64),
+    /// 最後に受け取った位置。
     current: (f64, f64),
 }
 
 /// 同時に1本のpointerだけを追跡するドラッグ状態。
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct DragTracker {
+    /// 追跡中のドラッグ(押されていなければNone)。
     active: Option<ActiveDrag>,
 }
 
 impl DragTracker {
+    /// pointer downの位置`(x, y)`からドラッグを始める(追跡中のものがあれば置き換える)。
     pub fn begin(&mut self, pointer_id: i32, x: f64, y: f64) {
         self.active = Some(ActiveDrag {
             pointer_id,
@@ -46,6 +53,7 @@ impl DragTracker {
         });
     }
 
+    /// pointer moveを反映して移動量を返す。追跡中のpointerでなければNone(何もしない)。
     pub fn update(&mut self, pointer_id: i32, x: f64, y: f64) -> Option<DragUpdate> {
         let active = self
             .active
@@ -59,6 +67,7 @@ impl DragTracker {
         })
     }
 
+    /// pointer upでドラッグを終え、開始位置からの移動量を返す。追跡中のpointerでなければNone。
     pub fn end(&mut self, pointer_id: i32, x: f64, y: f64) -> Option<DragEnd> {
         let active = self.active.filter(|a| a.pointer_id == pointer_id)?;
         self.active = None;
@@ -67,6 +76,7 @@ impl DragTracker {
         })
     }
 
+    /// pointer cancelでドラッグを取り消す。追跡中のpointerだったらtrue。
     pub fn cancel(&mut self, pointer_id: i32) -> bool {
         if self.active.is_some_and(|a| a.pointer_id == pointer_id) {
             self.active = None;
@@ -76,6 +86,7 @@ impl DragTracker {
         }
     }
 
+    /// ドラッグを追跡中か。
     pub fn is_active(self) -> bool {
         self.active.is_some()
     }

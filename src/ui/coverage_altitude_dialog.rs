@@ -14,6 +14,8 @@ use crate::ui::util::event_f64;
 #[derive(Clone, Copy)]
 pub struct CoverageAltitudeDialogState(pub RwSignal<bool>);
 
+/// 覆域高度設定のフローティングパネル。`CoverageAltitudeDialogState`と`RadarMarkersState`の
+/// contextが必要。入力のたびに(数値として読めれば)高度を書き換え、2Dの覆域が計算し直される。
 #[component]
 pub fn CoverageAltitudeDialog() -> impl IntoView {
     let dialog = use_context::<CoverageAltitudeDialogState>()

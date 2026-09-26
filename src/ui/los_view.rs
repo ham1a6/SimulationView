@@ -12,22 +12,35 @@ use crate::terrain::markers::{coverage_colors, RadarMarker, RadarMarkersState};
 use crate::terrain::store::TerrainStore;
 use crate::ui::util::{event_f64, push_path_point, run_in_slices};
 
+/// 極座標図のSVGの一辺(`viewBox`の単位。正方形)。
 const VIEW_SIZE: f64 = 300.0;
+/// 図の外周から`viewBox`の端までの余白(方位の文字を置く)。
 const PAD: f64 = 26.0;
+/// 外周の円の半径(最大観測範囲に当たる)。
 const RADIUS: f64 = (VIEW_SIZE - PAD * 2.0) / 2.0;
+/// 図の中心(観測点)の座標(x・yとも)。
 const CENTER: f64 = VIEW_SIZE / 2.0;
-/// 極座標図の外周の上下左右の端。
+/// 極座標図の外周の上端(以下、下端・左端・右端)。
 const TOP: f64 = CENTER - RADIUS;
+/// 外周の下端。
 const BOTTOM: f64 = CENTER + RADIUS;
+/// 外周の左端。
 const LEFT: f64 = CENTER - RADIUS;
+/// 外周の右端。
 const RIGHT: f64 = CENTER + RADIUS;
-/// 方位の文字(N・E・S・W)と、最大観測範囲の文字の位置。
+/// 方位の文字(N・E・S・W)と、最大観測範囲の文字の位置。これは「N」のy。
 const N_LABEL_Y: f64 = TOP - 6.0;
+/// 「S」のy。
 const S_LABEL_Y: f64 = BOTTOM + 14.0;
+/// 「E」のx。
 const E_LABEL_X: f64 = RIGHT + 8.0;
+/// 「W」のx。
 const W_LABEL_X: f64 = LEFT - 8.0;
+/// 「E」「W」のy(ベースラインなので中心より少し下)。
 const EW_LABEL_Y: f64 = CENTER + 4.0;
+/// 最大観測範囲の文字のx。
 const RANGE_LABEL_X: f64 = CENTER + 4.0;
+/// 最大観測範囲の文字のy(外周の上端のすぐ内側)。
 const RANGE_LABEL_Y: f64 = TOP + 11.0;
 /// 極座標図の方位の刻み(mil)。2なら3,200方位(50km先で約98m間隔)。図の大きさ(300px)に対して十分細かく、計算量が半分になる。
 const CHART_AZIMUTH_STEP: usize = 2;
@@ -52,6 +65,8 @@ fn swatch_style(marker_id: u64) -> String {
     )
 }
 
+/// 方位ごとの見通し範囲の端を結んだ閉じたSVGパス。中心から北=上・東=右に、距離を最大観測範囲に
+/// 対する割合で外周の半径へ当てはめる(外周より外は外周に収める)。
 fn build_boundary_path(points: &[LosPoint], max_range_m: f64) -> String {
     let max_range = max_range_m.max(1.0);
     let mut d = String::new();
@@ -65,6 +80,8 @@ fn build_boundary_path(points: &[LosPoint], max_range_m: f64) -> String {
     d
 }
 
+/// レーダー観測点の一覧・編集と、選択中の観測点の見通し範囲の極座標図のタブ。
+/// `TerrainStore`・`RadarMarkersState`のcontextが必要。
 #[component]
 pub fn LosView() -> impl IntoView {
     let terrain_store = use_context::<TerrainStore>().expect("TerrainStore context not found");
@@ -72,6 +89,7 @@ pub fn LosView() -> impl IntoView {
         use_context::<RadarMarkersState>().expect("RadarMarkersState context not found");
     terrain_store.ensure_loaded();
 
+    // 図・一覧の代わりに出す状態の文言。
     let status = |message: &'static str| {
         view! { <p class="placeholder los-status">{message}</p> }.into_any()
     };
@@ -115,6 +133,7 @@ pub fn LosView() -> impl IntoView {
                                 min="0"
                                 step="1"
                                 prop:value=m.height_m.to_string()
+                                // 入力欄のクリックで行の選択が動かないようにする。
                                 on:click=move |ev| ev.stop_propagation()
                                 on:input=param_input(id, |marker, v| marker.height_m = v.max(0.0))
                             />
@@ -156,6 +175,7 @@ pub fn LosView() -> impl IntoView {
     });
     // 見通し範囲の計算結果。計算は重いので、小分けにして非同期で進める(画面が固まらないように)。
     let result: RwSignal<Option<(RadarMarker, Vec<LosPoint>)>> = RwSignal::new(None);
+    // 計算の世代。選択・地形が変わるたびに増やし、古い計算は自分の世代でなくなったら止まる。
     let generation = Rc::new(Cell::new(0u64));
     Effect::new(move |_| {
         let marker = selected_marker.get();

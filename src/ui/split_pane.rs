@@ -3,12 +3,16 @@ use super::pointer_drag::DragTracker;
 use super::util::client_xy;
 use leptos::prelude::*;
 
+/// 仕切りを`dx`(px)動かしたあとの左区画の割合。ドラッグ開始時の左区画の幅`first`・全体の幅`total`から、
+/// 左右とも最小幅(`min_first`・`min_second`)を下回らない範囲に収める。
 fn fraction_after_drag(first: f64, total: f64, dx: f64, min_first: f64, min_second: f64) -> f64 {
     (first + dx).clamp(min_first, total - min_second) / total
 }
 
 /// 横分割。狭い画面では最小幅の合計を維持するため、親で横スクロールを許可する。
 /// 幅はCSS px。初期比率は左区画の割合(0〜1)。すべて有限値を指定する。
+/// `first`・`second`は左・右の区画の中身、`initial_fraction`は初期比率(既定0.5)、
+/// `min_first`・`min_second`は左・右の最小幅(既定160px)。
 #[component]
 pub fn SplitPane(
     #[prop(into)] first: ViewFn,
@@ -23,6 +27,7 @@ pub fn SplitPane(
     assert!(min_first.is_finite() && min_first > 0.0);
     assert!(min_second.is_finite() && min_second > 0.0);
     assert!(initial_fraction.is_finite());
+    // 左区画の割合(CSS gridの`fr`に使う)。0・1ちょうどだと片方の`fr`が0になるので端を避ける。
     let fraction = RwSignal::new(initial_fraction.clamp(0.001, 0.999));
     let left = NodeRef::<leptos::html::Div>::new();
     let right = NodeRef::<leptos::html::Div>::new();
@@ -37,6 +42,7 @@ pub fn SplitPane(
             start.set_value(None);
         }
     };
+    // 左・仕切り(6px)・右の3列のgrid。右を隠している間は左だけの1列。
     let columns = move || {
         if !second_visible.get() {
             return format!("minmax({min_first}px, 1fr)");
@@ -47,6 +53,7 @@ pub fn SplitPane(
             1.0 - f
         )
     };
+    // 最小幅の合計。これより狭い画面では、親の横スクロールに任せる。
     let minimum = move || {
         let width = if second_visible.get() {
             min_first + min_second + 6.0

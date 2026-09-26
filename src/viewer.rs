@@ -12,21 +12,32 @@ use leptos::prelude::*;
 /// 全機能で共有する状態。従来の個別context登録も引き続き使用できる。
 #[derive(Clone, Copy)]
 pub struct ViewerState {
+    /// 地形データ(metadata・全タイルのレベル0)の取得と、その結果。
     pub terrain: TerrainStore,
+    /// シミュレーション原点(未設定ならNoneで、地形データの既定の原点を使う)。
     pub origin: OriginState,
+    /// レーダー観測点の一覧・選択・覆域の表示設定。
     pub radar_markers: RadarMarkersState,
+    /// 注視点(中心点)を原点・指定地点へ戻す要求。
     pub recenter: RecenterRequestState,
+    /// 陰影(ヒルシェード)のON/OFF。
     pub hillshade: HillshadeState,
+    /// スクリーンショット・画面録画の要求。
     pub capture: CaptureState,
+    /// 作図(図形・線)の一覧。
     pub drawings: DrawingState,
+    /// 図形の対話作成・編集のツール(`drawings`を操作する)。
     pub draw_tool: DrawToolState,
+    /// 航跡(トラック)の一覧・表示設定。
     pub tracks: TracksState,
+    /// 3Dモデルの表示設定・モデルの登録。
     pub models: ModelsState,
 }
 
 impl ViewerState {
     /// URLは呼び出し側が指定する。生成だけでは通信や永続化を開始しない。
     pub fn new(terrain_base_url: impl Into<String>) -> Self {
+        // 作図ツールは作図の一覧を操作するので、同じ`DrawingState`を渡す。
         let drawings = DrawingState::new();
         Self {
             terrain: TerrainStore::new(terrain_base_url),

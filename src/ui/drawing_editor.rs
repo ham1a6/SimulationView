@@ -48,16 +48,20 @@ fn num_field(
     }
 }
 
+/// 色の成分(0〜1)→0〜255。
 fn to_u8(v: f32) -> u8 {
     (v.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
+/// 色→`<input type="color">`の値の形("#rrggbb"。不透明度は含まない)。
 fn color_hex(c: Color) -> String {
     format!("#{:02x}{:02x}{:02x}", to_u8(c.r), to_u8(c.g), to_u8(c.b))
 }
 
+/// `<input type="color">`の値("#rrggbb")→色の成分(0〜1)。形が違えばNone。
 fn hex_rgb(s: &str) -> Option<(f32, f32, f32)> {
     let s = s.strip_prefix('#')?;
+    // ASCIIでないと、バイト位置でのスライスが文字の途中になりうる(パニック)ので先に弾く。
     if s.len() != 6 || !s.is_ascii() {
         return None;
     }
@@ -96,6 +100,7 @@ fn color_inputs(
                 if let Some((r, g, b)) = hex_rgb(&event_target_value(&ev)) {
                     let mut style = get();
                     let color = field(&mut style);
+                    // 色の選択欄は不透明度を持たないので、いまの不透明度を引き継ぐ。
                     let a = color.map_or(default.a, |c| c.a);
                     *color = Some(Color::rgba(r, g, b, a));
                     set(style);
@@ -165,6 +170,7 @@ fn style_fields(
     }
 }
 
+/// 高度の値(m。基準は問わない)。
 fn altitude_value(a: Altitude) -> f64 {
     match a {
         Altitude::Msl(v) | Altitude::AboveGround(v) => v,
@@ -211,17 +217,28 @@ fn altitude_fields(
 // 図形の数値パラメータ(図形の種類ごとに、どの値を編集できるか)
 // ---------------------------------------------------------------------------------------------
 
+/// 図形の数値パラメータの種類(どの図形のどの値かは`param_get`・`param_set`が対応づける)。
 #[derive(Debug, Clone, Copy)]
 enum Param {
+    /// 半径(円・球・扇形・円柱・円錐)。
     Radius,
+    /// 矩形の幅(東西)。
     Width,
+    /// 矩形の高さ(南北)、または円柱・円錐の高さ。
     Height,
+    /// 矩形の回転。
     Rotation,
+    /// 扇形の開始方位。
     StartDeg,
+    /// 扇形の終了方位。
     EndDeg,
+    /// 直方体の幅(東西)。
     SizeEw,
+    /// 直方体の奥行(南北)。
     SizeNs,
+    /// 直方体の高さ。
     SizeUp,
+    /// 直方体の方位。
     Heading,
 }
 
@@ -252,6 +269,7 @@ fn params(shape: &Shape) -> &'static [(Param, &'static str, &'static str)] {
     }
 }
 
+/// 図形`shape`のパラメータ`param`の値。その図形に無いパラメータなら0。
 fn param_get(shape: &Shape, param: Param) -> f64 {
     match (shape, param) {
         (
@@ -280,6 +298,7 @@ fn param_get(shape: &Shape, param: Param) -> f64 {
     }
 }
 
+/// 図形`shape`のパラメータ`param`を`v`にする(その図形に無いパラメータなら何もしない)。
 /// 大きさは1m以上にする(0以下だと図形が描かれなくなり、見失うため)。角度はそのまま。
 fn param_set(shape: &mut Shape, param: Param, v: f64) {
     let size = v.max(1.0);
@@ -350,6 +369,7 @@ fn kind_tag(shape: &Shape) -> u8 {
     }
 }
 
+/// 図形`id`の形を`f`に渡して結果を返す(図形が無ければNone)。
 fn with_shape<R>(tool: DrawToolState, id: DrawingId, f: impl FnOnce(&Shape) -> R) -> Option<R> {
     tool.drawings.with(id, |d| f(&d.shape))
 }
@@ -358,7 +378,10 @@ fn with_shape<R>(tool: DrawToolState, id: DrawingId, f: impl FnOnce(&Shape) -> R
 // 選択中の図形の編集フォーム
 // ---------------------------------------------------------------------------------------------
 
+/// 選択中の図形`id`の編集フォーム(名前・位置・大きさ・高度・見た目)。図形が無ければ空。
 fn shape_form(tool: DrawToolState, id: DrawingId) -> AnyView {
+    // 欄の構成(点の数・編集項目)はフォームを作るときの形で決める(変わったら`form_key`で作り直される)。
+    // 各欄の値は、そのつど図形から読み直す。
     let Some(shape) = with_shape(tool, id, Shape::clone) else {
         return ().into_any();
     };
@@ -409,6 +432,7 @@ fn shape_form(tool: DrawToolState, id: DrawingId) -> AnyView {
                 .unwrap_or_default()
         })
     };
+    // 高度は図形全体で1つとして編集する(先頭の点の高度を見せ、書き換えは全部の点へ)。
     let altitude_get = move || {
         with_shape(tool, id, |s| match s.positions().first() {
             Some(Position::World { altitude, .. }) => *altitude,
@@ -451,10 +475,13 @@ fn shape_form(tool: DrawToolState, id: DrawingId) -> AnyView {
 // パネル本体
 // ---------------------------------------------------------------------------------------------
 
+/// 図形の作成・編集パネル(内容はモジュールの説明を参照)。`DrawToolState`のcontextが必要で、
+/// `ContextMenuState`があれば一覧の行の右クリックメニューを出す。
 #[component]
 pub fn DrawingEditor() -> impl IntoView {
     let tool = use_context::<DrawToolState>().expect("DrawToolState context not found");
 
+    // 図形の種類ごとのツールのボタン(選んでいるものを強調する)。
     let tool_buttons = ToolKind::ALL
         .into_iter()
         .map(|kind| {
@@ -539,6 +566,7 @@ pub fn DrawingEditor() -> impl IntoView {
                 <button
                     class="drawing-row-name"
                     title="選択して編集"
+                    // 選択中の行をもう一度押すと選択を解除する。
                     on:click=move |_| tool.select((tool.selected.get_untracked() != Some(id)).then_some(id))
                 >
                     {u.name}

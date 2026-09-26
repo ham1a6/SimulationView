@@ -17,6 +17,9 @@ use crate::terrain::store::TerrainStore;
 #[derive(Clone, Copy)]
 pub struct OriginDialogState(pub RwSignal<bool>);
 
+/// 原点設定のフローティングパネル。`OriginState`・`OriginDialogState`・`TerrainStore`のcontextが必要。
+/// 入力が数値で地形データの範囲内のときだけ「設定」ボタンを押せ、押すと`on_submit`を呼ぶ
+/// (`OriginState`は書き換えない。アプリが送信し、配信されてきた原点で更新される想定)。
 #[component]
 pub fn OriginDialog(
     /// 「設定」ボタンで緯度経度が確定した際に呼ばれる。実際の送信方法は呼び出し側に委ねる。

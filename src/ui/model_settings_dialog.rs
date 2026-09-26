@@ -12,12 +12,14 @@ use crate::ui::util::event_f64;
 #[derive(Clone, Copy)]
 pub struct ModelSettingsDialogState(pub RwSignal<bool>);
 
+/// 選択肢に並べる表示方式(この順で出す)。
 const MODES: [ModelDisplayMode; 3] = [
     ModelDisplayMode::SwitchToSymbol,
     ModelDisplayMode::MinScreenSize,
     ModelDisplayMode::Off,
 ];
 
+/// `<select>`の`value`に使う、表示方式ごとの識別子。
 fn mode_value(mode: ModelDisplayMode) -> &'static str {
     match mode {
         ModelDisplayMode::Off => "off",
@@ -26,12 +28,15 @@ fn mode_value(mode: ModelDisplayMode) -> &'static str {
     }
 }
 
+/// 3Dモデル表示の設定ウインドウ(モーダルではない、ドラッグで動かせるウインドウ)。
+/// `ModelSettingsDialogState`・`ModelsState`のcontextが必要。
 #[component]
 pub fn ModelSettingsDialog() -> impl IntoView {
     let dialog = use_context::<ModelSettingsDialogState>()
         .expect("ModelSettingsDialogState context not found");
     let models = use_context::<ModelsState>().expect("ModelsState context not found");
 
+    // 選ばれた`value`を表示方式に戻して反映する。
     let on_mode = move |ev| {
         let value = event_target_value(&ev);
         if let Some(mode) = MODES.into_iter().find(|m| mode_value(*m) == value) {
