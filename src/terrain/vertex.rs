@@ -3,11 +3,11 @@
 /// `DrawVertex::params.z`の値(頂点の種類)。`draw.wgsl`の`vs_main`が`> 0.5`・`> 1.5`で見分けるので、
 /// 値を変えるときはシェーダーも合わせること(型は単体テストのWGSL検証が見ている)。
 /// 面・線(ワールド/視点空間/画面の座標そのまま)。
-pub(crate) const KIND_FLAT: f32 = 0.0;
+const KIND_FLAT: f32 = 0.0;
 /// 画面サイズ固定のビルボード(マーカー)。
-pub(crate) const KIND_BILLBOARD: f32 = 1.0;
+const KIND_BILLBOARD: f32 = 1.0;
 /// 向きつきビルボード(シンボル。進行方向が画面のどちらを向くかに合わせて回す)。
-pub(crate) const KIND_ORIENTED_BILLBOARD: f32 = 2.0;
+const KIND_ORIENTED_BILLBOARD: f32 = 2.0;
 
 /// 描画用の頂点。面と線(太さ付き)を同じ頂点形式・同じパイプラインで描く(`draw.wgsl`)。
 #[repr(C)]
@@ -24,19 +24,12 @@ pub struct DrawVertex {
 
 impl DrawVertex {
     pub(crate) fn surface(position: [f32; 3], color: [f32; 4], normal: Option<[f32; 3]>) -> Self {
-        match normal {
-            Some(aux) => Self {
-                position,
-                color,
-                aux,
-                params: [0.0, 0.0, KIND_FLAT, 1.0],
-            },
-            None => Self {
-                position,
-                color,
-                aux: [0.0; 3],
-                params: [0.0, 0.0, KIND_FLAT, 0.0],
-            },
+        let shaded = if normal.is_some() { 1.0 } else { 0.0 };
+        Self {
+            position,
+            color,
+            aux: normal.unwrap_or([0.0; 3]),
+            params: [0.0, 0.0, KIND_FLAT, shaded],
         }
     }
 

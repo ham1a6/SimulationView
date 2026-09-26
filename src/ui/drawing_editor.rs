@@ -358,9 +358,7 @@ fn kind_tag(shape: &Shape) -> u8 {
 }
 
 fn with_shape<R>(tool: DrawToolState, id: DrawingId, f: impl FnOnce(&Shape) -> R) -> Option<R> {
-    tool.drawings
-        .items
-        .with(|items| items.iter().find(|d| d.id == id).map(|d| f(&d.shape)))
+    tool.drawings.with(id, |d| f(&d.shape))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -434,15 +432,7 @@ fn shape_form(tool: DrawToolState, id: DrawingId) -> AnyView {
             }
         });
     };
-    let style_get = move || {
-        tool.drawings.items.with(|items| {
-            items
-                .iter()
-                .find(|d| d.id == id)
-                .map(|d| d.style)
-                .unwrap_or_default()
-        })
-    };
+    let style_get = move || tool.drawings.with(id, |d| d.style).unwrap_or_default();
     let style_set = move |style: Style| tool.update_shape(id, |d| d.style = style);
 
     view! {
@@ -489,11 +479,7 @@ pub fn DrawingEditor() -> impl IntoView {
 
     // 一覧の行は「作った図形の一覧(追加・削除・改名)」でだけ作り直す。図形の中身の変化(編集や、作成中の
     // 仮の図形の更新)では作り直さない(入力中のフォーカスが外れるため)。表示/非表示は行の中で読む。
-    let visible_of = move |id: DrawingId| {
-        tool.drawings
-            .items
-            .with(|items| items.iter().find(|d| d.id == id).is_none_or(|d| d.visible))
-    };
+    let visible_of = move |id: DrawingId| tool.drawings.with(id, |d| d.visible).unwrap_or(true);
     // 一覧の行の右クリックメニュー(`ContextMenuState`が提供されていれば)。
     let context_menu = use_context::<ContextMenuState>();
     let rows = move |u: UserShape| {
@@ -574,12 +560,8 @@ pub fn DrawingEditor() -> impl IntoView {
     // 編集フォームは、選択が変わったときか、図形の種類・点の数が変わったときだけ作り直す。
     let form_key = Memo::new(move |_| {
         tool.selected.get().and_then(|id| {
-            tool.drawings.items.with(|items| {
-                items
-                    .iter()
-                    .find(|d| d.id == id)
-                    .map(|d| (id, kind_tag(&d.shape), d.shape.positions().len()))
-            })
+            tool.drawings
+                .with(id, |d| (id, kind_tag(&d.shape), d.shape.positions().len()))
         })
     });
 

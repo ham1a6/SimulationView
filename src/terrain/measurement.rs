@@ -59,18 +59,21 @@ impl std::error::Error for InvalidRoutePoint {}
 /// 方位の不定・不安定な領域を避けるため、補助球上の弧長が0・πから1e-7 rad以内では
 /// 保守的に方位をNoneにする(距離は常に計算する)。
 pub fn measure_route(points: &[(f64, f64)]) -> Result<RouteMeasurement, InvalidRoutePoint> {
-    for (index, &(lat, lon)) in points.iter().enumerate() {
-        if !lat.is_finite()
-            || !lon.is_finite()
-            || !(-90.0..=90.0).contains(&lat)
-            || !(-180.0..=180.0).contains(&lon)
-        {
-            return Err(InvalidRoutePoint { index });
-        }
+    measure(points).map(|(route, _)| route)
+}
+
+/// `measure_route`の本体。区間ごとのGeographicLibの初期方位(度、正規化も不定の判定もしない生の値)も返す。
+fn measure(points: &[(f64, f64)]) -> Result<(RouteMeasurement, Vec<f64>), InvalidRoutePoint> {
+    // 範囲の判定はNaN・無限大も弾く。
+    if let Some(index) = points
+        .iter()
+        .position(|&(lat, lon)| !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon))
+    {
+        return Err(InvalidRoutePoint { index });
     }
     let mut total_distance_m = 0.0;
     let geodesic = Geodesic::wgs84();
-    let segments = points
+    let (segments, bearings) = points
         .windows(2)
         .map(|pair| {
             let (lat0, lon0) = pair[0];
@@ -81,17 +84,19 @@ pub fn measure_route(points: &[(f64, f64)]) -> Result<RouteMeasurement, InvalidR
             let initial_bearing_deg = (angle > 1e-7 && std::f64::consts::PI - angle > 1e-7)
                 .then_some(bearing.rem_euclid(360.0));
             total_distance_m += distance_m;
-            RouteSegment {
+            let segment = RouteSegment {
                 distance_m,
                 cumulative_distance_m: total_distance_m,
                 initial_bearing_deg,
-            }
+            };
+            (segment, bearing)
         })
-        .collect();
-    Ok(RouteMeasurement {
+        .unzip();
+    let route = RouteMeasurement {
         segments,
         total_distance_m,
-    })
+    };
+    Ok((route, bearings))
 }
 
 #[cfg(test)]

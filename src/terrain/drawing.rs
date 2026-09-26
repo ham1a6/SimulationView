@@ -97,6 +97,11 @@ impl Style {
             stroke_width_px: width_px,
         }
     }
+
+    /// 描く線の色(太さが0なら線は描かないので`None`)。
+    pub(crate) fn visible_stroke(&self) -> Option<Color> {
+        self.stroke.filter(|_| self.stroke_width_px > 0.0)
+    }
 }
 
 impl Default for Style {
@@ -119,6 +124,16 @@ pub enum Altitude {
     /// 地表からのメートル。2D図形・線は**地形の起伏に沿って貼り付く**(細かく分割して描く)。
     /// 3D図形は、位置の真下の地表の高さを基準に置く(図形自体は変形しない)。
     AboveGround(f64),
+}
+
+impl Altitude {
+    /// 同じ基準のまま`dh`メートル高くしたもの。
+    pub(crate) fn raised(self, dh: f64) -> Self {
+        match self {
+            Self::Msl(h) => Self::Msl(h + dh),
+            Self::AboveGround(o) => Self::AboveGround(o + dh),
+        }
+    }
 }
 
 /// `Position::Screen`の基準になる画面の角。
@@ -356,6 +371,21 @@ impl DrawingState {
                 f(drawing);
             }
         });
+    }
+
+    /// IDの図形を読む(リアクティブに追跡する)。無ければ`None`。
+    pub(crate) fn with<R>(&self, id: DrawingId, f: impl FnOnce(&Drawing) -> R) -> Option<R> {
+        self.items
+            .with(|list| list.iter().find(|d| d.id == id).map(f))
+    }
+
+    /// `with`と同じだが、リアクティブに追跡しない。
+    pub(crate) fn with_untracked<R>(
+        &self,
+        id: DrawingId,
+        f: impl FnOnce(&Drawing) -> R,
+    ) -> Option<R> {
+        untrack(|| self.with(id, f))
     }
 
     pub fn remove(&self, id: DrawingId) {

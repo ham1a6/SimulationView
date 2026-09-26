@@ -83,14 +83,22 @@ impl Camera {
             Projection::Perspective { fov_y_radians } => {
                 directx::perspective(fov_y_radians, self.aspect, self.z_far, self.z_near)
             }
-            Projection::Orthographic { view_height_m } => {
-                let half_h = view_height_m * 0.5;
-                let half_w = half_h * self.aspect;
+            Projection::Orthographic { .. } => {
+                let (half_w, half_h) = self.half_extents();
                 // 正射影も深度がzに対して線形なので、near/farを入れ替えて渡すだけで
                 // 深度マッピングが反転する(near→1, far→0)。
                 directx::orthographic(-half_w, half_w, -half_h, half_h, self.z_far, self.z_near)
             }
         }
+    }
+
+    /// 画面の中心から右端・上端までの広がり(横, 縦)。透視投影は視線方向の距離1あたり、正射影はメートル。
+    fn half_extents(&self) -> (f32, f32) {
+        let half_h = match self.projection {
+            Projection::Perspective { fov_y_radians } => (fov_y_radians * 0.5).tan(),
+            Projection::Orthographic { view_height_m } => view_height_m * 0.5,
+        };
+        (half_h * self.aspect, half_h)
     }
 
     /// 水域レイヤー(`terrain.wgsl`の`fs_water`)が、各画素(正規化デバイス座標ndc_x,ndc_y)の視線を
@@ -100,15 +108,10 @@ impl Camera {
     /// コメントにある通りf32の丸め誤差で向きが大きくずれるため。
     pub fn water_ray_basis(&self) -> [[f32; 4]; 4] {
         let (forward, right, up) = self.basis();
-        let (half_w, half_h, perspective) = match self.projection {
-            Projection::Perspective { fov_y_radians } => {
-                let half_h = (fov_y_radians * 0.5).tan();
-                (half_h * self.aspect, half_h, 1.0)
-            }
-            Projection::Orthographic { view_height_m } => {
-                let half_h = view_height_m * 0.5;
-                (half_h * self.aspect, half_h, 0.0)
-            }
+        let (half_w, half_h) = self.half_extents();
+        let perspective = match self.projection {
+            Projection::Perspective { .. } => 1.0,
+            Projection::Orthographic { .. } => 0.0,
         };
         let (right, up) = (right * half_w, up * half_h);
         [
@@ -129,23 +132,11 @@ impl Camera {
         // 約1mしかなく、カメラが数百km〜2,000km離れるとf32の丸め誤差(0.1m超)で向きが
         // 大きくずれ、ズームアウト時にクリック位置と別の地点を拾う不具合になっていた。
         let (forward, right, up) = self.basis();
+        let (half_w, half_h) = self.half_extents();
+        let (dx, dy) = (right * (ndc_x * half_w), up * (ndc_y * half_h));
         match self.projection {
-            Projection::Perspective { fov_y_radians } => {
-                let half_h = (fov_y_radians * 0.5).tan();
-                let half_w = half_h * self.aspect;
-                (
-                    self.eye,
-                    forward + right * (ndc_x * half_w) + up * (ndc_y * half_h),
-                )
-            }
-            Projection::Orthographic { view_height_m } => {
-                let half_h = view_height_m * 0.5;
-                let half_w = half_h * self.aspect;
-                (
-                    self.eye + right * (ndc_x * half_w) + up * (ndc_y * half_h),
-                    forward,
-                )
-            }
+            Projection::Perspective { .. } => (self.eye, forward + dx + dy),
+            Projection::Orthographic { .. } => (self.eye + dx + dy, forward),
         }
     }
 }

@@ -17,8 +17,8 @@ use leptos::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use super::drawing::{Altitude, Color, Drawing, DrawingId, DrawingState, Position, Shape, Style};
-use super::drawing_geometry::{destination, mean_radius, to_local};
 use super::geodesy::Ellipsoid;
+use super::geodesy::{from_local, to_local};
 
 /// 直前の点とこれ未満(メートル)しか離れていないクリックは、ダブルクリックの2回目などとみなして無視する。
 const MIN_POINT_SPACING_M: f64 = 1.0;
@@ -120,7 +120,7 @@ type LatLon = (f64, f64);
 
 fn radius_at(lat_deg: f64) -> f64 {
     // 地形データのellipsoidを持たないので、WGS84を使う(厳密に同じでなくても見た目に差は出ない)。
-    mean_radius(&Ellipsoid::WGS84, lat_deg)
+    Ellipsoid::WGS84.mean_radius(lat_deg)
 }
 
 /// `from`から見た`to`の位置([東, 北]、メートル)。
@@ -130,13 +130,7 @@ fn local(from: LatLon, to: LatLon) -> [f64; 2] {
 
 /// `from`から東へ`east`・北へ`north`メートル進んだ点。
 fn offset(from: LatLon, east: f64, north: f64) -> LatLon {
-    destination(
-        from.0,
-        from.1,
-        east.atan2(north),
-        east.hypot(north),
-        radius_at(from.0),
-    )
+    from_local(from.0, from.1, [east, north], radius_at(from.0))
 }
 
 fn distance(a: LatLon, b: LatLon) -> f64 {
@@ -228,10 +222,10 @@ pub fn build_shape(kind: ToolKind, pts: &[LatLon], altitude: Altitude) -> Option
                 end_deg: start_deg + sweep,
             })
         }
-        ToolKind::Polygon => (pts.len() >= 3).then(|| Shape::Polygon {
+        ToolKind::Polygon => (pts.len() >= kind.min_points()).then(|| Shape::Polygon {
             points: pts.iter().map(|p| at(*p, altitude)).collect(),
         }),
-        ToolKind::Polyline => (pts.len() >= 2).then(|| Shape::Polyline {
+        ToolKind::Polyline => (pts.len() >= kind.min_points()).then(|| Shape::Polyline {
             points: pts.iter().map(|p| at(*p, altitude)).collect(),
         }),
     }
@@ -273,10 +267,7 @@ fn highlight_shape(shape: &Shape) -> Shape {
     if !shape.is_solid() {
         for p in shape.positions_mut() {
             if let Position::World { altitude, .. } = p {
-                *altitude = match *altitude {
-                    Altitude::Msl(h) => Altitude::Msl(h + 5.0),
-                    Altitude::AboveGround(o) => Altitude::AboveGround(o + 5.0),
-                };
+                *altitude = altitude.raised(5.0);
             }
         }
     }
@@ -581,12 +572,10 @@ impl DrawToolState {
         else {
             return;
         };
-        let Some((mut shape, style)) = self.drawings.items.with_untracked(|items| {
-            items
-                .iter()
-                .find(|d| d.id == id)
-                .map(|d| (d.shape.clone(), d.style))
-        }) else {
+        let Some((mut shape, style)) = self
+            .drawings
+            .with_untracked(id, |d| (d.shape.clone(), d.style))
+        else {
             return;
         };
         let shift = characteristic_size_m(&shape) * 0.5;
@@ -650,12 +639,8 @@ impl DrawToolState {
 
     fn refresh_highlight(&self) {
         let shape = self.selected.get_untracked().and_then(|id| {
-            self.drawings.items.with_untracked(|items| {
-                items
-                    .iter()
-                    .find(|d| d.id == id)
-                    .map(|d| highlight_shape(&d.shape))
-            })
+            self.drawings
+                .with_untracked(id, |d| highlight_shape(&d.shape))
         });
         Self::sync_temp(self.drawings, self.highlight, shape, highlight_style());
     }

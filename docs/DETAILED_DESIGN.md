@@ -1289,8 +1289,8 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 `View`=(右, 上, **-前方**)(`Camera::projection_matrix()`)、`Screen`=ピクセル座標(左上原点・y下向き・z=0。`screen_matrix`)。
 
 - 太い線 `append_line_strip(list, points, closed, color, width_px)`(`markers`・`tracks`も使う): 線分(a→b)ごとに4頂点`a+(側+1), a-(側-1), b+(側-1), b-(側+1)`から三角形`[a+,a-,b+, b+,a-,b-]`。`n<2`なら何もしない
-- **緯度経度⇔基準点からの方位・距離**(方位角等距離図法、球面の直接解): `mean_radius(ellipsoid, lat) = a·sqrt(1-e2)/(1-e2·sin²lat)`、`destination(lat,lon,bearing,dist,radius)`(`δ=dist/radius`、`lat2 = asin(sin lat1 cos δ + cos lat1 sin δ cos bearing)`、
-  `lon2 = lon1 + atan2(sin bearing sin δ cos lat1, cos δ - sin lat1 sin lat2)`)、`to_local`はその逆(haversine+方位)
+- **緯度経度⇔基準点からの方位・距離**(方位角等距離図法、球面の直接解。`geodesy.rs`): `Ellipsoid::mean_radius(lat) = a·sqrt(1-e2)/(1-e2·sin²lat)`、`destination(lat,lon,bearing,dist,radius)`(`δ=dist/radius`、`lat2 = asin(sin lat1 cos δ + cos lat1 sin δ cos bearing)`、
+  `lon2 = lon1 + atan2(sin bearing sin δ cos lat1, cos δ - sin lat1 sin lat2)`)、`to_local`はその逆(haversine+方位)、`from_local(lat,lon,[東,北],radius)`は`destination`を方位`atan2(東,北)`・距離`hypot`で呼ぶ
 - **2D図形**: 置いた位置を中心とするローカル平面(x=右/東, y=上/北)で三角形`fill`と輪郭`outlines`を作り、`Frame2d`で出力座標へ写す(`World`は`destination`で緯度経度へ→`Altitude`から高さ(`DRAWING_M`込み)→`EnuTransform`)。
   **表示地形がある地表貼り付け**: `drawing_geometry::drape`で輪郭の緯度経度点列を`earcutr`で三角形化し、各三角形の外接矩形に重なる地形セルだけを列挙する。輪郭の形状近似は2km以下(既存の辺数上限あり)、塗りと輪郭は同じ境界点を使う。`visit_surface_triangles`は現在のチャンクLODを使い、未取得ならレベル0、存在しないタイル・欠損三角形なら標高0mの面を返す。陸地の3ノードと南東―北西の対角線は地形描画と一致させ、スカートは除外する。
   地形三角形を図形三角形の3半平面でクリップし、残った凸多角形を扇状に三角形化する。交点の緯度経度の重心座標で、地形描画と同じf32のENU頂点を補間する。ENU上方向へ対地高度+`DRAWING_M`を加える。頂点間も同じ地形平面上となるため山頂を飛び越えない。輪郭線も地形三角形との交差区間ごとに分割し、共有辺の同一区間は二重描画しない。LOD変更時は従来通り再生成する。最終の面を固定頂点数で粗く戻さず、出力の大きさは図形範囲内の表示地形LODに従う。

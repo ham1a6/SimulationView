@@ -1,6 +1,8 @@
 //! 測地座標の変換。DETAILED_DESIGN.md 3.2節(ENU変換)。
 //! 楕円体(`Ellipsoid`)と、緯度経度(+標高)からENU座標(東=X, 北=Y, 上=Z)への変換(`EnuTransform`)。
 
+use std::f64::consts::{PI, TAU};
+
 use glam::{DMat3, DVec3};
 use serde::Deserialize;
 
@@ -20,6 +22,73 @@ impl Ellipsoid {
         a_m: 6_378_137.0,
         inv_f: 298.257_222_101,
     };
+
+    /// 第一離心率の二乗。
+    pub(crate) fn e2(&self) -> f64 {
+        let f = 1.0 / self.inv_f;
+        f * (2.0 - f)
+    }
+
+    /// 緯度`lat_deg`での平均曲率半径(子午線と卯酉線の曲率半径の幾何平均、メートル)。
+    pub(crate) fn mean_radius(&self, lat_deg: f64) -> f64 {
+        let e2 = self.e2();
+        let s = lat_deg.to_radians().sin();
+        self.a_m * (1.0 - e2).sqrt() / (1.0 - e2 * s * s)
+    }
+}
+
+// 緯度経度と、基準点からの方位・距離(方位角等距離図法。半径`radius_m`の球面)。作図が使う。
+
+/// 基準点から方位`bearing_rad`(北から時計回り)へ距離`dist_m`進んだ点の(緯度, 経度)(度)。
+pub(crate) fn destination(
+    lat_deg: f64,
+    lon_deg: f64,
+    bearing_rad: f64,
+    dist_m: f64,
+    radius_m: f64,
+) -> (f64, f64) {
+    let (lat1, lon1) = (lat_deg.to_radians(), lon_deg.to_radians());
+    let delta = dist_m / radius_m;
+    let lat2 = (lat1.sin() * delta.cos() + lat1.cos() * delta.sin() * bearing_rad.cos()).asin();
+    let lon2 = lon1
+        + (bearing_rad.sin() * delta.sin() * lat1.cos())
+            .atan2(delta.cos() - lat1.sin() * lat2.sin());
+    (lat2.to_degrees(), lon2.to_degrees())
+}
+
+/// 基準点から見た(緯度, 経度)の位置を、ローカル座標[東, 北](メートル)で返す。
+pub(crate) fn to_local(
+    ref_lat_deg: f64,
+    ref_lon_deg: f64,
+    lat_deg: f64,
+    lon_deg: f64,
+    radius_m: f64,
+) -> [f64; 2] {
+    let (lat1, lat2) = (ref_lat_deg.to_radians(), lat_deg.to_radians());
+    let mut dlon = (lon_deg - ref_lon_deg).to_radians();
+    dlon = (dlon + PI).rem_euclid(TAU) - PI;
+    let a =
+        ((lat2 - lat1) * 0.5).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon * 0.5).sin().powi(2);
+    let dist = 2.0 * radius_m * a.sqrt().min(1.0).asin();
+    let bearing = (dlon.sin() * lat2.cos())
+        .atan2(lat1.cos() * lat2.sin() - lat1.sin() * lat2.cos() * dlon.cos());
+    [dist * bearing.sin(), dist * bearing.cos()]
+}
+
+/// `to_local`の逆: 基準点から見てローカル座標`p`=[東, 北](メートル)にある点の(緯度, 経度)。
+pub(crate) fn from_local(
+    ref_lat_deg: f64,
+    ref_lon_deg: f64,
+    p: [f64; 2],
+    radius_m: f64,
+) -> (f64, f64) {
+    destination(
+        ref_lat_deg,
+        ref_lon_deg,
+        p[0].atan2(p[1]),
+        p[0].hypot(p[1]),
+        radius_m,
+    )
 }
 
 /// 緯度経度(+標高)からENU座標(東=X, 北=Y, 上=Z)へ変換する。DETAILED_DESIGN.md 3.2節の変換式そのもの。
@@ -45,8 +114,7 @@ pub struct EnuTransform {
 impl EnuTransform {
     pub fn new(origin: &Origin, ellipsoid: &Ellipsoid) -> Self {
         let a = ellipsoid.a_m;
-        let f = 1.0 / ellipsoid.inv_f;
-        let e2 = f * (2.0 - f);
+        let e2 = ellipsoid.e2();
         let lat0 = origin.lat_deg.to_radians();
         let lon0 = origin.lon_deg.to_radians();
         let (x0, y0, z0) = geodetic_to_ecef(lat0, lon0, 0.0, a, e2);

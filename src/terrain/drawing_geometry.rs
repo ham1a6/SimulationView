@@ -16,8 +16,7 @@
 use std::f64::consts::{PI, TAU};
 
 use super::drawing::{Altitude, Corner, Drawing, Position, Shape, Space, Style};
-use super::geodesy::Ellipsoid;
-use super::geodesy::EnuTransform;
+use super::geodesy::{destination, from_local, to_local, Ellipsoid, EnuTransform};
 use super::origin::Origin;
 use super::render_bias::DRAWING_M;
 use super::vertex::DrawVertex;
@@ -97,52 +96,35 @@ impl Sink<'_> {
 }
 
 fn build_one(ctx: &BuildContext, shape: &Shape, style: &Style, sink: &mut Sink) {
+    // 2D図形: 基準点に置いたローカル座標の形(`geom(基準点の変換, 分割の細かさ)`)を出力する。
+    let mut emit_2d = |pos: &Position, geom: &dyn Fn(&Frame2d, Steps) -> Geom2d| {
+        let (frame, steps) = Frame2d::at(ctx, pos);
+        emit_geom2d(sink, ctx, &frame, &geom(&frame, steps), style);
+    };
     match shape {
         Shape::Circle { center, radius } => {
-            let (frame, steps) = Frame2d::at(ctx, center);
-            emit_geom2d(
-                sink,
-                ctx,
-                &frame,
-                &sector_geom(*radius, 0.0, 360.0, steps),
-                style,
-            );
+            emit_2d(center, &|_, steps| sector_geom(*radius, 0.0, 360.0, steps));
         }
         Shape::Sector {
             center,
             radius,
             start_deg,
             end_deg,
-        } => {
-            let (frame, steps) = Frame2d::at(ctx, center);
-            emit_geom2d(
-                sink,
-                ctx,
-                &frame,
-                &sector_geom(*radius, *start_deg, *end_deg, steps),
-                style,
-            );
-        }
+        } => emit_2d(center, &|_, steps| {
+            sector_geom(*radius, *start_deg, *end_deg, steps)
+        }),
         Shape::Rect {
             center,
             width,
             height,
             rotation_deg,
-        } => {
-            let (frame, steps) = Frame2d::at(ctx, center);
-            emit_geom2d(
-                sink,
-                ctx,
-                &frame,
-                &rect_geom(*width, *height, *rotation_deg, steps),
-                style,
-            );
-        }
-        Shape::Polygon { points } => {
-            let (frame, steps) = Frame2d::at(ctx, &points[0]);
+        } => emit_2d(center, &|_, steps| {
+            rect_geom(*width, *height, *rotation_deg, steps)
+        }),
+        Shape::Polygon { points } => emit_2d(&points[0], &|frame, steps| {
             let local: Vec<[f64; 2]> = points.iter().map(|p| frame.local_of(ctx, p)).collect();
-            emit_geom2d(sink, ctx, &frame, &polygon_geom(&local, steps), style);
-        }
+            polygon_geom(&local, steps)
+        }),
         Shape::Sphere { center, radius } => {
             emit_solid(sink, ctx, center, sphere_solid(*radius), style);
         }
@@ -225,13 +207,10 @@ pub(crate) fn append_line_strip(
     color: [f32; 4],
     width_px: f32,
 ) {
-    let n = points.len();
-    if n < 2 {
+    if points.len() < 2 {
         return;
     }
-    let segments = if closed { n } else { n - 1 };
-    for i in 0..segments {
-        let (a, b) = (points[i], points[(i + 1) % n]);
+    for (a, b) in segments(points, closed) {
         if a == b {
             continue;
         }
@@ -243,53 +222,16 @@ pub(crate) fn append_line_strip(
     }
 }
 
+/// 点列の隣り合う2点の組(閉じるなら最後の点→最初の点も)。
+fn segments<T: Copy>(points: &[T], closed: bool) -> impl ExactSizeIterator<Item = (T, T)> + '_ {
+    let n = points.len();
+    let count = if closed { n } else { n.saturating_sub(1) };
+    (0..count).map(move |i| (points[i], points[(i + 1) % n]))
+}
+
 // ---------------------------------------------------------------------------------------------
-// 緯度経度と、基準点からの方位・距離(方位角等距離図法。球面)
+// 高度・画面座標
 // ---------------------------------------------------------------------------------------------
-
-/// 緯度`lat_deg`での平均曲率半径(子午線と卯酉線の曲率半径の幾何平均、メートル)。
-pub(crate) fn mean_radius(ellipsoid: &Ellipsoid, lat_deg: f64) -> f64 {
-    let f = 1.0 / ellipsoid.inv_f;
-    let e2 = f * (2.0 - f);
-    let s = lat_deg.to_radians().sin();
-    ellipsoid.a_m * (1.0 - e2).sqrt() / (1.0 - e2 * s * s)
-}
-
-/// 基準点から方位`bearing_rad`(北から時計回り)へ距離`dist_m`進んだ点の(緯度, 経度)(度)。
-pub(crate) fn destination(
-    lat_deg: f64,
-    lon_deg: f64,
-    bearing_rad: f64,
-    dist_m: f64,
-    radius_m: f64,
-) -> (f64, f64) {
-    let (lat1, lon1) = (lat_deg.to_radians(), lon_deg.to_radians());
-    let delta = dist_m / radius_m;
-    let lat2 = (lat1.sin() * delta.cos() + lat1.cos() * delta.sin() * bearing_rad.cos()).asin();
-    let lon2 = lon1
-        + (bearing_rad.sin() * delta.sin() * lat1.cos())
-            .atan2(delta.cos() - lat1.sin() * lat2.sin());
-    (lat2.to_degrees(), lon2.to_degrees())
-}
-
-/// `destination`の逆: 基準点から見た(緯度, 経度)の位置を、ローカル座標[東, 北](メートル)で返す。
-pub(crate) fn to_local(
-    ref_lat_deg: f64,
-    ref_lon_deg: f64,
-    lat_deg: f64,
-    lon_deg: f64,
-    radius_m: f64,
-) -> [f64; 2] {
-    let (lat1, lat2) = (ref_lat_deg.to_radians(), lat_deg.to_radians());
-    let mut dlon = (lon_deg - ref_lon_deg).to_radians();
-    dlon = (dlon + PI).rem_euclid(TAU) - PI;
-    let a =
-        ((lat2 - lat1) * 0.5).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon * 0.5).sin().powi(2);
-    let dist = 2.0 * radius_m * a.sqrt().min(1.0).asin();
-    let bearing = (dlon.sin() * lat2.cos())
-        .atan2(lat1.cos() * lat2.sin() - lat1.sin() * lat2.cos() * dlon.cos());
-    [dist * bearing.sin(), dist * bearing.cos()]
-}
 
 /// 高度を楕円体高(メートル)にする。`AboveGround`は、地表より`ground_bias_m`(`render_bias`)だけ
 /// 持ち上げる(地形メッシュと同じ深度になって縞模様になるのを避ける)。作図と航跡で共通。
@@ -385,24 +327,33 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
 }
 
+/// `a`から`b`へ割合`t`だけ進んだ点。
+fn mix(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
+    std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
+}
+
+fn midpoint(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
+    [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5]
+}
+
+/// 三角形を、辺の中点で4つに分ける。
+fn subdivide([a, b, c]: [[f64; 2]; 3]) -> [[[f64; 2]; 3]; 4] {
+    let (ab, bc, ca) = (midpoint(a, b), midpoint(b, c), midpoint(c, a));
+    [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]
+}
+
 /// 辺を長さ`max_len`以下に等分割した点列。閉じるなら最後の辺(最後→最初)も分割し、最初の点は重ねない。
 fn densify(points: &[[f64; 2]], closed: bool, max_len: f64) -> Vec<[f64; 2]> {
     if !max_len.is_finite() || points.len() < 2 {
         return points.to_vec();
     }
-    let n = points.len();
-    let segments = if closed { n } else { n - 1 };
-    let mut out = Vec::with_capacity(n);
-    for i in 0..segments {
-        let (a, b) = (points[i], points[(i + 1) % n]);
+    let mut out = Vec::with_capacity(points.len());
+    for (a, b) in segments(points, closed) {
         let parts = ((dist(a, b) / max_len).ceil() as usize).clamp(1, MAX_EDGE_PARTS);
-        for k in 0..parts {
-            let t = k as f64 / parts as f64;
-            out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
-        }
+        out.extend((0..parts).map(|k| mix(a, b, k as f64 / parts as f64)));
     }
     if !closed {
-        out.push(points[n - 1]);
+        out.push(points[points.len() - 1]);
     }
     out
 }
@@ -574,14 +525,12 @@ fn refine_triangles(tris: Vec<[f64; 2]>, max_edge: f64) -> Vec<[f64; 2]> {
     }
     let mut stack: Vec<[[f64; 2]; 3]> = tris.as_chunks::<3>().0.to_vec();
     let mut out: Vec<[f64; 2]> = Vec::new();
-    let mid = |a: [f64; 2], b: [f64; 2]| [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
     while let Some([a, b, c]) = stack.pop() {
         let longest = dist(a, b).max(dist(b, c)).max(dist(c, a));
         if longest <= max_edge || out.len() + stack.len() * 3 >= MAX_REFINED_VERTICES {
             out.extend([a, b, c]);
         } else {
-            let (ab, bc, ca) = (mid(a, b), mid(b, c), mid(c, a));
-            stack.extend([[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]);
+            stack.extend(subdivide([a, b, c]));
         }
     }
     out
@@ -618,7 +567,7 @@ impl Frame2d {
                 let frame = Self::World {
                     lat_deg,
                     lon_deg,
-                    radius_m: mean_radius(ctx.ellipsoid, lat_deg),
+                    radius_m: ctx.ellipsoid.mean_radius(lat_deg),
                     altitude,
                 };
                 let steps = match altitude {
@@ -685,13 +634,7 @@ impl Frame2d {
                 radius_m,
                 altitude,
             } => {
-                let (lat, lon) = destination(
-                    *lat_deg,
-                    *lon_deg,
-                    p[0].atan2(p[1]),
-                    p[0].hypot(p[1]),
-                    *radius_m,
-                );
+                let (lat, lon) = from_local(*lat_deg, *lon_deg, p, *radius_m);
                 ctx.mesh_transform.transform(
                     lat,
                     lon,
@@ -734,15 +677,10 @@ fn emit_geom2d(sink: &mut Sink, ctx: &BuildContext, frame: &Frame2d, geom: &Geom
     if let Some(fill) = style.fill {
         let color = fill.to_array();
         for tri in geom.fill.as_chunks::<3>().0 {
-            let positions = [
-                frame.map(ctx, tri[0]),
-                frame.map(ctx, tri[1]),
-                frame.map(ctx, tri[2]),
-            ];
-            push_triangle(sink, color, positions, None);
+            push_triangle(sink, color, tri.map(|p| frame.map(ctx, p)), None);
         }
     }
-    if let Some(stroke) = style.stroke.filter(|_| style.stroke_width_px > 0.0) {
+    if let Some(stroke) = style.visible_stroke() {
         for outline in &geom.outlines {
             let points: Vec<[f32; 3]> = outline.points.iter().map(|&p| frame.map(ctx, p)).collect();
             push_line_strip(
@@ -759,7 +697,6 @@ fn emit_geom2d(sink: &mut Sink, ctx: &BuildContext, frame: &Frame2d, geom: &Geom
 /// 尾根をまたぐ面・線は長さだけでは精度が足りないため、高さの補間誤差でも細分化する。
 /// 深さ6・既存の頂点数上限で計算量を制限する。広域図形で上限に達した場合は近似を保つ。
 fn refine_ground_geom(ctx: &BuildContext, frame: &Frame2d, geom: &Geom2d, fill: bool) -> Geom2d {
-    let mid = |a: [f64; 2], b: [f64; 2]| [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
     let error = |points: &[[f64; 2]]| {
         let n = points.len() as f64;
         let center = std::array::from_fn(|k| points.iter().map(|p| p[k]).sum::<f64>() / n);
@@ -785,11 +722,7 @@ fn refine_ground_geom(ctx: &BuildContext, frame: &Frame2d, geom: &Geom2d, fill: 
                 && out.fill.len() + stack.len() * 3 + 12 <= MAX_REFINED_VERTICES
                 && (error(&[a, b]) || error(&[b, c]) || error(&[c, a]) || error(&[a, b, c]))
             {
-                let (ab, bc, ca) = (mid(a, b), mid(b, c), mid(c, a));
-                stack.extend(
-                    [[a, ab, ca], [ab, b, bc], [ca, bc, c], [ab, bc, ca]]
-                        .map(|tri| (tri, depth + 1)),
-                );
+                stack.extend(subdivide([a, b, c]).map(|tri| (tri, depth + 1)));
             } else {
                 out.fill.extend([a, b, c]);
             }
@@ -797,20 +730,16 @@ fn refine_ground_geom(ctx: &BuildContext, frame: &Frame2d, geom: &Geom2d, fill: 
     }
     for outline in &geom.outlines {
         let mut points = Vec::new();
-        let n = outline.points.len();
-        let segments = if outline.closed {
-            n
-        } else {
-            n.saturating_sub(1)
-        };
-        for i in 0..segments {
-            let mut stack = vec![(outline.points[i], outline.points[(i + 1) % n], 0)];
+        let edges = segments(&outline.points, outline.closed);
+        let count = edges.len();
+        for (i, (a, b)) in edges.enumerate() {
+            let mut stack = vec![(a, b, 0)];
             while let Some((a, b, depth)) = stack.pop() {
                 if depth < 6
-                    && points.len() + stack.len() + segments - i + 2 < MAX_REFINED_VERTICES
+                    && points.len() + stack.len() + count - i + 2 < MAX_REFINED_VERTICES
                     && error(&[a, b])
                 {
-                    let m = mid(a, b);
+                    let m = midpoint(a, b);
                     stack.extend([(m, b, depth + 1), (a, m, depth + 1)]);
                 } else {
                     points.push(a);
@@ -837,12 +766,13 @@ const POLYLINE_STEP_FLAT_M: f64 = 2_000.0;
 const POLYLINE_STEP_GROUND_M: f64 = 20.0;
 
 fn emit_polyline(sink: &mut Sink, ctx: &BuildContext, points: &[Position], style: &Style) {
-    let Some(stroke) = style.stroke.filter(|_| style.stroke_width_px > 0.0) else {
+    let Some(stroke) = style.visible_stroke() else {
         return;
     };
+    // 点はすべて同じ種類(`Shape::validate`)。
     let mapped: Vec<[f32; 3]> = match points[0] {
         Position::World { .. } => world_polyline(ctx, points),
-        Position::View { .. } => points
+        _ => points
             .iter()
             .filter_map(|p| match *p {
                 Position::View {
@@ -850,17 +780,11 @@ fn emit_polyline(sink: &mut Sink, ctx: &BuildContext, points: &[Position], style
                     up_m,
                     forward_m,
                 } => Some([right_m as f32, up_m as f32, -forward_m as f32]),
-                _ => None,
-            })
-            .collect(),
-        Position::Screen { .. } => points
-            .iter()
-            .filter_map(|p| match *p {
                 Position::Screen { corner, x_px, y_px } => {
                     let [x, y] = resolve_screen(ctx, corner, x_px, y_px);
                     Some([x as f32, y as f32, 0.0])
                 }
-                _ => None,
+                Position::World { .. } => None,
             })
             .collect(),
     };
@@ -890,7 +814,7 @@ fn world_polyline(ctx: &BuildContext, points: &[Position]) -> Vec<[f32; 3]> {
     let mut out = Vec::new();
     for pair in geodetic.windows(2) {
         let ((lat0, lon0, alt0), (lat1, lon1, alt1)) = (pair[0], pair[1]);
-        let radius = mean_radius(ctx.ellipsoid, lat0);
+        let radius = ctx.ellipsoid.mean_radius(lat0);
         let [east, north] = to_local(lat0, lon0, lat1, lon1, radius);
         let (length, bearing) = (east.hypot(north), east.atan2(north));
         let grounded =
@@ -901,23 +825,21 @@ fn world_polyline(ctx: &BuildContext, points: &[Position]) -> Vec<[f32; 3]> {
             POLYLINE_STEP_FLAT_M
         };
         let parts = ((length / step).ceil() as usize).clamp(1, MAX_EDGE_PARTS * 2);
-        // 地表基準で補間するときの、両端の「地表からの高さ」(海抜の端点は、その地点の地表との差)。
-        let offset = |lat: f64, lon: f64, alt: Altitude| match alt {
-            Altitude::Msl(h) => h - (ctx.ground)(lat, lon),
-            Altitude::AboveGround(o) => o,
+        // 両端の、補間する高さ。地表基準なら「地表からの高さ」(海抜の端点は、その地点の地表との差)、
+        // どちらも海抜なら楕円体高。
+        let end_height = |lat: f64, lon: f64, alt: Altitude| match (grounded, alt) {
+            (true, Altitude::Msl(h)) => h - (ctx.ground)(lat, lon),
+            (true, Altitude::AboveGround(o)) => o,
+            (false, _) => height_of(ctx, lat, lon, alt, DRAWING_M),
         };
-        let (off0, off1) = (offset(lat0, lon0, alt0), offset(lat1, lon1, alt1));
-        let (h0, h1) = (
-            height_of(ctx, lat0, lon0, alt0, DRAWING_M),
-            height_of(ctx, lat1, lon1, alt1, DRAWING_M),
-        );
+        let (e0, e1) = (end_height(lat0, lon0, alt0), end_height(lat1, lon1, alt1));
         for k in 0..parts {
             let t = k as f64 / parts as f64;
             let (lat, lon) = destination(lat0, lon0, bearing, length * t, radius);
             let h = if grounded {
-                (ctx.ground)(lat, lon) + off0 + (off1 - off0) * t + DRAWING_M
+                (ctx.ground)(lat, lon) + e0 + (e1 - e0) * t + DRAWING_M
             } else {
-                h0 + (h1 - h0) * t
+                e0 + (e1 - e0) * t
             };
             out.push(ctx.mesh_transform.transform(lat, lon, h));
         }
@@ -949,6 +871,29 @@ struct Solid {
 }
 
 impl Solid {
+    /// 半径`radius`・高さ`z`の水平な円板(フタ)。法線は`normal`。
+    fn push_cap(&mut self, radius: f64, z: f64, normal: [f64; 3]) {
+        let center = self.verts.len() as u32;
+        self.verts.push(([0.0, 0.0, z], normal));
+        for p in Solid::ring(radius, z) {
+            self.verts.push((p, normal));
+        }
+        let segments = SOLID_SEGMENTS as u32;
+        for j in 0..segments {
+            self.indices
+                .extend([center, center + 1 + j, center + 1 + (j + 1) % segments]);
+        }
+    }
+
+    /// 底面の円周上の4点(東・北・西・南)から、`top(底面の点)`へ伸びる稜線。
+    fn push_side_edges(&mut self, radius: f64, top: impl Fn([f64; 3]) -> [f64; 3]) {
+        for k in 0..4 {
+            let t = TAU * k as f64 / 4.0;
+            let bottom = [radius * t.cos(), radius * t.sin(), 0.0];
+            self.lines.push((vec![bottom, top(bottom)], false));
+        }
+    }
+
     fn push_quad(&mut self, corners: [[f64; 3]; 4], normal: [f64; 3]) {
         let base = self.verts.len() as u32;
         self.verts.extend(corners.map(|c| (c, normal)));
@@ -1092,30 +1037,9 @@ fn cylinder_solid(radius: f64, height: f64) -> Solid {
             .indices
             .extend([bottom, next_bottom, top, top, next_bottom, next_top]);
     }
-    for (z, normal) in [(height, [0.0, 0.0, 1.0]), (0.0, [0.0, 0.0, -1.0])] {
-        let center = solid.verts.len() as u32;
-        solid.verts.push(([0.0, 0.0, z], normal));
-        for p in Solid::ring(radius, z) {
-            solid.verts.push((p, normal));
-        }
-        for j in 0..SOLID_SEGMENTS as u32 {
-            solid.indices.extend([
-                center,
-                center + 1 + j,
-                center + 1 + (j + 1) % SOLID_SEGMENTS as u32,
-            ]);
-        }
-    }
-    for k in 0..4 {
-        let t = TAU * k as f64 / 4.0;
-        solid.lines.push((
-            vec![
-                [radius * t.cos(), radius * t.sin(), 0.0],
-                [radius * t.cos(), radius * t.sin(), height],
-            ],
-            false,
-        ));
-    }
+    solid.push_cap(radius, height, [0.0, 0.0, 1.0]);
+    solid.push_cap(radius, 0.0, [0.0, 0.0, -1.0]);
+    solid.push_side_edges(radius, |[x, y, _]| [x, y, height]);
     solid.lines.push((Solid::ring(radius, 0.0), true));
     solid.lines.push((Solid::ring(radius, height), true));
     solid
@@ -1149,26 +1073,8 @@ fn cone_solid(radius: f64, height: f64) -> Solid {
         solid.verts.push(([0.0, 0.0, height], side_normal(mid)));
         solid.indices.extend([j, j + 1, apex]);
     }
-    let center = solid.verts.len() as u32;
-    solid.verts.push(([0.0, 0.0, 0.0], [0.0, 0.0, -1.0]));
-    for p in Solid::ring(radius, 0.0) {
-        solid.verts.push((p, [0.0, 0.0, -1.0]));
-    }
-    for j in 0..segments {
-        solid
-            .indices
-            .extend([center, center + 1 + j, center + 1 + (j + 1) % segments]);
-    }
-    for k in 0..4 {
-        let t = TAU * k as f64 / 4.0;
-        solid.lines.push((
-            vec![
-                [radius * t.cos(), radius * t.sin(), 0.0],
-                [0.0, 0.0, height],
-            ],
-            false,
-        ));
-    }
+    solid.push_cap(radius, 0.0, [0.0, 0.0, -1.0]);
+    solid.push_side_edges(radius, |_| [0.0, 0.0, height]);
     solid.lines.push((Solid::ring(radius, 0.0), true));
     solid
 }
@@ -1256,20 +1162,11 @@ fn emit_solid(sink: &mut Sink, ctx: &BuildContext, pos: &Position, solid: Solid,
             .map(|&(p, n)| (frame.map_position(ctx, p), frame.map_normal(n)))
             .collect();
         for tri in solid.indices.as_chunks::<3>().0 {
-            let v = [
-                mapped[tri[0] as usize],
-                mapped[tri[1] as usize],
-                mapped[tri[2] as usize],
-            ];
-            push_triangle(
-                sink,
-                color,
-                [v[0].0, v[1].0, v[2].0],
-                Some([v[0].1, v[1].1, v[2].1]),
-            );
+            let v = tri.map(|i| mapped[i as usize]);
+            push_triangle(sink, color, v.map(|v| v.0), Some(v.map(|v| v.1)));
         }
     }
-    if let Some(stroke) = style.stroke.filter(|_| style.stroke_width_px > 0.0) {
+    if let Some(stroke) = style.visible_stroke() {
         for (line, closed) in &solid.lines {
             let points: Vec<[f32; 3]> = line.iter().map(|&p| frame.map_position(ctx, p)).collect();
             push_line_strip(
@@ -1329,7 +1226,7 @@ mod tests {
 
     #[test]
     fn local_coordinates_round_trip() {
-        let r = mean_radius(&Ellipsoid::WGS84, ORIGIN.lat_deg);
+        let r = Ellipsoid::WGS84.mean_radius(ORIGIN.lat_deg);
         for &(dx, dy) in &[
             (1000.0, 0.0),
             (-25_000.0, 40_000.0),
@@ -1354,7 +1251,7 @@ mod tests {
     // 東へ10km進んだ点は、ENU(接平面)の東10kmから丸みで少し下がった位置になる。
     #[test]
     fn destination_matches_enu_scale() {
-        let r = mean_radius(&Ellipsoid::WGS84, ORIGIN.lat_deg);
+        let r = Ellipsoid::WGS84.mean_radius(ORIGIN.lat_deg);
         let (lat, lon) = destination(ORIGIN.lat_deg, ORIGIN.lon_deg, PI / 2.0, 10_000.0, r);
         let t = EnuTransform::new(&ORIGIN, &Ellipsoid::WGS84);
         let [e, n, u] = t.transform_f64(lat, lon, 0.0);

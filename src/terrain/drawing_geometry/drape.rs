@@ -21,10 +21,6 @@ fn bounds(points: &[[f64; 2]]) -> GeodeticBounds {
     }
 }
 
-fn mix(a: [f64; 2], b: [f64; 2], t: f64) -> [f64; 2] {
-    std::array::from_fn(|i| a[i] + (b[i] - a[i]) * t)
-}
-
 /// 凸三角形で切り抜く。出力頂点は常に入力の地形三角形の内部にある。
 fn clip_triangle(surface: [[f64; 2]; 3], mut shape: [[f64; 2]; 3]) -> Vec<[f64; 2]> {
     if orient(shape[0], shape[1], shape[2]) < 0.0 {
@@ -97,13 +93,7 @@ pub(super) fn emit(
         return;
     };
     let geodetic = |p: [f64; 2]| {
-        let (lat, lon) = destination(
-            *lat_deg,
-            *lon_deg,
-            p[0].atan2(p[1]),
-            p[0].hypot(p[1]),
-            *radius_m,
-        );
+        let (lat, lon) = from_local(*lat_deg, *lon_deg, p, *radius_m);
         [lon, lat]
     };
     if let Some(fill) = style.fill {
@@ -138,17 +128,10 @@ pub(super) fn emit(
             });
         }
     }
-    if let Some(stroke) = style.stroke.filter(|_| style.stroke_width_px > 0.0) {
+    if let Some(stroke) = style.visible_stroke() {
         for outline in &geom.outlines {
-            let n = outline.points.len();
-            let count = if outline.closed {
-                n
-            } else {
-                n.saturating_sub(1)
-            };
-            for i in 0..count {
-                let a = geodetic(outline.points[i]);
-                let b = geodetic(outline.points[(i + 1) % n]);
+            for (a, b) in segments(&outline.points, outline.closed) {
+                let (a, b) = (geodetic(a), geodetic(b));
                 let mut pieces = Vec::new();
                 terrain.visit_surface_triangles(bounds(&[a, b]), |surface| {
                     let xy = surface.map(|p| [p[0], p[1]]);

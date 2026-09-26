@@ -1,8 +1,8 @@
 //! 地表の測地線を一定の楕円体高へ持ち上げた飛行経路。設計書9.3.2節。
 
-use geographiclib_rs::{DirectGeodesic, Geodesic, InverseGeodesic};
+use geographiclib_rs::{DirectGeodesic, Geodesic};
 
-use super::{measure_route, InvalidRoutePoint, RouteMeasurement};
+use super::{measure, InvalidRoutePoint, RouteMeasurement};
 
 /// 一定高度での経路測定に失敗した理由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,27 +38,25 @@ impl std::error::Error for FlightMeasurementError {
 /// 高度面上で最短経路を再探索するものでも、2点間の空間直線距離でもない。
 /// 地形との衝突や障害物は判定しない。海抜高度を使う場合は呼び出し側でジオイド高を考慮する。
 ///
-/// 緯度経度の検証・空経路・不定方位の扱いは[`measure_route`]と同じ。
+/// 緯度経度の検証・空経路・不定方位の扱いは[`measure_route`](super::measure_route)と同じ。
 /// 距離・累積距離・初期方位は飛行経路の値。高度0では`measure_route`と完全に一致する。
 /// 最短測地線が複数ある場合はGeographicLibが選んだ地表経路に沿う。
 pub fn measure_route_at_height(
     points: &[(f64, f64)],
     height_m: f64,
 ) -> Result<RouteMeasurement, FlightMeasurementError> {
-    if !height_m.is_finite() || !(0.0..=1_000_000.0).contains(&height_m) {
+    // 範囲の判定はNaN・無限大も弾く。
+    if !(0.0..=1_000_000.0).contains(&height_m) {
         return Err(FlightMeasurementError::InvalidHeight);
     }
-    let mut route = measure_route(points).map_err(FlightMeasurementError::InvalidPoint)?;
+    let (mut route, bearings) = measure(points).map_err(FlightMeasurementError::InvalidPoint)?;
     if height_m == 0.0 {
         return Ok(route);
     }
     let geodesic = Geodesic::wgs84();
     let mut total = 0.0;
-    for (segment, pair) in route.segments.iter_mut().zip(points.windows(2)) {
-        let (lat, lon) = pair[0];
-        // Noneの方位でも距離は定義できるため、GeographicLibの規約に従う逆解を使う。
-        let (_, bearing, _, _): (f64, f64, f64, f64) =
-            geodesic.inverse(lat, lon, pair[1].0, pair[1].1);
+    for ((segment, &(lat, lon)), bearing) in route.segments.iter_mut().zip(points).zip(bearings) {
+        // Noneの方位でも距離は定義できるため、GeographicLibの規約に従う逆解の方位を使う。
         segment.distance_m =
             lifted_length(&geodesic, lat, lon, bearing, segment.distance_m, height_m);
         segment.initial_bearing_deg = segment.initial_bearing_deg.map(|azimuth| {
@@ -120,6 +118,7 @@ fn lifted_length(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain::measurement::measure_route;
 
     #[test]
     fn zero_height_and_degenerate_routes() {
