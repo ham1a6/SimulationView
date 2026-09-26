@@ -337,6 +337,13 @@ view! { <LosView/> } // RadarMarkersState・TerrainStore contextが必要
 **複数の覆域の同時表示**: 覆域(3Dドーム・2D領域)は、既定では選択中の観測点だけです。`RadarMarkersState::show_all_coverage`を`true`にすると
 (`LosView`の「すべての観測点の覆域を同時に表示」チェックボックスと同じ)、**すべての観測点の覆域を同時に**出します。観測点ごとに色が違います(`coverage_colors(id)`)。
 
+**航跡を中心に追従する観測点**: `TracksState`を`provide_context`していれば、`RadarMarkersState::toggle_track_coverage(track_id, lat, lon)`で、
+固定の緯度経度の代わりに航跡へ追従する観測点を追加・削除(トグル)できます。`TerrainView`が航跡の位置更新のたびに
+`RadarMarkersState::sync_attached_tracks`を自動で呼び、追従先の航跡が一定距離(300m)以上動くたびに観測点の位置を合わせます
+(覆域の計算は重いため、動くたびに毎回追従させず間引いています)。追従先の航跡が一覧から消えたら、その観測点ごと自動で削除されます。
+`RadarMarkersState::track_coverage_enabled(track_id) -> bool`で、いま追従中かを調べられます(右クリックメニューのトグル表示に使えます。下の「右クリックメニュー」参照)。
+航跡追従の観測点はピン(地図上のマーカー)を出しません(航跡自体のシンボルが位置を示すため)。
+
 **断面図の中心**: `ui::cross_section_view::CrossSectionView`は、画面内のコンボボックスで選んだ航跡(`TracksState`を`provide_context`していれば、その一覧から選べます。
 地図上のシンボルクリックで変わる`TracksState::selected`とは独立したローカルな選択です)の位置を中心に、方位角の直線に沿った断面を出します。何も選んでいなければ基準位置
 (`OriginState`)が中心です。片側の長さを選べ、「進行方向」ボタンで方位角を選んだ航跡の進行方向に合わせられます。
@@ -567,6 +574,13 @@ use sim3dview::ui::context_menu::MapMenuState;
 provide_context(ContextMenuState::new());
 provide_context(MapMenuState::new(move |target| {
     let mut items = Vec::new();
+    if let Some(track_id) = target.track {
+        if let Some(track) = tracks.entries.with_untracked(|es| es.iter().find(|e| e.track.id == track_id).map(|e| e.track.clone())) {
+            let (lat, lon) = (track.lat_deg, track.lon_deg);
+            let label = if radar_markers.track_coverage_enabled(track_id) { "✓ この航跡を中心に観測範囲を表示" } else { "この航跡を中心に観測範囲を表示" };
+            items.push(MenuItem::action(label, move || radar_markers.toggle_track_coverage(track_id, lat, lon)));
+        }
+    }
     if let Some((lat, lon)) = target.position {
         items.push(MenuItem::label(format!("緯度 {lat:.5}°  経度 {lon:.5}°"))); // 押せない見出し
         items.push(MenuItem::action("ここにレーダー観測点を追加", move || {
