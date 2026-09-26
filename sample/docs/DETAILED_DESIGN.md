@@ -790,7 +790,8 @@ stateDiagram-v2
   - `app.rs`が`ContextMenuState`と`MapMenuState`を`provide_context`し、`<ContextMenu/>`を1つだけ置く。
   - **地図の右クリック**: `TerrainView`が右クリック位置の`MapMenuTarget`(地表の緯度経度・航跡)を求め、`MapMenuState`が返した項目でメニューを出す
     (ライブラリ設計書9.13節)。図形の作成中は「置いた点を1つ戻す」を優先する。
-  - **サンプルの項目**(`components/map_menu.rs`。ライブラリの各`State`を呼ぶだけ): 航跡=見出し(名前・種別・所属)/中心点をこの航跡へ/選択を解除。地表=緯度経度の見出し/
+  - **サンプルの項目**(`components/map_menu.rs`。ライブラリの各`State`を呼ぶだけ): 航跡=見出し(名前・種別・所属)/中心点をこの航跡へ/この航跡を中心に観測範囲を表示(トグル。有効なら✓。
+    `RadarMarkersState::toggle_track_coverage`。ライブラリ設計書6.9節「航跡を中心に追従する観測点」)/選択を解除。地表=緯度経度の見出し/
     ここにレーダー観測点を追加/ここを原点に設定(`OriginPickState::on_pick`。シミュレーション停止中のみサーバーが受理)/ここを中心点にする(`RecenterRequestState::request_at`。
     カメラの中心点だけを移し、原点は変えない。高さはその地点の地表)/ここに図形を作成 ▶(図形の種類。`DrawToolState::start_at`でその地点を1点目にして開始)/緯度経度をコピー。
 - 「ファイル」配下は「サーバーへファイル転送...」(5.6節)。「ヘルプ」は項目未定のため、

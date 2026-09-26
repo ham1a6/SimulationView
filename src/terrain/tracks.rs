@@ -134,7 +134,8 @@ const TRAIL_MAX_POINTS: usize = 400;
 const TRAIL_MIN_STEP_M: f64 = 250.0;
 
 /// 緯度経度の2点間のおおよその水平距離(メートル)。航跡の間引き用なので近似(等距円筒)で十分。
-fn approx_distance_m(lat0: f64, lon0: f64, lat1: f64, lon1: f64) -> f64 {
+/// `terrain::markers`(航跡追従の観測点の再配置判定)も同じ近似で使い回す。
+pub(crate) fn approx_distance_m(lat0: f64, lon0: f64, lat1: f64, lon1: f64) -> f64 {
     // 緯度1度≒111,320m、経度1度はそれにcos(緯度)を掛けた長さとみなす。
     let north = (lat1 - lat0) * 111_320.0;
     let east = (lon1 - lon0) * 111_320.0 * lat0.to_radians().cos();

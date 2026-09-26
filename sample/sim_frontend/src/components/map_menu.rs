@@ -1,6 +1,6 @@
 //! 地図の右クリックメニューの項目(sim3dviewの`ui::context_menu::MapMenuState`に渡す、項目を作る関数)。
 //! 右クリックした場所(地表の緯度経度・航跡のシンボル)から、そこに対する操作を並べる:
-//! - 航跡のシンボル: 見出し(名前・種別・所属)、中心点をその航跡へ移す、選択の解除
+//! - 航跡のシンボル: 見出し(名前・種別・所属)、中心点をその航跡へ移す、この航跡を中心に観測範囲を表示(トグル)、選択の解除
 //! - 地表: 緯度経度の表示、レーダー観測点の追加、原点の指定(シミュレーション停止中のみサーバーが受理)、
 //!   中心点の移動、図形の作成(種類を選ぶサブメニュー)、緯度経度のコピー
 //!
@@ -48,6 +48,14 @@ fn build_items(target: MapMenuTarget, d: Deps) -> Vec<MenuItem> {
             let (lat, lon) = (track.lat_deg, track.lon_deg);
             items.push(MenuItem::action("中心点をこの航跡へ", move || {
                 d.recenter.request_at(lat, lon)
+            }));
+            let coverage_label = if d.radar_markers.track_coverage_enabled(id) {
+                "✓ この航跡を中心に観測範囲を表示"
+            } else {
+                "　 この航跡を中心に観測範囲を表示"
+            };
+            items.push(MenuItem::action(coverage_label, move || {
+                d.radar_markers.toggle_track_coverage(id, lat, lon)
             }));
             items.push(MenuItem::action("選択を解除", move || {
                 d.tracks.select(None)

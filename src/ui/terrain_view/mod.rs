@@ -238,11 +238,14 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     {
         let state = state.clone();
         Effect::new(move |_| {
-            let _ = tracks.entries.get();
+            let entries = tracks.entries.get();
             let _ = tracks.show_labels.get();
             let _ = tracks.show_trails.get();
             let _ = tracks.show_altitude_lines.get();
             let _ = tracks.selected.get();
+            // 航跡追従の観測点(6.9節)を、位置更新のたびに現在位置へ合わせる(閾値未満の移動は動かさない)。
+            // 書き換えがあれば`radar_markers.markers`のEffectが覆域の再計算を予約する。
+            radar_markers.sync_attached_tracks(&entries);
             rebuild_tracks(&state);
             render_frame(&state);
         });

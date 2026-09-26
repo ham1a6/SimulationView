@@ -506,6 +506,14 @@ ENU座標系(東=X, 北=Y, 上=Z)は右手系(East×North=Up)。wgpu/glamの一�
 描画側が新しい原点基準のENU座標へ再変換するだけで、地形メッシュの再計算も発生しない。したがって、原点変更とは異なり**シミュレーション実行中でも自由に追加・編集できる**
 (サンプルの「原点変更はシミュレーション停止中のみ」(サンプル設計書3.4節)という制約は`OriginState`自体の変更にのみ適用される)。
 
+**航跡を中心に追従する観測点**(`RadarMarker::attached_track`): 選択中の航跡のシンボルを右クリックしたメニュー(アプリが用意する。サンプルの項目名は「この航跡を中心に観測範囲を表示」)から、
+固定観測点と同じ`RadarMarker`を、緯度経度の代わりに`TrackId`へ追従させる形で追加できる(`RadarMarkersState::toggle_track_coverage`。すでに同じ航跡へ追従する観測点があれば削除してトグルOFF)。
+`terrain::tracks::TracksState::entries`の更新(受信のたび、約20Hz)を`RadarMarkersState::sync_attached_tracks`が購読し、追従先の航跡の現在位置へ`lat_deg`・`lon_deg`を書き換える。
+ただし**覆域の計算は重く(後述)、観測点の位置が変わるたびにキャッシュが効かず再計算が走る**ため、位置更新のたびに動かすと実質毎フレームのフル再計算になってしまう。
+そこで、追従先の航跡が前回の反映位置から`TRACK_COVERAGE_REPOSITION_M`(既定300m)以上動いたときだけ書き換える(見た目は少し遅れて追従するが、再計算の頻度を抑える)。
+追従先の航跡が一覧から消えたら(通信が途切れる等)、その観測点ごと削除する(固定観測点のように残らない)。マーカーのピン・覆域ドーム・2D覆域・見通し範囲タブなど、
+描画・UIの残りはすべて既存の(固定)観測点と共通の経路を使う(`attached_track`はどこを追従するかの入力にすぎない)。
+
 ```mermaid
 flowchart LR
     A["メインパネル右クリック<br/>(screen x,y)"] --> B["Camera::screen_to_ray<br/>ENU座標系のレイ"]
@@ -1250,8 +1258,12 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 `DRAWING_M=15`(作図の`AboveGround`)、`TRACK_M=25`(航跡・高度線の足元)、`MARKER_M=25`(観測点ピンの先端)、`DOME_M=20`(覆域ドーム全体)、`COVERAGE_AREA_M=20`(2D覆域。深度テストはしないが正射影の奥行き範囲に収めるため地表に置く)。
 シェーダー側にも対の深度バイアス(`LINE_DEPTH_BIAS`・`BILLBOARD_DEPTH_BIAS`・`WATER_DEPTH_MARGIN_M`)があり、**両方をセットで調整する**。
 
-**状態**: `RadarMarker { id: u64, lat_deg, lon_deg, height_m /*アンテナ高(地表から)*/, max_range_m }`、`RadarMarkersState { markers, selected, next_id, coverage_altitude_m /*既定1000*/, show_all_coverage /*既定false=選択中のみ*/ }`(Copy)。
-`add(lat,lon) -> id`(既定`height_m=10`・`max_range_m=50_000`で追加し選択する)、`remove(id)`(選択中なら`selected=None`)。観測点は緯度経度の絶対値で保持し、メッシュ原点とは独立。
+**状態**: `RadarMarker { id: u64, lat_deg, lon_deg, height_m /*アンテナ高(地表から)*/, max_range_m, attached_track: Option<TrackId> /*航跡追従。Noneは固定観測点*/ }`、
+`RadarMarkersState { markers, selected, next_id, coverage_altitude_m /*既定1000*/, show_all_coverage /*既定false=選択中のみ*/ }`(Copy)。
+`add(lat,lon) -> id`(既定`height_m=10`・`max_range_m=50_000`で追加し選択する。`attached_track=None`)、`remove(id)`(選択中なら`selected=None`)。観測点は緯度経度の絶対値で保持し、メッシュ原点とは独立。
+**航跡追従**(6.9節): `toggle_track_coverage(track_id, lat, lon)`(すでに同じ航跡へ追従する観測点があれば`remove`、無ければ`add`相当で`attached_track=Some(track_id)`にして追加)、
+`track_coverage_enabled(track_id) -> bool`、`sync_attached_tracks(entries: &[TrackEntry])`(`attached_track`の観測点ごとに、対応する航跡が`TRACK_COVERAGE_REPOSITION_M=300.0`m以上動いていたら
+`lat_deg`・`lon_deg`を書き換え、航跡が`entries`に無ければ`remove`。距離判定は`terrain::tracks::approx_distance_m`を共用)。
 
 **定数**: 選択中=黄`[1,0.92,0.25,1]`、非選択=橙`[1,0.55,0.15,1]`、縁取り`[0.08,0.08,0.10,1]`、ドーム面`[0.3,0.9,1.0]`(アルファはシェーダー0.22)。ピン: `PIN_HEAD_CENTER_PX=26`・`PIN_HEAD_RADIUS_PX=10`・`PIN_OUTLINE_PX=2.5`・`PIN_DOT_RADIUS_PX=4`・`PIN_HEAD_SEGMENTS=24`。
 `DOME_RING_ELEVATIONS_DEG`(38個)=0〜10°を1°刻み / 12〜30°を2° / 33〜60°を3° / 64,68,72,76,80,84,87°。`DOME_AZIMUTH_STEP=4`(1600方位)、`DOME_APEX_SEGMENTS=48`、

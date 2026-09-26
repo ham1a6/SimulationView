@@ -21,6 +21,7 @@ use super::los::{DomeComputation, DomeRing, LosParams, LosPoint, RangeComputatio
 use super::mesh::TerrainVertex;
 use super::origin::Origin;
 use super::render_bias::{COVERAGE_AREA_M, DOME_M, MARKER_M};
+use super::tracks::{self, TrackEntry, TrackId};
 use super::vertex::DrawVertex;
 /// 地図上に配置したレーダー観測点1つ分の情報。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -35,6 +36,10 @@ pub struct RadarMarker {
     pub height_m: f64,
     /// 最大観測範囲(メートル)。
     pub max_range_m: f64,
+    /// 追従する航跡のID(選択中の航跡を中心に観測範囲を表示する機能。`RadarMarkersState::toggle_track_coverage`)。
+    /// `Some`なら`sync_attached_tracks`が、その航跡が`TRACK_COVERAGE_REPOSITION_M`以上動くたびに`lat_deg`・`lon_deg`を
+    /// 追従させ、航跡が消えたら観測点ごと削除する。`None`は従来どおりの固定観測点。
+    pub attached_track: Option<TrackId>,
 }
 
 impl RadarMarker {
@@ -88,9 +93,9 @@ impl RadarMarkersState {
         }
     }
 
-    /// 指定した緯度経度に既定パラメータ(アンテナ高10m・最大観測範囲50km)のレーダーを
-    /// 追加し、選択状態にする。
-    pub fn add(&self, lat_deg: f64, lon_deg: f64) -> u64 {
+    /// 指定した緯度経度・追従する航跡(固定観測点なら`None`)に既定パラメータ(アンテナ高10m・
+    /// 最大観測範囲50km)のレーダーを追加し、選択状態にする。
+    fn push(&self, lat_deg: f64, lon_deg: f64, attached_track: Option<TrackId>) -> u64 {
         let id = self.next_id.get_untracked();
         self.next_id.set(id + 1);
         self.markers.update(|list| {
@@ -100,10 +105,71 @@ impl RadarMarkersState {
                 lon_deg,
                 height_m: 10.0,
                 max_range_m: 50_000.0,
+                attached_track,
             });
         });
         self.selected.set(Some(id));
         id
+    }
+
+    /// 指定した緯度経度に既定パラメータ(アンテナ高10m・最大観測範囲50km)のレーダーを
+    /// 追加し、選択状態にする。
+    pub fn add(&self, lat_deg: f64, lon_deg: f64) -> u64 {
+        self.push(lat_deg, lon_deg, None)
+    }
+
+    /// 航跡`track_id`を中心とする観測範囲の表示を切り替える(右クリックメニュー「この航跡を中心に観測範囲を表示」用)。
+    /// すでにその航跡へ追従する観測点があれば削除して無効化し(トグルのOFF)、無ければ現在位置`(lat_deg, lon_deg)`に
+    /// 追従する観測点を追加して選択する(トグルのON)。
+    pub fn toggle_track_coverage(&self, track_id: TrackId, lat_deg: f64, lon_deg: f64) {
+        let existing = self
+            .markers
+            .get_untracked()
+            .iter()
+            .find(|m| m.attached_track == Some(track_id))
+            .map(|m| m.id);
+        match existing {
+            Some(id) => self.remove(id),
+            None => {
+                self.push(lat_deg, lon_deg, Some(track_id));
+            }
+        }
+    }
+
+    /// 航跡`track_id`を中心とする観測範囲の表示が、いま有効か(右クリックメニューの表示切替に使う)。
+    pub fn track_coverage_enabled(&self, track_id: TrackId) -> bool {
+        self.markers
+            .get()
+            .iter()
+            .any(|m| m.attached_track == Some(track_id))
+    }
+
+    /// 航跡追従の観測点(`attached_track`が`Some`)の位置を、航跡一覧`entries`の現在位置に合わせる。
+    /// 追従先の航跡が一定距離(`TRACK_COVERAGE_REPOSITION_M`)以上動いたときだけ書き換える(覆域の再計算は
+    /// 観測点の位置が変わるたびに走るため、細かい移動のたびに動かすと実質毎フレーム再計算になってしまう。
+    /// DETAILED_DESIGN.md 6.9節)。追従先の航跡が一覧から消えていたら、観測点ごと削除する。
+    /// `TracksState.entries`の変化(航跡の受信)のたびに呼ぶ(`ui::terrain_view`)。
+    pub fn sync_attached_tracks(&self, entries: &[TrackEntry]) {
+        let attached: Vec<(u64, TrackId, f64, f64)> = self
+            .markers
+            .get_untracked()
+            .iter()
+            .filter_map(|m| m.attached_track.map(|t| (m.id, t, m.lat_deg, m.lon_deg)))
+            .collect();
+        for (marker_id, track_id, lat_deg, lon_deg) in attached {
+            let Some(track) = entries.iter().find(|e| e.track.id == track_id) else {
+                self.remove(marker_id);
+                continue;
+            };
+            let (new_lat, new_lon) = (track.track.lat_deg, track.track.lon_deg);
+            let moved = tracks::approx_distance_m(lat_deg, lon_deg, new_lat, new_lon);
+            if moved >= TRACK_COVERAGE_REPOSITION_M {
+                self.update(marker_id, |m| {
+                    m.lat_deg = new_lat;
+                    m.lon_deg = new_lon;
+                });
+            }
+        }
     }
 
     /// IDの観測点を書き換える(アンテナ高・最大観測範囲など)。無ければ何もしない。
@@ -129,6 +195,12 @@ impl Default for RadarMarkersState {
         Self::new()
     }
 }
+
+/// 航跡追従の観測点(`RadarMarker::attached_track`)を、追従先の航跡がこれだけ動いたら追従させ直す距離(メートル)。
+/// 覆域の計算は重く(6.9節)、観測点の緯度経度が変わるたびに再計算が走るため、位置更新が高頻度(約20Hz)な
+/// 航跡へそのまま追従させると実質毎フレーム再計算になってしまう。ある程度まとめて動かすことで、見た目は
+/// 航跡を追いかけつつ、再計算の頻度を抑える。
+const TRACK_COVERAGE_REPOSITION_M: f64 = 300.0;
 
 /// 選択中の観測点のピンの色(黄)。
 const SELECTED_MARKER_COLOR: [f32; 4] = [1.0, 0.92, 0.25, 1.0];
@@ -527,6 +599,74 @@ pub(crate) fn coverage_2d_geometry(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain::drawing::Altitude;
+    use crate::terrain::tracks::{Affiliation, SymbolKind, Track};
+
+    /// テスト用の航跡1つ(位置以外はダミー値)。
+    fn track_entry(id: TrackId, lat_deg: f64, lon_deg: f64) -> TrackEntry {
+        TrackEntry {
+            track: Track {
+                id,
+                kind: SymbolKind::Aircraft,
+                affiliation: Affiliation::Friendly,
+                label: "TEST".to_string(),
+                lat_deg,
+                lon_deg,
+                altitude: Altitude::Msl(1000.0),
+                heading_deg: 0.0,
+                speed_mps: 0.0,
+                pitch_deg: 0.0,
+                roll_deg: 0.0,
+            },
+            trail: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn toggle_track_coverage_adds_then_removes_attached_marker() {
+        let state = RadarMarkersState::new();
+        assert!(!state.track_coverage_enabled(1));
+
+        state.toggle_track_coverage(1, 35.0, 139.0);
+        assert!(state.track_coverage_enabled(1));
+        let markers = state.markers.get_untracked();
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].attached_track, Some(1));
+        assert_eq!(state.selected.get_untracked(), Some(markers[0].id));
+
+        // もう一度呼ぶと解除(削除)される。
+        state.toggle_track_coverage(1, 35.0, 139.0);
+        assert!(!state.track_coverage_enabled(1));
+        assert!(state.markers.get_untracked().is_empty());
+    }
+
+    #[test]
+    fn sync_attached_tracks_moves_marker_only_past_threshold() {
+        let state = RadarMarkersState::new();
+        state.toggle_track_coverage(1, 35.0, 139.0);
+
+        // 閾値未満の移動(緯度0.0001度≒11m)では動かさない。
+        state.sync_attached_tracks(&[track_entry(1, 35.0001, 139.0)]);
+        let marker = state.markers.get_untracked()[0];
+        assert_eq!((marker.lat_deg, marker.lon_deg), (35.0, 139.0));
+
+        // 閾値(300m)を超える移動では追従する。
+        state.sync_attached_tracks(&[track_entry(1, 35.01, 139.0)]);
+        let marker = state.markers.get_untracked()[0];
+        assert_eq!((marker.lat_deg, marker.lon_deg), (35.01, 139.0));
+    }
+
+    #[test]
+    fn sync_attached_tracks_removes_marker_when_track_disappears() {
+        let state = RadarMarkersState::new();
+        state.toggle_track_coverage(1, 35.0, 139.0);
+        assert_eq!(state.markers.get_untracked().len(), 1);
+
+        // 航跡が一覧から消えたら、追従していた観測点も削除する。
+        state.sync_attached_tracks(&[]);
+        assert!(state.markers.get_untracked().is_empty());
+        assert_eq!(state.selected.get_untracked(), None);
+    }
 
     #[test]
     fn ring_stride_thins_high_rings_by_powers_of_two() {
@@ -585,6 +725,7 @@ mod tests {
             lon_deg: 121.5,
             height_m: 10.0,
             max_range_m: 30_000.0,
+            attached_track: None,
         };
         let mut computation = start_dome_computation(&data, &marker);
         computation.advance(&data, usize::MAX);
