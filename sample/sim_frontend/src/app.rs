@@ -23,6 +23,7 @@ use crate::components::map_menu::provide_map_menu;
 use crate::components::menu_bar::MenuBar;
 use crate::components::operation_panel::SimulationStatusPanel;
 use crate::components::right_panel::{BottomStatusPanel, TopStatusPanel};
+use crate::components::slow_wasm_notice::SlowWasmNotice;
 use crate::components::upload_window::{UploadWindow, UploadWindowState};
 use crate::components::vab::VabPanel;
 use crate::log_bridge::bridge_logs;
@@ -103,6 +104,8 @@ pub fn App() -> impl IntoView {
     view! {
         <div class="app-root">
             <MenuBar show_left_panel=show_left_panel show_right_panel=show_right_panel/>
+            // ブラウザがJITを止めていたら(Edgeのセキュリティ強化など)案内の帯を出す(7.11節)。
+            <SlowWasmNotice/>
             <div class="app-shell">
                 <div class="app-layout" class:left-panel-hidden=move || !show_left_panel.get()>
                     <div class="left-panel" style:display=move || if show_left_panel.get() { "grid" } else { "none" }>

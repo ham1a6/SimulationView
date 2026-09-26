@@ -27,6 +27,8 @@ features = [
     "PointerEvent",
     "MouseEvent",
     "Location",
+    "Navigator",
+    "Performance",
     "File",
     "FileList",
     "HtmlInputElement",

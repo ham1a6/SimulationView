@@ -308,6 +308,7 @@ trunk serve
 | 他端末からLAN経由でアクセスすると「接続中」のまま地図も出ない(このマシンのlocalhostでは正常) | Windows Firewallの受信許可ルールが`sim_server.exe`の旧パスを指したままの可能性が高い(exeを移動・再作成した後に起きる)。管理者権限のPowerShellで`Get-NetFirewallRule -DisplayName "sim_server.exe" \| Set-NetFirewallApplicationFilter -Program "<sim_server.exeの現在のフルパス>"`を実行してルールのパスを更新する。localhostはループバック通信のためFirewallの影響を受けず、この不一致に気付きにくい |
 | ページは出るが「未接続」のまま/地形が出ない | `sim_server.exe`が起動済みで、ページと同じホストの9001番へHTTP/WS接続できるか確認する。HTTPSページから平文`ws://`へは接続できないため、公開時はTLS対応リバースプロキシでWebSocketを中継する |
 | 開発中のBrowserペイン(Claude Codeの組み込みブラウザ)から`http://192.168.x.x:8081`(プライベートIP)へ接続すると`ERR_BLOCKED_BY_CLIENT` | ペイン側の制限でネットワーク疎通とは無関係。実疎通は`Test-NetConnection -ComputerName <IP> -Port 8081`/`-Port 9001`で確認する。ペインでの動作確認は`http://localhost:8081`で行う |
+| Edgeで開いたときだけ地図・覆域の更新が重い(画面上部に「セキュリティを強化する」の案内が出る) | Edgeの「Webのセキュリティを強化する」が、localhost・IPアドレスのURLでJITを止め、WebAssemblyをインタプリタで動かしている。アドレスバー左のアイコンからこのサイトのセキュリティ強化をオフにするか、設定 → プライバシー、検索、サービス → セキュリティ の「例外」に追加する(設計書7.11節) |
 | ブラウザペインを非表示のままページを開くと、canvasが300×150のまま引き伸ばされて地形が歪む/欠ける | 非表示タブではResizeObserverが発火しないことがある(タブが可視になった時点で`TerrainView`が取り直す実装済み)。動作確認は実際にペインを表示した状態で行う |
 
 ---

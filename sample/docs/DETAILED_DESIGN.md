@@ -541,6 +541,7 @@ graph TD
     App --> DrawingWindow["DrawingWindow<br/>(drawing_window.rs) 非モーダルFloatingPanel+DrawingEditor(7.7節)"]
     App --> ContextMenu["ContextMenu<br/>右クリックメニュー本体(項目はmap_menu.rsが決める。7.7節)"]
     App --> LogPanel["LogPanel<br/>(log_panel.rs) 画面最下部のログ表示(7.10節)"]
+    App --> SlowWasmNotice["SlowWasmNotice<br/>(slow_wasm_notice.rs) JITなしの検知と案内(7.11節)"]
 
     App -.provide_context.-> WsSignals["WsSignals<br/>(接続状態・受信データのシグナル群)"]
     App -.provide_context.-> TerrainStore["TerrainStore<br/>(地形データを全パネルで共有)"]
@@ -893,6 +894,25 @@ GDALはConfig形式を優先し、見つからなければCMakeのFindGDALへフ
 - 手動スクロール: ホイール・スクロールバー・キー操作で上へ戻すと自動スクロールが止まり、新しい行が
   追記されても表示位置を保つ。最下部まで戻すと再開する。右端の「最新へ」ボタンでも最下部へ移動して
   再開できる(張り付いている間は押せない)。
+
+### 7.11 JITなしの検知と案内
+
+Microsoft Edgeの「Webのセキュリティを強化する」は、訪問の少ないサイト(`localhost`・IPアドレスのURLを含む)で
+JITを止め、WebAssemblyをインタプリタで実行する。地形メッシュ生成や覆域計算が数十倍遅くなり、地図・覆域の
+更新が目に見えて重くなる(GPU描画は影響を受けない。Electron版にはこの機能がない)。ページ側からJITを
+有効に戻す手段はないため、起動時に検知して利用者に例外登録を案内する(`components/slow_wasm_notice.rs`)。
+サンプル固有の画面であり、ライブラリへは持ち込まない。
+
+- 検知: 手書きの極小WebAssemblyモジュール(`PROBE_WASM`。`s += i * i`を繰り返す整数ループ)を
+  `WebAssembly.instantiate`し、`ITERATIONS`(200万回)の実行時間を`performance.now()`で測る。
+  アプリ本体のwasmで測らないのは、開発ビルド(`sim_frontend`は最適化なし)とリリースビルドで速さが変わるため。
+- 判定: 1回あたり`SLOW_NS_PER_ITER`(3.0ns)以上ならJITなしとみなす。JITありは実測約0.4ns/回、
+  インタプリタはループ1回に16命令を逐次解釈するので桁違いに遅い。GCなどの割り込みで誤判定しないよう、
+  最大`MAX_RUNS`(3)回測り、しきい値を下回る回が出たら打ち切って正常とする(JITありなら計1ms程度)。
+- 表示: メニューバー直下(`.app-root`の縦並び)に閉じられる帯(`.slow-wasm-notice`)を出し、地図は覆わない。
+  UAに`Edg/`を含めばEdgeの設定手順(アドレスバーのサイト情報でオフ、または設定の「例外」へ追加)を、
+  それ以外は一般的な文言を出す。ログパネルにも警告を1件残す。閉じた状態は保存せず、再読み込みで再判定する
+  (例外登録するまで毎回気付けるように)。
 
 ## 8. 再実装ガイド
 
