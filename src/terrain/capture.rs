@@ -6,6 +6,7 @@
 
 use leptos::prelude::*;
 
+/// スクリーンショット・画面録画の要求と、録画中かどうかを運ぶcontext。
 #[derive(Clone, Copy, Default)]
 pub struct CaptureState {
     /// スクリーンショット要求のたびに増える(`TerrainView`はこの変化を見てPNGを保存する)。
@@ -21,6 +22,7 @@ pub struct CaptureState {
 }
 
 impl CaptureState {
+    /// 要求なし・録画していない状態で作る。
     pub fn new() -> Self {
         Self::default()
     }

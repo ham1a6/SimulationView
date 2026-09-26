@@ -7,6 +7,7 @@
 
 use leptos::prelude::*;
 
+/// 原点指定モードのcontext。
 #[derive(Clone, Copy)]
 pub struct OriginPickState {
     /// trueの間、地図の左クリックが原点指定として扱われる。
@@ -16,6 +17,7 @@ pub struct OriginPickState {
 }
 
 impl OriginPickState {
+    /// モードはOFFで作る(`active`を立てると有効になる)。
     pub fn new(on_pick: UnsyncCallback<(f64, f64)>) -> Self {
         Self {
             active: RwSignal::new(false),

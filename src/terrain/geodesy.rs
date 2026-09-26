@@ -1,5 +1,12 @@
 //! 測地座標の変換。DETAILED_DESIGN.md 3.2節(ENU変換)。
 //! 楕円体(`Ellipsoid`)と、緯度経度(+標高)からENU座標(東=X, 北=Y, 上=Z)への変換(`EnuTransform`)。
+//!
+//! 3種類の計算を持つ:
+//! - `EnuTransform`: 楕円体に沿った厳密な変換(測地座標→ECEF→原点基準のENU)。地形のメッシュ・
+//!   観測点・航跡など、画面に置く位置はすべてこれで求める(原点から遠いほど地球の丸みで下がる)。
+//! - `destination`・`to_local`・`from_local`: 球面近似での方位・距離の計算。作図(円・扇形など)の
+//!   形を基準点まわりに作るのに使う(半径は呼び出し側が`Ellipsoid::mean_radius`などで決める)。
+//! - `Ellipsoid`の係数(離心率・平均曲率半径)。
 
 use std::f64::consts::{PI, TAU};
 
@@ -11,13 +18,17 @@ use super::origin::Origin;
 /// 地球の楕円体(長半径と逆扁平率)。`metadata.json`の`ellipsoid`と同じ形。
 #[derive(Debug, Clone, Deserialize)]
 pub struct Ellipsoid {
+    /// 長半径(赤道半径、メートル)。
     pub a_m: f64,
+    /// 逆扁平率 1/f(f = (a-b)/a)。
     pub inv_f: f64,
 }
 
 impl Ellipsoid {
     /// WGS84。地形データ(ALOS DSM)の`metadata.json`もこの値。地形データを読む前に楕円体が必要な
     /// 場面(作図の距離・方位の計算など)と、単体テストで使う。
+    /// (逆扁平率298.257222101は厳密にはGRS80の値。WGS84の298.257223563との差は短半径で約0.1mmで、
+    /// この用途では同一視してよい。)
     pub const WGS84: Ellipsoid = Ellipsoid {
         a_m: 6_378_137.0,
         inv_f: 298.257_222_101,
@@ -25,12 +36,14 @@ impl Ellipsoid {
 
     /// 第一離心率の二乗。
     pub(crate) fn e2(&self) -> f64 {
+        // e² = (a²-b²)/a² = f(2-f)。
         let f = 1.0 / self.inv_f;
         f * (2.0 - f)
     }
 
     /// 緯度`lat_deg`での平均曲率半径(子午線と卯酉線の曲率半径の幾何平均、メートル)。
     pub(crate) fn mean_radius(&self, lat_deg: f64) -> f64 {
+        // W² = 1-e²sin²φ として、子午線M = a(1-e²)/W³、卯酉線N = a/W。√(MN) = a√(1-e²)/W²。
         let e2 = self.e2();
         let s = lat_deg.to_radians().sin();
         self.a_m * (1.0 - e2).sqrt() / (1.0 - e2 * s * s)
@@ -40,6 +53,7 @@ impl Ellipsoid {
 // 緯度経度と、基準点からの方位・距離(方位角等距離図法。半径`radius_m`の球面)。作図が使う。
 
 /// 基準点から方位`bearing_rad`(北から時計回り)へ距離`dist_m`進んだ点の(緯度, 経度)(度)。
+/// 球面上の大円に沿って進む(球面三角法の順問題)。経度は-180〜180に正規化しない。
 pub(crate) fn destination(
     lat_deg: f64,
     lon_deg: f64,
@@ -48,6 +62,7 @@ pub(crate) fn destination(
     radius_m: f64,
 ) -> (f64, f64) {
     let (lat1, lon1) = (lat_deg.to_radians(), lon_deg.to_radians());
+    // 中心角(ラジアン)。
     let delta = dist_m / radius_m;
     let lat2 = (lat1.sin() * delta.cos() + lat1.cos() * delta.sin() * bearing_rad.cos()).asin();
     let lon2 = lon1
@@ -57,6 +72,7 @@ pub(crate) fn destination(
 }
 
 /// 基準点から見た(緯度, 経度)の位置を、ローカル座標[東, 北](メートル)で返す。
+/// 基準点からの大円距離を長さ、初期方位を向きとするベクトル(方位角等距離図法の平面座標)。
 pub(crate) fn to_local(
     ref_lat_deg: f64,
     ref_lon_deg: f64,
@@ -65,13 +81,18 @@ pub(crate) fn to_local(
     radius_m: f64,
 ) -> [f64; 2] {
     let (lat1, lat2) = (ref_lat_deg.to_radians(), lat_deg.to_radians());
+    // 経度差を-π〜πへ寄せる(日付変更線をまたいでも短い側で測る)。
     let mut dlon = (lon_deg - ref_lon_deg).to_radians();
     dlon = (dlon + PI).rem_euclid(TAU) - PI;
+    // ハバーサイン公式で大円距離を求める(近い2点でも桁落ちしにくい)。丸め誤差で√aが1を
+    // わずかに超えるとasinがNaNになるので1で頭打ちにする。
     let a =
         ((lat2 - lat1) * 0.5).sin().powi(2) + lat1.cos() * lat2.cos() * (dlon * 0.5).sin().powi(2);
     let dist = 2.0 * radius_m * a.sqrt().min(1.0).asin();
+    // 基準点での初期方位(北から時計回り)。
     let bearing = (dlon.sin() * lat2.cos())
         .atan2(lat1.cos() * lat2.sin() - lat1.sin() * lat2.cos() * dlon.cos());
+    // 方位は北から時計回りなので、東成分がsin、北成分がcos。
     [dist * bearing.sin(), dist * bearing.cos()]
 }
 
@@ -82,6 +103,7 @@ pub(crate) fn from_local(
     p: [f64; 2],
     radius_m: f64,
 ) -> (f64, f64) {
+    // [東, 北]から方位(atan2(東, 北)=北から時計回り)と距離に戻して、順問題で進む。
     destination(
         ref_lat_deg,
         ref_lon_deg,
@@ -93,8 +115,14 @@ pub(crate) fn from_local(
 
 /// 緯度経度(+標高)からENU座標(東=X, 北=Y, 上=Z)へ変換する。DETAILED_DESIGN.md 3.2節の変換式そのもの。
 /// C++側 sim_server の座標系定義と完全に一致させること(3.4節: サーバーとフロントで同一座標系)。
+///
+/// 高さ`h`は楕円体高として扱う。地形の標高(ジオイド基準の正標高)もそのまま`h`に渡しており、
+/// ジオイド高(日本付近で数十m)の補正はしていない。原点ごとに作り直す(原点の変更で全メッシュの
+/// 頂点を作り直すのはこのため)。
 pub struct EnuTransform {
+    /// 原点の緯度(ラジアン)。
     origin_lat_rad: f64,
+    /// 原点の経度(ラジアン)。
     origin_lon_rad: f64,
     /// 原点のECEF座標。
     origin_ecef: DVec3,
@@ -102,7 +130,9 @@ pub struct EnuTransform {
     /// `transform_f64`・`enu_to_geodetic`が毎回求め直すと覆域ドームの頂点変換のように大量に呼ぶ
     /// 場面で重いので、`new`で1回だけ求めておく。
     enu_from_ecef: DMat3,
+    /// 楕円体の長半径(メートル)。
     a: f64,
+    /// 楕円体の第一離心率の二乗。
     e2: f64,
     /// 原点緯度における子午線曲率半径(`inverse`用。呼び出しごとに求め直すと見通し計算で
     /// 数百万回呼ぶため重いので、`new`で1回だけ求めておく)。
@@ -112,6 +142,8 @@ pub struct EnuTransform {
 }
 
 impl EnuTransform {
+    /// `origin`(楕円体高0m)を原点とする変換を作る。原点の標高は含めないので、原点の地表は
+    /// ENUの上座標=標高の位置になる(上座標0は楕円体面)。
     pub fn new(origin: &Origin, ellipsoid: &Ellipsoid) -> Self {
         let a = ellipsoid.a_m;
         let e2 = ellipsoid.e2();
@@ -120,6 +152,7 @@ impl EnuTransform {
         let (x0, y0, z0) = geodetic_to_ecef(lat0, lon0, 0.0, a, e2);
         let (sin_lat0, cos_lat0) = lat0.sin_cos();
         let (sin_lon0, cos_lon0) = lon0.sin_cos();
+        // W = √(1-e²sin²φ0)。卯酉線曲率半径N=a/W、子午線曲率半径M=a(1-e²)/W³ の分母。
         let denom = (1.0 - e2 * sin_lat0 * sin_lat0).sqrt();
         // 東 = (-sinλ, cosλ, 0)、北 = (-sinφcosλ, -sinφsinλ, cosφ)、上 = (cosφcosλ, cosφsinλ, sinφ)を行にした行列
         // (glamは列優先なので、列を並べて作る)。
@@ -150,6 +183,8 @@ impl EnuTransform {
         (self.enu_from_ecef * (DVec3::new(x, y, z) - self.origin_ecef)).to_array()
     }
 
+    /// 緯度・経度(度)と楕円体高`h`(メートル)を、ENU座標(東, 北, 上。メートル)にする。
+    /// GPUへ渡す頂点用にf32へ丸める(計算自体はf64。丸めずに使いたいときは`transform_f64`)。
     pub fn transform(&self, lat_deg: f64, lon_deg: f64, h: f64) -> [f32; 3] {
         let [east, north, up] = self.transform_f64(lat_deg, lon_deg, h);
         [east as f32, north as f32, up as f32]
@@ -207,9 +242,12 @@ impl EnuTransform {
     /// ENU→ECEF(原点の回転行列の転置)→測地座標(反復法)。原点から数千km離れた点でも
     /// 地球の丸み・楕円体を正しく扱う(下の`inverse`は原点近傍の接平面近似)。
     pub fn enu_to_geodetic(&self, east: f64, north: f64, up: f64) -> (f64, f64, f64) {
+        // 回転行列は直交行列なので、逆行列は転置でよい。
         let ecef = self.origin_ecef + self.enu_from_ecef.transpose() * DVec3::new(east, north, up);
         let (x, y, z) = (ecef.x, ecef.y, ecef.z);
 
+        // 経度は直接求まる。緯度と楕円体高は互いに依存するので、h=0を仮定した緯度から始めて
+        // 「N(φ)とhを求める→φを更新する」を繰り返す(地表付近の点なら6回で十分に収束する)。
         let p = x.hypot(y);
         let lon = y.atan2(x);
         let mut lat = z.atan2(p * (1.0 - self.e2));
@@ -226,13 +264,16 @@ impl EnuTransform {
     /// ローカル接平面近似(原点緯度における子午線・卯酉線曲率半径を使う)。断面図
     /// (`terrain/profile.rs`)で、原点から方位角方向へ地表をサンプリングするために使う。
     pub fn inverse(&self, east: f64, north: f64) -> (f64, f64) {
+        // 北へxメートル=x/M ラジアン、東へxメートル=x/(N cosφ0) ラジアン(φ0は原点の緯度)。
         let lat = self.origin_lat_rad + north / self.meridian_radius;
         let lon = self.origin_lon_rad + east / self.parallel_radius;
         (lat.to_degrees(), lon.to_degrees())
     }
 }
 
+/// 測地座標(緯度・経度はラジアン、楕円体高hはメートル)をECEF座標(地心直交座標、メートル)にする。
 fn geodetic_to_ecef(lat: f64, lon: f64, h: f64, a: f64, e2: f64) -> (f64, f64, f64) {
+    // 卯酉線曲率半径N。
     let n = a / (1.0 - e2 * lat.sin().powi(2)).sqrt();
     let x = (n + h) * lat.cos() * lon.cos();
     let y = (n + h) * lat.cos() * lon.sin();

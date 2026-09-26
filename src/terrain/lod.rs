@@ -82,19 +82,27 @@ pub fn chunk_vertex_cost(data: &TerrainData, level: usize) -> usize {
 /// カメラまわりの計算をまとめたもの(タイルごと・チャンクごとに何度も使う)。
 struct ViewInfo<'a> {
     camera: &'a Camera,
+    /// ENU座標→クリップ座標の行列(視錐台の判定に使う)。
     view_proj: Mat4,
+    /// 緯度経度⇔ENU座標の変換(原点はメッシュの原点)。
     transform: &'a EnuTransform,
+    /// canvasの高さ(CSSピクセル。0除算を避けるため1以上)。
     canvas_h: f32,
     /// 「一番近い点」を求める基準の位置(緯度経度)。透視投影では視点の真下、正射影(2D)では
     /// 注視点(視点は真上にあるだけで見ている場所ではない)。
     focus: Vec3,
+    /// `focus`の緯度(度)。矩形内の最も近い点を、緯度経度のクランプで求めるために持つ。
     focus_lat: f64,
+    /// `focus`の経度(度)。
     focus_lon: f64,
+    /// 透視投影の縦画角の半分のtan(距離から1ピクセルの実寸を求める)。正射影では使わない。
     tan_half: f32,
+    /// 正射影での1ピクセルの実寸(メートル。距離によらず一定)。透視投影では使わない。
     ortho_pixel_m: f32,
 }
 
 impl<'a> ViewInfo<'a> {
+    /// カメラから、全タイルの評価で共通に使う値を前もって計算する。
     fn new(camera: &'a Camera, transform: &'a EnuTransform, canvas_height_px: f32) -> Self {
         let canvas_h = canvas_height_px.max(1.0);
         let (focus, tan_half, ortho_pixel_m) = match camera.projection {
@@ -121,14 +129,19 @@ impl<'a> ViewInfo<'a> {
     }
 
     /// 緯度経度の矩形について、基準位置から見て最も近い点までの距離と、視野に入るか。
+    /// 矩形の高さは`mid_h`(タイルの最低・最高標高の中間)で一定とみなす。
     fn rect(&self, lat0: f64, lon0: f64, lat1: f64, lon1: f64, mid_h: f64) -> (f32, bool) {
+        // 基準位置の緯度経度を矩形にクランプした点が、矩形内で基準位置に最も近い点(の近似)。
         let nearest = Vec3::from(self.transform.transform(
             self.focus_lat.clamp(lat0, lat1),
             self.focus_lon.clamp(lon0, lon1),
             mid_h,
         ));
         let distance = match self.camera.projection {
+            // 透視投影: 視点からの3次元の距離(遠いほど1ピクセルが大きくなる)。
             Projection::Perspective { .. } => (nearest - self.camera.eye).length(),
+            // 正射影: 1ピクセルの大きさは距離によらないので、距離は並べる順にだけ使う。
+            // 視点の高さは関係ないので、注視点からの水平距離にする。
             Projection::Orthographic { .. } => {
                 ((nearest.x - self.focus.x).powi(2) + (nearest.y - self.focus.y).powi(2)).sqrt()
             }
@@ -148,6 +161,7 @@ impl<'a> ViewInfo<'a> {
         for (lat, lon) in points {
             let p = Vec3::from(self.transform.transform(lat, lon, mid_h));
             let clip = self.view_proj * p.extend(1.0);
+            // w>0がカメラの前方。前方の点は、クリップ座標(x/w, y/wが-1〜1で画面内)を余裕付きで比べる。
             if clip.w > 0.0 {
                 all_behind = false;
                 let m = clip.w * FRUSTUM_MARGIN;
@@ -167,6 +181,8 @@ impl<'a> ViewInfo<'a> {
     /// 距離distanceの地点での、画面1ピクセルが表す実寸(メートル)。
     fn pixel_m(&self, distance: f32) -> f32 {
         match self.camera.projection {
+            // 距離dでの画面の縦の実寸は 2·d·tan(画角/2)、それをcanvasの高さで割ると1ピクセル分。
+            // 距離が0に近いと実寸も0になり常に最細を要求するので、50m未満は50mとみなす。
             Projection::Perspective { .. } => {
                 2.0 * distance.max(50.0) * self.tan_half / self.canvas_h
             }
@@ -239,8 +255,11 @@ fn plan_levels_with_budget(
 
 /// チャンク1個の、基準位置からの距離・視野内か・目標レベル(予算を考える前)。
 struct ChunkTarget {
+    /// 基準位置から、チャンクの一番近い点までの距離(メートル)。
     distance: f32,
+    /// 視錐台に入るか。
     visible: bool,
+    /// 予算を考えなければ使いたいレベル(1以上。`target_level`の結果)。
     level: usize,
 }
 
@@ -249,7 +268,9 @@ struct TileInfo {
     key: TileKey,
     /// 基準位置から、タイルの一番近い点までの距離。
     distance: f32,
+    /// タイル(1度四方)が視錐台に入るか。
     visible: bool,
+    /// チャンク番号順の評価結果(`chunk_count`個)。
     chunks: Vec<ChunkTarget>,
 }
 
@@ -258,10 +279,13 @@ struct TileInfo {
 /// 保ち(距離の境目でレベルが行き来しないヒステリシス)、それ以上細かければ1つ細かい所まで下げる。
 fn target_level(have: usize, ideal: usize, visible: bool, max_level: usize) -> usize {
     let target = if !visible {
+        // 見えていないチャンクは上げも下げもしない(ただしチャンク表示の下限はレベル1)。
         have.max(1)
     } else if have > ideal {
+        // 今のほうが細かい: 理想+1までは保ち、それより細かければ理想+1まで下げる。
         (ideal + 1).min(have)
     } else {
+        // 今のほうが粗い(または同じ): 理想まで上げる。
         ideal
     };
     target.clamp(1, max_level)
@@ -278,8 +302,10 @@ fn evaluate_tile(
     let chunk_count = data.chunk_count();
     let max_level = data.max_level();
     let (lat0, lon0) = (tile.key.0 as f64, tile.key.1 as f64);
+    // 高さはタイルの最低・最高標高の中間で代表させる(チャンクごとの標高範囲は持っていない)。
     let mid_h = 0.5 * (tile.elevation_min + tile.elevation_max) as f64;
     let (distance, visible) = view.rect(lat0, lon0, lat0 + 1.0, lon0 + 1.0, mid_h);
+    // いまGPUにあるチャンクのレベル(タイル全体表示ならどのチャンクも0)。
     let current = resident.get(&tile.key).and_then(TileLayout::chunk_levels);
     let have = |c: usize| current.map_or(0, |v| v[c] as usize);
 
@@ -297,9 +323,11 @@ fn evaluate_tile(
             })
             .collect()
     } else {
+        // 近くの見えているタイル: チャンクごとに距離と視野を測り直して、理想のレベルを決める。
         let step = 1.0 / k as f64;
         (0..chunk_count)
             .map(|c| {
+                // チャンク番号 = 行(南→北)*k + 列(西→東)。
                 let (cx, cy) = (c % k, c / k);
                 let (clat0, clon0) = (lat0 + cy as f64 * step, lon0 + cx as f64 * step);
                 let (cdist, cvisible) = view.rect(clat0, clon0, clat0 + step, clon0 + step, mid_h);
@@ -332,6 +360,7 @@ fn allocate_levels(
     infos: &[TileInfo],
     budget: usize,
 ) -> HashMap<TileKey, Vec<u8>> {
+    // `infos`は見えているタイルが先に並んでいるので、境目で2つに分けられる。
     let split = infos.partition_point(|info| info.visible);
     let (visible, hidden) = infos.split_at(split);
     let mut remaining = budget;
@@ -352,9 +381,11 @@ fn allocate_group(
     remaining: &mut usize,
 ) {
     let chunk_count = data.chunk_count();
+    // タイルをチャンク表示にするには全チャンクをレベル1以上で載せる必要がある(一部だけ、はできない)。
     let base_cost = chunk_count * chunk_vertex_cost(data, 1);
     let mut granted: Vec<&TileInfo> = Vec::new();
     for info in infos {
+        // 足りないタイルは飛ばすが、後ろの(遠い)タイルの分は続けて確かめる(打ち切らない)。
         if *remaining >= base_cost {
             *remaining -= base_cost;
             levels.insert(info.key, vec![1; chunk_count]);
@@ -362,11 +393,15 @@ fn allocate_group(
         }
     }
 
+    /// レベル1より上へ上げる候補のチャンク1個。
     struct Upgrade {
+        /// 並べ替え用: チャンクが視野に入るか。
         visible: bool,
+        /// 並べ替え用: 基準位置からの距離。
         distance: f32,
         key: TileKey,
         chunk: usize,
+        /// 上げてよい上限(目標レベル)。
         target: usize,
     }
     let mut upgrades: Vec<Upgrade> = granted
@@ -387,6 +422,7 @@ fn allocate_group(
     // 理想のレベルに届かず最低のレベル1のまま残るため。予算が尽きた周回で打ち切る(それより上の
     // レベルは増分が大きく、どのチャンクも上げられない)。
     for level in 2..=data.max_level() {
+        // 1つ下のレベルから上げるときに増える頂点数(下のレベルの分は確保済み)。
         let delta = chunk_vertex_cost(data, level) - chunk_vertex_cost(data, level - 1);
         for up in upgrades.iter().filter(|up| up.target >= level) {
             if delta > *remaining {

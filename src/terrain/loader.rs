@@ -18,6 +18,17 @@
 //!
 //! グリッドは(N+1)x(N+1)ノードのint16(メートル)で、行は南→北、列は西→東。データなしは
 //! `NO_DATA`(int16の最小値)。
+//!
+//! 保持の仕組み(DETAILED_DESIGN.md 9.2節):
+//! - レベル0は`base`に全タイル分を常駐させる(どのタイルも最低限この解像度で描ける)。
+//! - レベル1以上はチャンク単位で`TileEntry::detail`に置き、合計バイト数が上限を超えたら
+//!   画面に出していないものから古い順に捨てる(`evict_unused`)。
+//! - 各チャンクの「いま画面に出しているレベル」(`TileEntry::chunk_level`)を持ち、標高の問い合わせは
+//!   必ずそのレベルのグリッドを使う。描画されている地形と、観測点・見通し計算・クリック位置などの
+//!   標高が食い違わないようにするため。
+//!
+//! `TerrainData`は`Rc`で共有され、描画側と取得側の両方から触られるが、WASMのメインスレッドだけで
+//! 使うので、可変な部分は`Cell`・`RefCell`で持つ(`&self`のままグリッドを追加・破棄できる)。
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -49,14 +60,23 @@ pub(crate) fn grid_len(cells: usize) -> usize {
 /// これより細かいレベルはファイルが大きいので、HTTP Rangeでチャンク1個分だけ取得する。
 pub const WHOLE_FILE_MAX_LEVEL: usize = 2;
 
+/// 緯度経度の矩形(度)。地形データ全体の範囲(`metadata.json`の`geodetic_bounds`)や、
+/// 地表の三角形を列挙する範囲の指定(`TerrainData::visit_surface_triangles`)に使う。
+/// 地形データ全体の範囲は、前処理ツールが1度タイルの外接矩形として出すので四隅とも整数度になる。
 #[derive(Debug, Clone, Copy, Deserialize)]
 pub struct GeodeticBounds {
+    /// 南端の緯度(度)。
     pub min_lat: f64,
+    /// 北端の緯度(度)。
     pub max_lat: f64,
+    /// 西端の経度(度)。
     pub min_lon: f64,
+    /// 東端の経度(度)。
     pub max_lon: f64,
 }
 
+/// `metadata.json`の内容(DETAILED_DESIGN.md 2.6節・9.1節)。未知のフィールドは無視する。
+/// 形の妥当性(レベルが2つ以上あるか、チャンク分割数で割り切れるか)は`fetch::load_terrain`が検証する。
 #[derive(Debug, Clone, Deserialize)]
 pub struct TerrainMetadata {
     /// 解像度レベルごとの、1度タイル1辺あたりのセル数(先頭がレベル0=最粗、以降ほど細かい)。
@@ -64,15 +84,25 @@ pub struct TerrainMetadata {
     pub tile_levels: Vec<u32>,
     /// 1度タイルを何x何のチャンクに分けるか(レベル1以上)。
     pub chunks_per_tile: u32,
+    /// データ全体の最低標高(メートル)。元データの水面ノイズで大きな負の値になりうるため、
+    /// 配色の下限には使わない(`mesh`は0mを下限にする)。
     pub elevation_min: f32,
+    /// データ全体の最高標高(メートル)。配色(`mesh`のカラーランプ)の上端と、クリック位置を求める
+    /// レイマーチで「これより上に地表は無い」とみなす高さ(`pick`)に使う。
     pub elevation_max: f32,
+    /// データのある範囲(1度タイルの外接矩形)。タイルの添字計算(`TerrainData::tile`)の基準にもなる。
     pub geodetic_bounds: GeodeticBounds,
+    /// 緯度経度の基準の楕円体(ALOSはGRS80)。ENU座標への変換に使う。
+    /// なお標高は楕円体高ではなくジオイド(EGM96)基準の正標高のまま持っている。
     pub ellipsoid: Ellipsoid,
     #[allow(dead_code)] // v1では常にfalse。texture.png読み込み分岐を実装する際に使う。
     pub has_texture: bool,
+    /// 呼び出し側が原点を指定しないときに使う原点(前処理ツールが固定値を書き出す)。
     pub default_origin: Origin,
 }
 
+/// `tile_index.json`の内容: 陸のある(ファイルが存在する)タイルの一覧。
+/// 並び順(緯度昇順→経度昇順)が`base.bin`の中のタイルの並びと一致する(DETAILED_DESIGN.md 9.1節)。
 #[derive(Debug, Deserialize)]
 pub(super) struct TileIndex {
     tiles: Vec<TileIndexEntry>,
@@ -85,22 +115,30 @@ impl TileIndex {
     }
 }
 
+/// `tile_index.json`の1タイル分。
 #[derive(Debug, Deserialize)]
 struct TileIndexEntry {
+    /// タイル南西角の緯度(整数度)。
     lat: i32,
+    /// タイル南西角の経度(整数度)。
     lon: i32,
+    /// タイル内の実測の最低標高(メートル)。
     elevation_min: f32,
+    /// タイル内の実測の最高標高(メートル)。
     elevation_max: f32,
 }
 
 /// 取得済みの細かいレベルのチャンクグリッド1枚。`last_used`は解放(`TerrainData::evict_unused`)の
 /// 優先順位に使う。
 struct CachedGrid {
+    /// `(n+1)²`ノードの標高。メッシュ生成・標高サンプリングへ複製せずに渡せるよう`Rc`で持つ。
     data: Rc<Vec<i16>>,
+    /// 最後に使われたときの`TerrainData::stamp`の値(大きいほど最近)。
     last_used: Cell<u64>,
 }
 
 impl CachedGrid {
+    /// このグリッドが使うメモリのバイト数(`TerrainData::cached_bytes`の集計単位)。
     fn bytes(&self) -> usize {
         self.data.len() * std::mem::size_of::<i16>()
     }
@@ -109,9 +147,13 @@ impl CachedGrid {
 /// 1タイル分の状態。`chunk_level`は「いま画面に出している(=標高サンプリングにも使う)レベル」で、
 /// 描画されているメッシュと標高の問い合わせ(観測点・見通し計算・クリック判定)を一致させる。
 pub struct TileEntry {
+    /// タイルの南西角(緯度, 経度)。
     pub key: TileKey,
+    /// タイル内の最低標高(メートル)。LODの距離計算では最低・最高の中間の高さを代表点に使う。
     pub elevation_min: f32,
+    /// タイル内の最高標高(メートル)。
     pub elevation_max: f32,
+    /// `TerrainData::base`の中で、このタイルのレベル0グリッドが始まる位置(要素数)。
     base_offset: usize,
     /// チャンク(行(南→北)*分割数+列(西→東))ごとの、いま画面に出しているレベル。
     /// 0ならタイル全体をレベル0で出している。
@@ -127,26 +169,38 @@ impl TileEntry {
     }
 }
 
+/// 取得した地形データ全体(DETAILED_DESIGN.md 9.2節)。`fetch::load_terrain`が作り、`Rc`で
+/// 地図・見通し計算・断面図などから共有する。タイルは緯度経度から定数時間で引ける(`tile`)。
 pub struct TerrainData {
+    /// `metadata.json`の内容。
     pub metadata: TerrainMetadata,
     /// 細かいレベルのグリッドを取得する際のベースURL。
     pub base_url: String,
+    /// 全タイルのレベル0グリッドを`tile_index.json`の順に連結したもの(`base.bin`そのもの)。
     base: Vec<i16>,
+    /// 存在するタイル(`tile_index.json`の順)。
     tiles: Vec<TileEntry>,
     /// (緯度-最小緯度)*cols+(経度-最小経度) → `tiles`の添字。
+    /// データ範囲の全1度マスぶんを持ち、海だけのマス(タイルが無い)はNone。
     slots: Vec<Option<usize>>,
+    /// データ範囲の東西方向のマス数(`slots`の1行の長さ)。
     cols: i32,
+    /// グリッドが使われるたびに1ずつ増える通し番号(`CachedGrid::last_used`に記録してLRUに使う)。
     stamp: Cell<u64>,
+    /// 取得済みの細かいレベルのグリッドの合計バイト数(`evict_unused`の判定に使う)。
     cached_bytes: Cell<usize>,
 }
 
 impl TerrainData {
+    /// 取得した3つのファイルの内容から組み立てる。`base`の長さの検証は呼び出し側(`fetch::load_terrain`)が
+    /// 済ませている前提。細かいレベルのグリッドは空で始まり、全チャンクがレベル0(タイル全体)を出している状態になる。
     pub(super) fn new(
         metadata: TerrainMetadata,
         base_url: String,
         index: TileIndex,
         base: Vec<i16>,
     ) -> Self {
+        // 範囲は整数度のはずだが、JSONの浮動小数点の誤差に備えて丸めてからマス数にする。
         let b = metadata.geodetic_bounds;
         let rows = (b.max_lat - b.min_lat).round() as i32;
         let cols = (b.max_lon - b.min_lon).round() as i32;
@@ -160,9 +214,11 @@ impl TerrainData {
             let key = (entry.lat, entry.lon);
             let row = entry.lat - b.min_lat as i32;
             let col = entry.lon - b.min_lon as i32;
+            // 範囲外のタイル(壊れた索引)は`tiles`には入れるが、緯度経度からは引けないようにする。
             if row >= 0 && row < rows && col >= 0 && col < cols {
                 slots[(row * cols + col) as usize] = Some(i);
             }
+            // レベル0のグリッドは索引の順に`base`へ並んでいるので、位置は順番×1枚の大きさで決まる。
             tiles.push(TileEntry {
                 key,
                 elevation_min: entry.elevation_min,
@@ -184,25 +240,35 @@ impl TerrainData {
         }
     }
 
+    /// 存在する全タイル(`tile_index.json`の順)。
     pub fn tiles(&self) -> &[TileEntry] {
         &self.tiles
     }
 
     /// 指定範囲に重なる表示LODの地表三角形を、経度・緯度・標高で列挙する。
     /// 未取得・欠損・範囲外は海面を張る。スカートは地表ではないため含めない。
+    ///
+    /// 各頂点は`[経度, 緯度, 標高(メートル)]`。三角形の分け方は描画メッシュ(`mesh`)と同じ
+    /// (セルの南東―北西の対角線で2つに分ける)なので、作図を地表へ貼り付けるとき
+    /// (`drawing_geometry::drape`)に、画面に見えている地形とぴったり重ねられる。
     pub(crate) fn visit_surface_triangles(
         &self,
         bounds: GeodeticBounds,
         mut visit: impl FnMut([[f64; 3]; 3]),
     ) {
+        // 範囲に掛かる1度マスを順に見る(タイルが無いマスも、海面として三角形を出す)。
         for lat in bounds.min_lat.floor() as i32..bounds.max_lat.ceil() as i32 {
             for lon in bounds.min_lon.floor() as i32..bounds.max_lon.ceil() as i32 {
                 let tile = self.tile((lat, lon));
+                // グリッド1枚(タイル全体のレベル0、またはチャンク1個)のうち、範囲に掛かるセルの三角形を出す。
+                // `values`: 標高(Noneなら全ノード0m=海面)、`cells`: 一辺のセル数、`start`: 南西角の[経度, 緯度]、
+                // `step`: ノード間隔(度)、`base`: レベル0のグリッドか(細かいレベルで表示中のチャンクを飛ばすため)。
                 let mut grid = |values: Option<&[i16]>,
                                 cells: usize,
                                 start: [f64; 2],
                                 step: f64,
                                 base: bool| {
+                    // 範囲に掛かるセルの添字範囲[begin, end)。範囲の端がセルの途中でも、そのセルは含める。
                     let begin = [
                         ((bounds.min_lon - start[0]) / step).floor().max(0.0) as usize,
                         ((bounds.min_lat - start[1]) / step).floor().max(0.0) as usize,
@@ -213,6 +279,8 @@ impl TerrainData {
                     ];
                     for j in begin[1]..end[1] {
                         for i in begin[0]..end[0] {
+                            // レベル0のセルでも、そのセルのチャンクが細かいレベルで表示中(グリッドも手元にある)なら、
+                            // 画面の地表はそちらなので飛ばす(細かいレベルのほうは後で別に列挙する)。
                             if base
                                 && tile.is_some_and(|t| {
                                     let chunk = self
@@ -223,6 +291,7 @@ impl TerrainData {
                             {
                                 continue;
                             }
+                            // ノード(列x, 行y)の[経度, 緯度, 標高]。グリッドは行が南→北のrow-major。
                             let node = |x: usize, y: usize| {
                                 [
                                     start[0] + x as f64 * step,
@@ -230,6 +299,8 @@ impl TerrainData {
                                     values.map_or(0, |g| g[y * (cells + 1) + x]) as f64,
                                 ]
                             };
+                            // a=南西、b=南東、c=北西、d=北東。対角線b―c(南東―北西)で2つの三角形に分ける
+                            // (`mesh::grid_indices`と同じ分け方)。
                             let [a, b, c, d] = [
                                 node(i, j),
                                 node(i + 1, j),
@@ -237,6 +308,8 @@ impl TerrainData {
                                 node(i + 1, j + 1),
                             ];
                             for mut tri in [[a, b, c], [b, d, c]] {
+                                // 描画メッシュはデータなしのノードを含む三角形を描かず、その下の水面
+                                // (楕円体面)が見える。ここでもその三角形は丸ごと海面(0m)として扱う。
                                 if tri.iter().any(|p| p[2] == NO_DATA as f64) {
                                     for p in &mut tri {
                                         p[2] = 0.0;
@@ -247,6 +320,7 @@ impl TerrainData {
                         }
                     }
                 };
+                // まずレベル0(タイルが無ければ海面)を、細かいレベルで表示中のセルを除いて出す。
                 let base_cells = self.level_cells(0);
                 grid(
                     tile.map(|t| self.whole_grid(t)),
@@ -255,6 +329,7 @@ impl TerrainData {
                     1.0 / base_cells as f64,
                     true,
                 );
+                // 次に、細かいレベルで表示中のチャンクを、そのレベルのグリッドで出す。
                 if let Some(tile) = tile {
                     for chunk in 0..self.chunk_count() {
                         let level = tile.level(chunk);
@@ -278,10 +353,12 @@ impl TerrainData {
         }
     }
 
+    /// 南西角が`key`のタイル。データ範囲外や、海だけでタイルが無いマスはNone。
     pub fn tile(&self, key: TileKey) -> Option<&TileEntry> {
         let b = &self.metadata.geodetic_bounds;
         let row = key.0 - b.min_lat as i32;
         let col = key.1 - b.min_lon as i32;
+        // 列は範囲を明示的に確かめる(はみ出すと隣の行に回り込むため)。行の上限は`slots.get`が弾く。
         if row < 0 || col < 0 || col >= self.cols {
             return None;
         }
@@ -289,6 +366,7 @@ impl TerrainData {
         slot.map(|i| &self.tiles[i])
     }
 
+    /// 解像度レベルの数(レベル0を含む)。`fetch::load_terrain`の検証により2以上。
     pub fn num_levels(&self) -> usize {
         self.metadata.tile_levels.len()
     }
@@ -328,6 +406,7 @@ impl TerrainData {
         let k = self.chunks_per_tile();
         let cells = self.chunk_cells(level);
         let step = 1.0 / self.level_cells(level) as f64;
+        // チャンク番号 = 行(南→北)*k + 列(西→東)。行は緯度、列は経度の方向にチャンク1個分ずつずれる。
         (
             key.0 as f64 + (chunk / k * cells) as f64 * step,
             key.1 as f64 + (chunk % k * cells) as f64 * step,
@@ -368,6 +447,8 @@ impl TerrainData {
         stamp
     }
 
+    /// 指定レベル(1以上)・チャンクのグリッドを取得済みか。`chunk_grid`と違い、使われた順(LRU)は
+    /// 更新しない(取得が要るかの確認だけで、解放の優先順位を変えないため)。
     pub fn has_chunk_grid(&self, tile: &TileEntry, level: usize, chunk: usize) -> bool {
         self.slot(level, chunk)
             .is_some_and(|slot| matches!(tile.detail.borrow().get(slot), Some(Some(_))))
@@ -400,6 +481,7 @@ impl TerrainData {
         };
         let mut detail = tile.detail.borrow_mut();
         let slot = &mut detail[slot];
+        // 同じグリッドの取り直し(上書き)なら大きさは同じなので、合計には空きスロットへ入れたときだけ足す。
         if slot.is_none() {
             self.cached_bytes
                 .set(self.cached_bytes.get() + grid.bytes());
@@ -409,6 +491,7 @@ impl TerrainData {
 
     /// タイル1枚分・1レベルのファイル(全チャンクのレコードを連結したもの)を、チャンクごとに
     /// 分けて登録する。
+    /// 長さが足りずレコードが欠けるチャンクは登録しない(取得側でファイル全体の長さを検証済み)。
     pub fn insert_tile_level(&self, key: TileKey, level: usize, all: &[i16]) {
         let record = grid_len(self.chunk_cells(level));
         for chunk in 0..self.chunk_count() {
@@ -447,6 +530,8 @@ impl TerrainData {
         self.sample_grid(tile, u, v, true)
     }
 
+    /// `sample_bilinear`(`surface=false`)と`sample_surface`(`surface=true`)の共通部分。
+    /// 位置を含むチャンクの表示中のレベルのグリッドがあればそれを、無ければレベル0を使う。
     fn sample_grid(&self, tile: &TileEntry, u: f64, v: f64, surface: bool) -> f32 {
         let chunk = self.chunk_at(u, v);
         let level = tile.level(chunk);
@@ -454,8 +539,10 @@ impl TerrainData {
         // (グリッドの参照, 一辺のセル数, グリッド内の連続座標fx/fy)を決める。
         let bilinear = |grid: &[i16], cells: usize, fx: f64, fy: f64| -> f32 {
             let nodes = cells + 1;
+            // 位置を含むセルの南西ノード(i0, j0)。端(fx=cells)でも最後のセルに収め、範囲外を引かない。
             let i0 = (fx.floor().max(0.0) as usize).min(cells - 1);
             let j0 = (fy.floor().max(0.0) as usize).min(cells - 1);
+            // セル内の位置(0〜1)。
             let tx = (fx - i0 as f64).clamp(0.0, 1.0) as f32;
             let ty = (fy - j0 as f64).clamp(0.0, 1.0) as f32;
             let at = |j: usize, i: usize| grid[j * nodes + i];
@@ -466,6 +553,8 @@ impl TerrainData {
                 at(j0 + 1, i0 + 1),
             );
             if surface {
+                // 描画メッシュと同じ三角形(対角線は南東―北西)の上で、重心座標で補間する。
+                // tx+ty<=1なら南西側の三角形(南西・南東・北西)、それ以外は北東側(北東・北西・南東)。
                 let (values, weights) = if tx + ty <= 1.0 {
                     ([v00, v10, v01], [1.0 - tx - ty, tx, ty])
                 } else {
@@ -478,9 +567,11 @@ impl TerrainData {
                     values.iter().zip(weights).map(|(&h, w)| h as f32 * w).sum()
                 };
             }
+            // 双線形補間では4ノードすべてを使うので、1つでもデータなしなら海面(0m)とする。
             if [v00, v10, v01, v11].contains(&NO_DATA) {
                 return 0.0;
             }
+            // 東西方向に補間してから、南北方向に補間する。
             let (h00, h10, h01, h11) = (v00 as f32, v10 as f32, v01 as f32, v11 as f32);
             let h0 = h00 + (h10 - h00) * tx;
             let h1 = h01 + (h11 - h01) * tx;
@@ -488,11 +579,14 @@ impl TerrainData {
         };
 
         if level > 0 {
+            // 表示中のレベルのグリッドが(解放などで)手元に無ければ、下のレベル0へ落ちる。
             let detail = tile.detail.borrow();
             if let Some(Some(cached)) = self.slot(level, chunk).and_then(|slot| detail.get(slot)) {
                 let k = self.chunks_per_tile();
                 let n_level = self.level_cells(level) as f64;
                 let cells = self.chunk_cells(level);
+                // タイル全体でのセル単位の座標(u*n_level)から、チャンクの南西角のセル位置を引いて、
+                // チャンクのグリッド内の座標にする。
                 return bilinear(
                     &cached.data,
                     cells,
@@ -518,6 +612,7 @@ impl TerrainData {
     /// 合計が`limit_bytes`以下になるまで、`keep(タイル, チャンク, レベル)`がfalseを返すグリッド
     /// (=いま画面に出していないもの)を、最後に使われたのが古い順に破棄する。
     pub fn evict_unused(&self, keep: impl Fn(TileKey, usize, usize) -> bool, limit_bytes: usize) {
+        // 上限内なら候補集めの走査もしない(LODの更新のたびに呼ばれるので、普段はここで終わる)。
         if self.cached_bytes.get() <= limit_bytes {
             return;
         }
@@ -526,6 +621,7 @@ impl TerrainData {
         for (ti, tile) in self.tiles.iter().enumerate() {
             for (si, slot) in tile.detail.borrow().iter().enumerate() {
                 if let Some(g) = slot {
+                    // スロット番号 = (レベル-1)*チャンク数+チャンク番号 を逆算する。
                     let (level, chunk) = (si / chunks + 1, si % chunks);
                     if !keep(tile.key, chunk, level) {
                         candidates.push((g.last_used.get(), ti, si));
@@ -533,6 +629,7 @@ impl TerrainData {
                 }
             }
         }
+        // `last_used`の小さい(=長く使われていない)順に並べ、上限を下回るまで先頭から捨てる。
         candidates.sort_unstable();
         for (_, ti, si) in candidates {
             if self.cached_bytes.get() <= limit_bytes {

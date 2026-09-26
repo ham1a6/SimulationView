@@ -4,6 +4,7 @@
 
 use leptos::prelude::*;
 
+/// 陰影のON/OFFを持つcontext。`TerrainView`は`enabled`を購読し、変わったらレンダラーのuniformへ反映する。
 #[derive(Clone, Copy)]
 pub struct HillshadeState {
     /// trueなら陰影を付ける。
@@ -11,6 +12,7 @@ pub struct HillshadeState {
 }
 
 impl HillshadeState {
+    /// 初期値を指定して作る。
     pub fn new(enabled: bool) -> Self {
         Self {
             enabled: RwSignal::new(enabled),

@@ -7,6 +7,7 @@
 
 use leptos::prelude::*;
 
+/// 中心点(注視点)の移動要求を運ぶcontext。
 #[derive(Clone, Copy, Default)]
 pub struct RecenterRequestState {
     /// 要求のたびに増える(`TerrainView`はこの変化を見て中心点を動かす)。初期値0は「まだ要求なし」。
@@ -16,6 +17,7 @@ pub struct RecenterRequestState {
 }
 
 impl RecenterRequestState {
+    /// 要求なし(カウンタ0)の状態で作る。
     pub fn new() -> Self {
         Self::default()
     }
@@ -32,11 +34,13 @@ impl RecenterRequestState {
         self.bump();
     }
 
-    /// 直近の要求の移動先(`None`なら原点)。
+    /// 直近の要求の移動先(`None`なら原点)。購読はしない(変化の通知は`count`で受け取る)。
     pub fn target(&self) -> Option<(f64, f64)> {
         self.target.get_untracked()
     }
 
+    /// 要求カウンタを1進める。同じ移動先を続けて要求しても値が変わるので、毎回反応させられる
+    /// (u32を使い切ったら0へ戻るが、0を「要求なし」と区別する必要があるのは初期状態だけ)。
     fn bump(&self) {
         self.count.update(|v| *v = v.wrapping_add(1));
     }

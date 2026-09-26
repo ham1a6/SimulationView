@@ -12,7 +12,9 @@ use serde::Deserialize;
 /// 基準位置(原点)。DETAILED_DESIGN.md 3.1節。地形の`metadata.json`の`default_origin`もこの形で読む。
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 pub struct Origin {
+    /// 緯度(度。北が正)。
     pub lat_deg: f64,
+    /// 経度(度。東が正)。
     pub lon_deg: f64,
 }
 

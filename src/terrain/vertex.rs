@@ -13,16 +13,21 @@ const KIND_ORIENTED_BILLBOARD: f32 = 2.0;
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct DrawVertex {
+    /// 位置(ENU座標、メートル)。ビルボードではアンカー(画面上で図形を置く基準点)。
+    /// 画面や視点に固定の描画(`draw.wgsl`の座標系の指定による)では、その座標系での位置。
     pub position: [f32; 3],
+    /// 色(RGBA、各0〜1。aは不透明度)。
     pub color: [f32; 4],
-    /// 面: 単位法線(陰影を付けるとき)。線: 反対側の端点。
+    /// 面: 単位法線(陰影を付けるとき)。線: 反対側の端点。ビルボード: xyが画面上のずれ(px)。
     pub aux: [f32; 3],
     /// x: 線の太さ(px。0なら面)。y: 線の側(-1/+1)。z: ビルボードの種類(0=面・線、1=画面サイズ固定のマーカー、
     /// 2=向きつきシンボル。`draw.wgsl`の`vs_main`が見る)。w: 陰影を付けるなら1(面のみ)。
+    /// 向きつきシンボルではxに進行方向(ラジアン)を入れる(線の太さは使わないため)。
     pub params: [f32; 4],
 }
 
 impl DrawVertex {
+    /// 面(三角形)の頂点。`normal`を渡すと、その法線で陰影を付ける(Noneなら色そのまま)。
     pub(crate) fn surface(position: [f32; 3], color: [f32; 4], normal: Option<[f32; 3]>) -> Self {
         let shaded = if normal.is_some() { 1.0 } else { 0.0 };
         Self {
@@ -33,6 +38,9 @@ impl DrawVertex {
         }
     }
 
+    /// 太さのある線分の頂点。線分1本は両端×両側の4頂点からなる四角形(2つの三角形)で描く
+    /// (`drawing_geometry`が組み立てる)。シェーダーが画面上で、線に垂直な方向へ`side`(-1/+1)×半幅だけ
+    /// ずらし、さらに線の向きへ半幅だけ延ばす(拡大縮小しても太さが一定で、折れ線のつなぎ目に隙間が出ない)。
     pub(crate) fn line(
         position: [f32; 3],
         other: [f32; 3],

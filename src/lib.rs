@@ -15,8 +15,21 @@
 //!
 //! リポジトリ内の`API_REFERENCE.md`に公開モジュールとcontextの索引、
 //! `IMPLEMENTATION_GUIDELINES.md`に実装・検証の作業手順をまとめている。
+//!
+//! # 全体の構成
+//!
+//! 大きく「データと計算(`terrain`)」と「画面部品(`ui`)」に分かれる。`terrain`はLeptosの
+//! コンポーネントを持たず、地形の取得・保持・メッシュ化・描画(wgpu)・見通し計算・作図や航跡の
+//! 状態を扱う。`ui`はそれらを使うLeptosコンポーネントで、`viewer::ViewerState`がまとめて
+//! 登録したcontextを通して`terrain`側の状態を共有する(設計はDETAILED_DESIGN.md 6.0節・9.13節)。
+//! ライブラリは通信プロトコルやサーバーのURLを知らない(URLの組み立て・WebSocket・原点状態の
+//! 橋渡しは呼び出し側のアプリの責務。DETAILED_DESIGN.md 0.4節)。
 
+// 地形データの取得・保持、LOD、メッシュ生成、wgpu描画、見通し計算、作図・航跡・3Dモデルの状態。
 pub mod terrain;
+// 地図(`TerrainView`)・見通し図・断面図・ダイアログ・分割ペインなどのLeptosコンポーネント。
 pub mod ui;
+// 任意のファイル(Blob)をサーバーへ送る汎用API。送信先URLは呼び出し側が決める。
 pub mod upload;
+// ライブラリが使うcontextを一括で作って登録する入口(`ViewerState`)。
 pub mod viewer;

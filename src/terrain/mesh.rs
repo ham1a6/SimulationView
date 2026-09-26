@@ -1,5 +1,13 @@
 //! 地形メッシュ生成。DETAILED_DESIGN.md 6.5節(頂点構造)・6.7節(配色)。座標変換は`geodesy`、標高の
 //! サンプリングは`heightmap`。
+//!
+//! グリッド1枚(レベル0のタイル全体、またはレベル1以上のチャンク1個)を1つのメッシュにする
+//! (DETAILED_DESIGN.md 9.4節)。メッシュは次の2つからなる:
+//! - 地表: 各ノードを頂点にし、セルを南東―北西の対角線で2つの三角形に分ける。
+//! - スカート: 縁の4辺から下へ垂らす壁。解像度の違う隣のメッシュとの継ぎ目の隙間を隠す。
+//!
+//! 頂点の数・並びとインデックスはグリッドだけで決まり、原点(ENU座標の中心)には依存しない。
+//! そのため原点が変わったときは頂点の位置だけを作り直せばよい(`build_*_vertices`)。
 
 use std::rc::Rc;
 
@@ -11,6 +19,7 @@ use super::loader::{TerrainData, TileEntry, NO_DATA};
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TerrainVertex {
     pub position: [f32; 3], // x(East), y(North), z(Up) — ENU変換結果
+    /// 頂点色(RGB、各0〜1)。地形では標高から決めた色(`elevation_to_color`)。
     pub color: [f32; 3],
     /// 陰影(ヒルシェード)用の単位法線のx(East)・y(North)成分(snorm16。-32767〜32767が-1〜1)。
     /// z(Up)成分は`sqrt(1-x^2-y^2)`でシェーダーが復元する(地表の法線は常に上向きなので符号は
@@ -34,8 +43,11 @@ impl TerrainVertex {
     }
 }
 
+/// GPUへ上げる前のメッシュ1つ分(三角形リスト)。
 pub struct TerrainMesh {
+    /// 頂点。地形ではノード(行=南→北、列=西→東)の後にスカートの底の頂点が続く(`grid_vertices`)。
     pub vertices: Vec<TerrainVertex>,
+    /// 三角形ごとに3つずつ並べた`vertices`の添字。
     pub indices: Vec<u32>,
 }
 
@@ -55,12 +67,14 @@ fn elevation_to_color(elevation: f32, min: f32, max: f32) -> [f32; 3] {
         (1.0, [0.95, 0.95, 0.95]),  // 山頂付近: 白に近い明色
     ];
 
+    // 標高を0〜1に正規化する(範囲外は端に丸め、範囲が空なら最低の色)。
     let t = if max > min {
         ((elevation - min) / (max - min)).clamp(0.0, 1.0)
     } else {
         0.0
     };
 
+    // tを挟む隣り合うストップを探し、その2色の間を線形補間する。
     for pair in STOPS.windows(2) {
         let (t0, c0) = pair[0];
         let (t1, c1) = pair[1];
@@ -88,6 +102,7 @@ pub fn tile_vertex_count(cells: usize) -> usize {
 }
 
 /// スカートの辺e(0=南,1=東,2=北,3=西)のk番目のノードの、グリッド内の番号。
+/// kは南・北の辺では西→東、東・西の辺では南→北に数える(0〜cells)。
 fn edge_node(edge: usize, k: usize, cells: usize) -> usize {
     let n = cells + 1;
     match edge {
@@ -101,9 +116,13 @@ fn edge_node(edge: usize, k: usize, cells: usize) -> usize {
 /// メッシュにするグリッド1枚の位置決め: ノード(列i, 行j)は緯度`lat_start + j*step_deg`、
 /// 経度`lon_start + i*step_deg`にある。
 struct GridPlacement {
+    /// 南西角のノードの緯度(度)。
     lat_start: f64,
+    /// 南西角のノードの経度(度)。
     lon_start: f64,
+    /// ノードの間隔(度。緯度・経度とも同じ)。
     step_deg: f64,
+    /// このグリッドのレベルのスカートの深さ(メートル。`skirt_depth_m`)。
     skirt_depth: f32,
 }
 
@@ -132,6 +151,7 @@ fn node_normals(grid: &[i16], n: usize, positions: &[[f64; 3]]) -> Vec<[i16; 2]>
             }
             let (i_lo, i_hi) = neighbor(i, i > 0 && land(i - 1, j), i + 1 < n && land(i + 1, j));
             let (j_lo, j_hi) = neighbor(j, j > 0 && land(i, j - 1), j + 1 < n && land(i, j + 1));
+            // 東西・南北のどちらかで両隣とも使えない(差分が0になる)と、傾きが決まらない。
             if i_lo == i_hi || j_lo == j_hi {
                 normals.push(TerrainVertex::UNLIT_NORMAL);
                 continue;
@@ -147,10 +167,12 @@ fn node_normals(grid: &[i16], n: usize, positions: &[[f64; 3]]) -> Vec<[i16; 2]>
                 east[0] * north[1] - east[1] * north[0],
             ];
             let len = (cross[0] * cross[0] + cross[1] * cross[1] + cross[2] * cross[2]).sqrt();
+            // 長さ0(退化)や下向き(崖の張り出しなど、zを復元できない)の法線は使わない。
             if len < 1e-9 || cross[2] <= 0.0 {
                 normals.push(TerrainVertex::UNLIT_NORMAL);
                 continue;
             }
+            // 単位ベクトルにしてから、xyをsnorm16(-1〜1 → -32767〜32767)に詰める。
             let pack = |v: f64| ((v / len).clamp(-1.0, 1.0) * 32767.0).round() as i16;
             normals.push([pack(cross[0]), pack(cross[1])]);
         }
@@ -171,6 +193,7 @@ fn grid_vertices(
     transform: &EnuTransform,
 ) -> Vec<TerrainVertex> {
     let n = cells + 1;
+    // 楕円体の長半径aと離心率の2乗e²。
     let (a, e2) = transform.ellipsoid_params();
 
     // 行(緯度)ごと: (sinφ, cosφ, 卯酉線曲率半径N)。列(経度)ごと: (sinλ, cosλ)。
@@ -191,6 +214,9 @@ fn grid_vertices(
         .collect();
 
     // ノード(行j, 列i)の、楕円体高hでのENU座標(東, 北, 上)。
+    // 測地座標→ECEF(X=(N+h)cosφcosλ, Y=(N+h)cosφsinλ, Z=(N(1-e²)+h)sinφ)の後、原点基準のENUへ回す
+    // (`geodesy::EnuTransform::transform`と同じ式を、三角関数の前計算つきで展開したもの)。
+    // 標高(ジオイド基準の正標高)は楕円体高としてそのまま使う(ジオイド高の補正はしない)。
     let enu = |j: usize, i: usize, h: f64| -> [f64; 3] {
         let (s, c, prime) = rows[j];
         let (sl, cl) = cols[i];
@@ -225,6 +251,7 @@ fn grid_vertices(
             ));
         }
     }
+    // 法線は全ノードの位置が揃ってから(隣のノードの位置を使うので)まとめて入れる。
     for (vertex, normal_xy) in vertices.iter_mut().zip(node_normals(grid, n, &positions)) {
         vertex.normal_xy = normal_xy;
     }
@@ -243,6 +270,7 @@ fn grid_vertices(
                 grid[node] as f64
             };
             let bottom = enu(j, i, (h - place.skirt_depth as f64).min(0.0));
+            // 色・法線は縁のノードと同じにして、位置だけ底へ下げる(壁は縁と同じ色・陰影で見える)。
             let mut v = vertices[node];
             v.position = [bottom[0] as f32, bottom[1] as f32, bottom[2] as f32];
             vertices.push(v);
@@ -262,6 +290,8 @@ fn grid_indices(grid: &[i16], cells: usize) -> Vec<u32> {
     let mut indices = Vec::with_capacity(cells * cells * 6);
     for j in 0..cells {
         for i in 0..cells {
+            // セル(i, j)の4隅: i0=南西、i1=南東、i2=北西、i3=北東。
+            // 対角線i1―i2(南東―北西)で2つに分け、どちらも上から見て反時計回りに並べる。
             let i0 = j * n + i;
             let i1 = i0 + 1;
             let i2 = i0 + n;
@@ -275,6 +305,9 @@ fn grid_indices(grid: &[i16], cells: usize) -> Vec<u32> {
         }
     }
 
+    // スカートの底の頂点は、ノードの後に辺ごと(n個ずつ)並んでいる(`grid_vertices`)。
+    // 縁の隣り合う2ノード(a, b)とその底(sa, sb)で四角形の壁を作る。巻き順は辺によって表裏が
+    // 揃っていないが、地形のパイプラインは裏面を捨てない(`cull_mode: None`)ので描画には影響しない。
     let skirt_base = n * n;
     for edge in 0..4 {
         for k in 0..cells {
@@ -325,6 +358,7 @@ fn chunk_grid(
     Some((grid, data.chunk_cells(level), place))
 }
 
+/// グリッド1枚から頂点とインデックスの両方を作る(配色の上端はデータ全体の最高標高)。
 fn mesh_of(
     data: &TerrainData,
     grid: &[i16],
@@ -338,7 +372,8 @@ fn mesh_of(
     }
 }
 
-/// タイル全体(レベル0)の頂点列。
+/// タイル全体(レベル0)の頂点列。原点を変えたとき、インデックスはそのままで頂点の位置だけを
+/// 作り直すのに使う(`build_whole_tile_mesh`の頂点と同じ数・並び)。
 pub fn build_whole_tile_vertices(
     data: &TerrainData,
     tile: &TileEntry,
@@ -359,6 +394,7 @@ pub fn build_whole_tile_mesh(
 }
 
 /// チャンク(行(南→北)*分割数+列(西→東))・レベル(1以上)の頂点列。グリッドが未取得ならNone。
+/// 用途は`build_whole_tile_vertices`と同じ(原点変更時の位置の作り直し)。
 pub fn build_chunk_vertices(
     data: &TerrainData,
     tile: &TileEntry,

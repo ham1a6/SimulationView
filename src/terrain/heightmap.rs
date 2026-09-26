@@ -1,6 +1,9 @@
 //! 標高のサンプリングと、地表点のENU座標。DETAILED_DESIGN.md 3.2節・6.8節。
 //! `TerrainData`(いま画面に出しているレベルのグリッド)から標高を引き、楕円体(`EnuTransform`)で
 //! ENU座標へ変換する。観測点・見通し計算・クリック判定・注視点の高さ合わせが使う。
+//!
+//! 補間は2通り: `sample_heightmap`はセルの4ノードの双線形補間(滑らかで、見通し計算などの数値計算向き)、
+//! `sample_surface_height`は描画メッシュと同じ三角形の上での補間(地表に貼る図形が地形に埋もれない)。
 
 use super::geodesy::EnuTransform;
 use super::loader::TerrainData;
@@ -10,7 +13,7 @@ use super::loader::TerrainData;
 /// 各タイル(のチャンク)は、いま画面に出しているレベルのグリッド(`TerrainData::set_chunk_level`)
 /// で引くので、描画されている地形と観測点・見通し計算・クリック判定の標高が一致する。
 /// `terrain/los.rs`(見通し)・`terrain/markers.rs`(観測点)・`terrain/profile.rs`(断面図)・
-/// `terrain/pick.rs`(クリック判定)・`ui/terrain_view.rs`(カメラ注視点の高さ)から使う。
+/// `terrain/pick.rs`(クリック判定)・`ui::terrain_view`(カメラ注視点の高さ)から使う。
 pub fn sample_heightmap(data: &TerrainData, lat_deg: f64, lon_deg: f64) -> f32 {
     sample(data, lat_deg, lon_deg, false).unwrap_or(0.0)
 }
@@ -20,7 +23,8 @@ pub(crate) fn sample_surface_height(data: &TerrainData, lat_deg: f64, lon_deg: f
     sample(data, lat_deg, lon_deg, true).unwrap_or(0.0)
 }
 
-/// 範囲外ならNone。
+/// 緯度経度を含むタイルと、タイル内の位置(u=経度方向, v=緯度方向。0〜1)を求めて補間する。
+/// データ範囲の外ならNone、範囲内でもタイルが無い(海だけの)マスなら0m。
 fn sample(data: &TerrainData, lat_deg: f64, lon_deg: f64, surface: bool) -> Option<f32> {
     let b = &data.metadata.geodetic_bounds;
     if lat_deg < b.min_lat || lat_deg > b.max_lat || lon_deg < b.min_lon || lon_deg > b.max_lon {
@@ -47,7 +51,7 @@ fn sample(data: &TerrainData, lat_deg: f64, lon_deg: f64, surface: bool) -> Opti
 /// 視線との交差判定・注視点の高さ合わせには、標高そのものではなくこの上座標を使うこと。
 /// 「(東, 北)を通る鉛直線」と地表の交点は、上座標を仮定→測地座標へ戻す→その地点の地表の
 /// 上座標で更新、を数回繰り返して求める(地表の傾きが小さいので速やかに収束する)。
-/// 地形データ範囲外・海域(NaN)は標高0mとして扱う。
+/// 地形データ範囲外・海域(データなし)は標高0mとして扱う。
 pub fn ground_at_enu(
     data: &TerrainData,
     transform: &EnuTransform,
@@ -57,6 +61,8 @@ pub fn ground_at_enu(
     // 丸みによる低下量の第一近似を初期値にする(0から始めるより収束が速い)。
     let mut up = -(east * east + north * north) / (2.0 * transform.ellipsoid_params().0);
     let mut lat_lon = (0.0, 0.0);
+    // 遠方では「上」が原点の上から傾くため、上座標を変えると同じ(東, 北)でも指す緯度経度がずれる。
+    // そのずれを、仮定した上座標から緯度経度・標高・上座標を求め直すことで詰めていく(4回で固定)。
     for _ in 0..4 {
         let (lat, lon, _h) = transform.enu_to_geodetic(east, north, up);
         let elevation = sample_heightmap(data, lat, lon);
@@ -67,7 +73,7 @@ pub fn ground_at_enu(
 }
 
 /// 地表上の(緯度, 経度)のENU座標(東, 北, 上)。`ground_at_enu`の逆向き。
-/// 地形データ範囲外・海域(NaN)は標高0mとして扱う。
+/// 地形データ範囲外・海域(データなし)は標高0mとして扱う。
 pub fn ground_at_geodetic(
     data: &TerrainData,
     transform: &EnuTransform,

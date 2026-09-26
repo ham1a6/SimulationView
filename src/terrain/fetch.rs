@@ -2,6 +2,13 @@
 //! 起動時に`metadata.json`・`tile_index.json`・`base.bin`(全タイルの最粗レベル)を取得し(`load_terrain`)、
 //! 細かいレベルはカメラに近いチャンクだけ、必要に応じて取得する(`fetch_tile_level`・`fetch_chunk_grid`。
 //! `terrain::lod`が必要なレベルを決め、`ui::terrain_view`が呼ぶ)。
+//!
+//! 取得の方針(DETAILED_DESIGN.md 9.1節・9.2節):
+//! - 失敗はすべて`Err(String)`で返し、ここでは再試行しない(再試行するかどうかは呼び出し側が決める。
+//!   細かいレベルの再試行は`ui::terrain_view::lod_driver`がバックオフを挟んで行う)。
+//! - 受け取ったバイト数は必ず期待値と照合し、合わなければエラーにする(途中で切れた応答や、
+//!   別のデータセットのファイルを黙って使わないため)。
+//! - 通信の圧縮(gzip)はブラウザが自動で展開するので、ここで扱うバイト列は常に展開後のもの。
 
 use std::cell::Cell;
 
@@ -9,7 +16,10 @@ use serde::de::DeserializeOwned;
 
 use super::loader::{grid_len, TerrainData, TerrainMetadata, TileIndex, TileKey};
 
-/// `{base_url}/{file}`のJSONを取得する。
+/// `{base_url}/{file}`のJSONを取得して`T`へデシリアライズする。
+/// 通信の失敗は`"{file} fetch failed: …"`、JSONとして読めない・型が合わない場合は
+/// `"{file} parse failed: …"`のエラーになる(HTTPのステータスは見ないので、404のHTMLなどは
+/// 解析の失敗として報告される)。
 async fn fetch_json<T: DeserializeOwned>(base_url: &str, file: &str) -> Result<T, String> {
     gloo_net::http::Request::get(&format!("{base_url}/{file}"))
         .send()
@@ -20,6 +30,9 @@ async fn fetch_json<T: DeserializeOwned>(base_url: &str, file: &str) -> Result<T
         .map_err(|e| format!("{file} parse failed: {e}"))
 }
 
+/// リトルエンディアンの`int16`の並び(グリッドのファイル形式。DETAILED_DESIGN.md 9.1節)を
+/// `i16`の配列にする。長さが奇数なら最後の1バイトは捨てる(呼び出し側がバイト数を先に
+/// 検証しているので、実際には端数は出ない)。
 fn decode_i16_le(bytes: &[u8]) -> Vec<i16> {
     bytes
         .as_chunks::<2>()
@@ -29,7 +42,8 @@ fn decode_i16_le(bytes: &[u8]) -> Vec<i16> {
         .collect()
 }
 
-/// GETを送り、成功(2xx)の応答を返す。`range`は両端を含むバイト範囲。
+/// GETを送り、成功(2xx)の応答を返す。`range`は両端を含むバイト範囲(`Some((0, 9))`なら先頭10バイト)。
+/// 2xx以外は`"{url} fetch failed: HTTP {status}"`のエラーにする(本文は読まない)。
 async fn send_get(
     url: &str,
     range: Option<(usize, usize)>,
@@ -49,11 +63,17 @@ async fn send_get(
     Ok(response)
 }
 
+/// `url`をバイト列として取得する。`range`を指定すると、その範囲(両端を含む)だけを返す。
+///
+/// Range対応のサーバーは`206 Partial Content`で指定範囲だけを返すが、未対応のサーバーは
+/// `200`で全体を返す。その場合もここで必要な範囲を切り出すので、呼び出し側はどちらのサーバーでも
+/// 同じ結果を受け取れる(転送量が増えるだけ)。3Dモデル(GLB)など地形以外の取得にも使う。
 pub(crate) async fn fetch_binary(
     url: &str,
     range: Option<(usize, usize)>,
 ) -> Result<Vec<u8>, String> {
     let response = send_get(url, range).await?;
+    // 本文を読むと応答は消費されるので、ステータスは先に控えておく。
     let status = response.status();
     let body = response
         .binary()
@@ -87,6 +107,8 @@ async fn fetch_binary_streamed(
             .map_err(|e| format!("{url} read failed: {e}"));
     };
     let read_failed = |e: wasm_bindgen::JsValue| format!("{url} read failed: {e:?}");
+    // `gloo_net`はストリームを少しずつ読むAPIを持たないので、Fetch APIの`ReadableStream`を
+    // `web_sys`で直接読む。`read()`は、次の断片(`Uint8Array`)か終わり(`done: true`)を返すPromise。
     let reader = web_sys::ReadableStreamDefaultReader::new(&stream).map_err(read_failed)?;
     let mut body = Vec::new();
     loop {
@@ -98,6 +120,7 @@ async fn fetch_binary_streamed(
         if chunk.get_done().unwrap_or(false) {
             return Ok(body);
         }
+        // 受け取った断片を末尾へ追記する(JS側の配列からWASMのメモリへ1回だけコピーする)。
         let bytes = js_sys::Uint8Array::new(&chunk.get_value());
         let start = body.len();
         body.resize(start + bytes.length() as usize, 0);
@@ -143,16 +166,21 @@ pub async fn load_terrain(
     base_url: &str,
     on_progress: impl Fn(TerrainLoadProgress),
 ) -> Result<TerrainData, String> {
+    // `format!`の一時値は`join!`の中で借用し続けるので、先に変数へ束縛して寿命を延ばす。
     let base_bin_url = format!("{base_url}/base.bin");
     // join!の各futureは同じタスク内で交互に進むだけなので、Cellで共有してよい。
     let received_bytes = Cell::new(0);
     let total_bytes = Cell::new(None);
+    // 受信バイト数・全体の大きさのどちらかが変わるたびに、今の値をまとめて通知する。
     let report = || {
         on_progress(TerrainLoadProgress {
             received_bytes: received_bytes.get(),
             total_bytes: total_bytes.get(),
         })
     };
+    // 外側の`join!`で「JSON 2つ」と「base.bin」を同時に進め、内側の`join!`でJSON 2つも同時に取る
+    // (3つのリクエストがほぼ同時に出る)。JSONが揃った時点で`base.bin`の全体の大きさが分かるので、
+    // その時点で一度通知しておく(進捗表示が「大きさ不明」から割合表示へ切り替わる)。
     let (metadata_and_index, bytes) = futures_util::join!(
         async {
             let (metadata, index) = futures_util::join!(
@@ -170,6 +198,8 @@ pub async fn load_terrain(
             report();
         }),
     );
+    // 3つとも待ち終えてから、エラーは metadata → tile_index → base.bin の順に報告する
+    // (どれか1つの失敗で他の取得を途中で止めることはしない)。
     let (metadata, index) = metadata_and_index;
     let metadata = metadata?;
     let index = index?;
@@ -188,6 +218,9 @@ pub async fn load_terrain(
         );
     }
 
+    // `base.bin`はタイル一覧の順にレベル0のグリッドを連結しただけで、区切りの情報を持たない。
+    // 大きさが合わないとタイルとグリッドの対応がずれるので、ここで必ず弾く。
+    // (`tile_levels`が空でないことは直前の検証で保証済みなので、`unwrap_or_default`は実際には0にならない。)
     let expected_len = base_bin_len(&metadata, &index).unwrap_or_default();
     if bytes.len() != expected_len {
         return Err(format!(
@@ -222,6 +255,10 @@ fn tile_level_url(base_url: &str, key: TileKey, level: usize) -> String {
 
 /// タイル1枚分・1レベル(1以上)のファイル(全チャンクのレコードを連結したもの)を、
 /// `terrain.base_url`から取得する。サイズが期待と違えばエラー。
+///
+/// 返すのはチャンク番号順に連結したままの`i16`の並びで、チャンクごとに切り分けて登録するのは
+/// `TerrainData::insert_tile_level`。小さいレベル(`loader::WHOLE_FILE_MAX_LEVEL`以下)で使い、
+/// 1回のリクエストでタイルの全チャンクをまとめて得る(リクエスト数を減らすため)。
 pub async fn fetch_tile_level(
     terrain: &TerrainData,
     key: TileKey,
@@ -240,6 +277,11 @@ pub async fn fetch_tile_level(
 }
 
 /// チャンク1個分のグリッドを、タイルファイルからHTTP Rangeで取得する。
+///
+/// タイルファイルは固定サイズのレコード(チャンク1個分のグリッド)をチャンク番号順に並べたものなので、
+/// `chunk`番目のレコードの位置は計算だけで決まる(索引は要らない。DETAILED_DESIGN.md 9.1節)。
+/// 細かいレベル(`loader::WHOLE_FILE_MAX_LEVEL`より上)はタイルファイル全体が大きいので、
+/// 画面に必要なチャンクだけをこの関数で取る。
 pub async fn fetch_chunk_grid(
     terrain: &TerrainData,
     key: TileKey,
@@ -247,6 +289,7 @@ pub async fn fetch_chunk_grid(
     chunk: usize,
 ) -> Result<Vec<i16>, String> {
     let url = tile_level_url(&terrain.base_url, key, level);
+    // レコード1個 = (n+1)²ノード × 2バイト(n = このレベルのチャンク1辺のセル数)。
     let record_bytes = grid_len(terrain.chunk_cells(level)) * 2;
     let start = chunk * record_bytes;
     let bytes = fetch_binary(&url, Some((start, start + record_bytes - 1))).await?;
