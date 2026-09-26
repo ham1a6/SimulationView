@@ -1851,6 +1851,27 @@ C++/Rust全ソースを通読し、`cargo check`(警告ゼロ化)・CMakeビル�
 - **次の候補**: 遅い回線では、レベル1の390ファイル(約25.8MB)の取得が下限になる。全タイルのレベル1を`base.bin`のように1ファイルへまとめる
   (ファイル契約の変更)、メッシュ生成のWeb Worker化(ネイティブのプロファイルでは`node_normals`が生成時間の約半分)
 
+### 地表貼り付けの作図(図形)を表示中に覆域を表示すると固まる問題の修正
+
+- **要望**: 「図形を表示した状態で覆域を表示させようとすると重くて使い物にならない」
+- **原因**: 地表貼り付けの図形(`Altitude::AboveGround`)は、表示中の地形の三角形を切り抜いて重ねる
+  (`drawing_geometry::drape`。地形メッシュの三角形を`clip_triangle`で切り抜くのでそこそこ重い)。
+  この再構築(`overlay::rebuild_drawings`)を、地形のLOD更新(`lod_driver::update_lod`)の
+  1ラウンドごとに**同期で**呼んでいた。`update_lod`は、画面が固まらないよう時間(`UPLOAD_TIME_BUDGET_MS`=12ms)や
+  頂点数で区切った複数ラウンドに分けて進む設計(9.7節)なのに、そのラウンドごとに時間の掛かる
+  `rebuild_drawings`を挟むと、この予算をまるごと無視して固まる。観測点・覆域を表示して操作すると
+  地形のLODが小刻みに何度も切り替わるため、地表貼り付けの図形が1つでもあると顕著に重くなった
+  (覆域自体は以前(「覆域表示時の操作の重さの改善」)にキャッシュ・デバウンス・小分け計算で解決済みだったが、
+  同じ問題が後から足された作図のdrape機能には適用されていなかった)
+- **変更**: `ui/terrain_view/overlay.rs`に`schedule_drawings_rebuild`を追加し、地形LOD変化にともなう
+  地表貼り付けの再構築を300ms(`DRAWING_TERRAIN_DEBOUNCE_MS`)デバウンスするようにした
+  (`lod_driver::LodState::drawings_rebuild_pending`で二重予約を防ぐ、覆域の`TERRAIN_DEBOUNCE_MS`と同じ考え方)。
+  一覧の変更・原点変更・canvasのリサイズは従来どおり即座に再構築する(重くなるのは地形LOD切替のときだけ)
+- **確認**: `cargo test -p sim3dview`166件・`cargo check --target wasm32-unknown-unknown`が通ることを確認した
+  (Browserペインでの実機確認はしていない。次回、地表貼り付けの図形+観測点の覆域を同時に出してカメラ操作の
+  滑らかさを確認するとよい)
+- **ドキュメント**: `docs/DETAILED_DESIGN.md`6.11節・9.11節を更新
+
 ### Edgeのセキュリティ強化(JITなし)を検知して案内する
 
 - **要望**: 「EdgeでURLを開いたときだけ重い(地図や観測範囲の更新も遅い)。Electronでは問題ない」→原因調査のうえ、

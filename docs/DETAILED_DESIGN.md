@@ -670,7 +670,11 @@ flowchart LR
 1つ目のMSAAカラーを`Load`で引き継ぎ、深度だけ`Clear`し直して地形と隠し合わないようにする(`View`は`Camera::projection_matrix`=ビュー行列なしの射影、`Screen`はピクセル→クリップの行列で深度テストなし)。
 パイプラインは不透明(深度書き込みあり)・半透明(なし)・画面(深度テストなし)の3本で、シェーダー・bind groupは地形とは別。詳細は9.9節。
 
-**再構築のタイミング**(`ui/terrain_view/overlay.rs::rebuild_drawings`): 一覧の変更・原点変更・canvasのリサイズ(`Screen`の角の位置が変わる)、および地表基準の図形があるときの地形LOD切替。
+**再構築のタイミング**(`ui/terrain_view/overlay.rs::rebuild_drawings`): 一覧の変更・原点変更・canvasのリサイズ(`Screen`の角の位置が変わる)は即座に作り直す。
+地表基準の図形があるときの地形LOD切替だけは別で、地表貼り付けの再構築(地形三角形の切り抜き、9.11節)は重く、
+LOD更新(`lod_driver::update_lod`)は時間で区切った複数ラウンドに分けて進むため、ラウンドごとに同期で呼ぶと
+その時間予算を無視して固まる(覆域(6.9節)と同じ問題)。そこで`overlay::schedule_drawings_rebuild`で
+300ms(`DRAWING_TERRAIN_DEBOUNCE_MS`)デバウンスし、LODが落ち着いてから1回だけ作り直す。
 
 **図形の対話作成**(`terrain/draw_tool.rs` / `ui/drawing_editor.rs`。仕様は9.11節、9.14節)
 
@@ -1306,7 +1310,8 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
   `lon2 = lon1 + atan2(sin bearing sin δ cos lat1, cos δ - sin lat1 sin lat2)`)、`to_local`はその逆(haversine+方位)、`from_local(lat,lon,[東,北],radius)`は`destination`を方位`atan2(東,北)`・距離`hypot`で呼ぶ
 - **2D図形**: 置いた位置を中心とするローカル平面(x=右/東, y=上/北)で三角形`fill`と輪郭`outlines`を作り、`Frame2d`で出力座標へ写す(`World`は`destination`で緯度経度へ→`Altitude`から高さ(`DRAWING_M`込み)→`EnuTransform`)。
   **表示地形がある地表貼り付け**: `drawing_geometry::drape`で輪郭の緯度経度点列を`earcutr`で三角形化し、各三角形の外接矩形に重なる地形セルだけを列挙する。輪郭の形状近似は2km以下(既存の辺数上限あり)、塗りと輪郭は同じ境界点を使う。`visit_surface_triangles`は現在のチャンクLODを使い、未取得ならレベル0、存在しないタイル・欠損三角形なら標高0mの面を返す。陸地の3ノードと南東―北西の対角線は地形描画と一致させ、スカートは除外する。
-  地形三角形を図形三角形の3半平面でクリップし、残った凸多角形を扇状に三角形化する。交点の緯度経度の重心座標で、地形描画と同じf32のENU頂点を補間する。ENU上方向へ対地高度+`DRAWING_M`を加える。頂点間も同じ地形平面上となるため山頂を飛び越えない。輪郭線も地形三角形との交差区間ごとに分割し、共有辺の同一区間は二重描画しない。LOD変更時は従来通り再生成する。最終の面を固定頂点数で粗く戻さず、出力の大きさは図形範囲内の表示地形LODに従う。
+  地形三角形を図形三角形の3半平面でクリップし、残った凸多角形を扇状に三角形化する。交点の緯度経度の重心座標で、地形描画と同じf32のENU頂点を補間する。ENU上方向へ対地高度+`DRAWING_M`を加える。頂点間も同じ地形平面上となるため山頂を飛び越えない。輪郭線も地形三角形との交差区間ごとに分割し、共有辺の同一区間は二重描画しない。最終の面を固定頂点数で粗く戻さず、出力の大きさは図形範囲内の表示地形LODに従う。
+  **LOD変更時の再生成は300msデバウンスする**(`overlay::schedule_drawings_rebuild`、6.11節)。地形三角形の切り抜きは重く、LOD更新(9.7節)は複数ラウンドに分けて時間で区切って進むため、ラウンドごとに同期で呼ぶとその予算を無視して固まる(覆域(9.10節)と同じ問題)。
   **地形グリッドを渡さない場合の補間経路と海抜指定**: 分割の細かさ: 海抜の水平面は`fill 20km・arc 2km`、地表貼り付けは`fill 20m・arc 20m`、`View/Screen`は分割しない。定数`MAX_FILL_TRIANGLES=50_000`、`MIN/MAX_CIRCLE_SEGMENTS=48/720`、`MAX_GRID_CELLS=512`、`MAX_EDGE_PARTS=2000`、`MAX_REFINED_VERTICES=300_000`。
   `effective_fill_step(area, fill) = max(fill, sqrt(2·area/MAX_FILL_TRIANGLES))`。円・扇形はリング分割(`arc = min(steps.arc, radius·0.09)`)、矩形は格子(セルは`[a,b,c, a,c,d]`)、
   多角形は`earcutr`で三角形分割(反時計回りに揃える。凹・共線も可)→最長辺が上限を超える三角形を辺の中点で4分割することを繰り返す(`MAX_REFINED_VERTICES`まで)。輪郭は円・扇形の直線辺も含め`densify`。面積・頂点数の上限に達する広域図形では分割が粗くなるため、地形追従は近似となる

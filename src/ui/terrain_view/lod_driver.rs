@@ -456,13 +456,14 @@ fn after_terrain_changed(
     if has_markers {
         rebuild_markers_for_terrain(state);
     }
-    // 地表に貼り付けた作図も、地形の高さが変わったので作り直す。
+    // 地表に貼り付けた作図も、地形の高さが変わったので作り直す。地表貼り付けの作図は地形の三角形を
+    // 切り抜いて重ねる(重い)ので、LODが落ち着くまで待ってから1回だけ作り直す(`schedule_drawings_rebuild`)。
     let follows_terrain = state.borrow().drawings.items.with_untracked(|list| {
         list.iter()
             .any(|d| d.visible && d.shape.depends_on_terrain())
     });
     if follows_terrain {
-        rebuild_drawings(state);
+        schedule_drawings_rebuild(state);
     }
     // 航跡(地表基準のトラック・高度線)も地形の高さが変わったので作り直す。
     if !state

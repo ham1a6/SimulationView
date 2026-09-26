@@ -111,6 +111,30 @@ pub(super) fn rebuild_drawings(state: &Rc<RefCell<ViewState>>) {
     renderer.update_drawings(&batches);
 }
 
+/// 地形のLOD切り替えが落ち着いてから、地表貼り付けの作図を1回だけ作り直す(300ms、覆域と同じ考え方)。
+///
+/// 地表貼り付けの図形は、表示中の地形の三角形を切り抜いて重ねる(`drawing_geometry::drape`)ため、
+/// 地形のLOD更新(`lod_driver::update_lod`)の1ラウンドごとに同期で呼ぶと、時間で区切ってあるはずの
+/// メッシュ生成の予算(`UPLOAD_TIME_BUDGET_MS`)を無視して固まる。覆域(`coverage.rs`)がすでに解決した
+/// 「LODの小刻みな変化のたびに重い処理をやり直す」問題と同じなので、同じデバウンスで対処する。
+const DRAWING_TERRAIN_DEBOUNCE_MS: u32 = 300;
+pub(super) fn schedule_drawings_rebuild(state: &Rc<RefCell<ViewState>>) {
+    {
+        let mut s = state.borrow_mut();
+        if s.lod.drawings_rebuild_pending {
+            return;
+        }
+        s.lod.drawings_rebuild_pending = true;
+    }
+    let state = state.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        gloo_timers::future::TimeoutFuture::new(DRAWING_TERRAIN_DEBOUNCE_MS).await;
+        state.borrow_mut().lod.drawings_rebuild_pending = false;
+        rebuild_drawings(&state);
+        super::frame::render_frame(&state);
+    });
+}
+
 /// 航跡(`terrain::tracks`)の一覧・表示設定から、シンボル・航跡・高度線の頂点列とラベルを作り直して反映する。
 /// トラックの受信・表示設定の変更・原点変更・地形のLOD切り替え・2D/3D切り替えのときに呼ぶ。
 /// 描画自体は呼び出し側で`render_frame`(または`render_now`)すること。

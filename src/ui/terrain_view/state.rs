@@ -38,6 +38,8 @@ pub(super) struct LodState {
     pub(super) update_pending: bool,
     /// `schedule_lod_soon`(すぐの続き)の予約が済んでいるか。
     pub(super) update_soon_pending: bool,
+    /// 地表貼り付けの作図の再構築(`overlay::schedule_drawings_rebuild`)が予約済みか。
+    pub(super) drawings_rebuild_pending: bool,
 }
 
 impl LodState {
