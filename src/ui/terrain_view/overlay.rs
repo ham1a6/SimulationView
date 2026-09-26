@@ -38,6 +38,7 @@ fn rebuild_marker_pins(state: &Rc<RefCell<ViewState>>) {
     let (Some(terrain), Some(mesh_origin)) = (s.terrain.clone(), s.mesh_origin) else {
         return;
     };
+    // `renderer`を可変で借りる前に、必要なもの(Copyなcontext)を取り出しておく。
     let radar_markers = s.radar_markers;
     let Some(renderer) = s.renderer.as_mut() else {
         return;
@@ -55,8 +56,11 @@ fn rebuild_marker_pins(state: &Rc<RefCell<ViewState>>) {
 /// 作図・航跡のジオメトリ生成(`drawing_geometry::BuildContext`)の入力。`BuildContext`は変換と地表の高さの
 /// 関数を借りるので、それらの持ち主をここに置き、`with_context`の間だけ`BuildContext`を作る。
 struct GeometryInputs {
+    /// 地形データ(地表の高さを引く)。
     terrain: Rc<TerrainData>,
+    /// いまGPUにあるメッシュの原点のENU変換。
     transform: EnuTransform,
+    /// canvasの内部解像度(幅, 高さ。ピクセル)。画面座標の作図・線の太さに使う。
     viewport_px: (f32, f32),
 }
 
@@ -72,6 +76,7 @@ impl GeometryInputs {
         })
     }
 
+    /// `BuildContext`を作って`f`に渡し、その結果を返す。
     fn with_context<R>(&self, f: impl FnOnce(&drawing_geometry::BuildContext) -> R) -> R {
         // 描画中の三角形に高さを合わせる。範囲外・海は標高0m。
         let ground =
@@ -119,6 +124,7 @@ pub(super) fn rebuild_tracks(state: &Rc<RefCell<ViewState>>) {
     let layer = label_layer(&s);
     // 3Dモデルで描いているトラックは、シンボルを描かない(`terrain::models`)。
     let symbols_hidden = s.models.shown.clone();
+    // シンボル・航跡・高度線の頂点列と、3Dモデルの配置候補を同じ入力から作る。
     let (geometry, placements) = {
         let Some(renderer) = s.renderer.as_mut() else {
             return;
@@ -142,6 +148,7 @@ pub(super) fn rebuild_tracks(state: &Rc<RefCell<ViewState>>) {
         renderer.update_tracks(&geometry.vertices);
         (geometry, placements)
     };
+    // 3Dモデルの配置・クリックの当たり判定・ラベルは、描画のたびに使うので状態に持たせる。
     s.models.placements = placements;
     s.pick_anchors = geometry.labels.iter().map(|l| (l.id, l.position)).collect();
     let labels = if tracks_state.show_labels.get_untracked() {

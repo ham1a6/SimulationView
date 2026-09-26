@@ -14,6 +14,7 @@ const ORBIT_SENSITIVITY: f32 = 0.0075;
 /// ドラッグ量(`dx`, `dy`、CSSピクセル)をカメラへ反映する。3Dは回転(`shift`なら注視点の平行移動)、
 /// 2Dは平行移動。シミュレーション原点(`OriginState`)には触れない。
 pub(super) fn apply_drag(s: &mut ViewState, dx: f32, dy: f32, shift: bool) {
+    // 平行移動量をピクセル→メートルに換算するための、canvasの内部解像度の縦幅。
     let canvas_h = s.canvas_height_px() as f32;
     match s.camera.mode {
         ViewMode::ThreeD if shift => {
@@ -52,6 +53,7 @@ pub(super) fn handle_draw_key(tool: DrawToolState, ev: &web_sys::KeyboardEvent) 
     if tool.tool.get_untracked().is_none() {
         return;
     }
+    // リスナーはwindowに付けているので、フォームの入力欄でのキー入力(文字の削除など)は横取りしない。
     let in_form = ev
         .target()
         .and_then(|t| t.dyn_into::<web_sys::Element>().ok())
@@ -63,6 +65,7 @@ pub(super) fn handle_draw_key(tool: DrawToolState, ev: &web_sys::KeyboardEvent) 
         "Escape" => tool.cancel(),
         "Enter" => tool.finish(),
         "Backspace" => {
+            // ブラウザ既定の動作(ブラウザによっては「戻る」)を止める。
             ev.prevent_default();
             tool.undo();
         }

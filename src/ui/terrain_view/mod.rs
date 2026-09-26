@@ -12,18 +12,31 @@
 //! 右クリック/Backspaceで1つ戻す、Escで終了)。
 //! 地図の右クリックは、`MapMenuState`(と`ui::context_menu::ContextMenuState`)が提供されていれば、
 //! アプリが決めた項目の右クリックメニューを出す(提供されていなければ、その地点にレーダー観測点を追加する)。
+/// スクリーンショット・画面録画(canvasの保存)。
 mod capture;
+/// 観測点の覆域(3Dドーム・2D領域)の計算とキャッシュ。
 mod coverage;
+/// レンダラーの初期化・原点変更・1フレームの描画。
 mod frame;
+/// 再描画要求を画面更新ごとに1つへまとめる印。
 mod frame_request;
+/// ドラッグによるカメラ操作と、作図中のキー操作。
 mod input;
+/// 航跡ラベル(canvasに重ねるHTML要素)の配置。
 mod labels;
+/// 初期化の状態と、読み込み中・失敗の表示。
 mod loading;
+/// 地形のLODの更新(グリッドの取得・メッシュの差し替え)。
 mod lod_driver;
+/// 航跡を3Dモデルで描くかどうかの判定と配置。
 mod models;
+/// 観測点・作図・航跡の描画データの作り直し。
 mod overlay;
+/// 画面上の位置から地点・航跡を当てる(クリック・右クリック)。
 mod picking;
+/// canvasの大きさの監視(ResizeObserver)。
 mod resize;
+/// `TerrainView`の状態(`ViewState`)。
 mod state;
 
 use std::cell::RefCell;
@@ -48,8 +61,15 @@ use crate::terrain::tracks::TracksState;
 use crate::ui::context_menu::{ContextMenuState, MapMenuState, MapMenuTarget};
 use crate::ui::util::client_xy;
 
+/// 作図中のカーソル移動を1フレームに1回へまとめるための、次のフレームで反映する予定の
+/// カーソル位置(canvasと、client座標)。予約済みならSome。
 type PendingHover = Rc<RefCell<Option<(web_sys::HtmlCanvasElement, (f64, f64))>>>;
 
+/// 地形と、観測点・作図・航跡・3Dモデルを描くcanvasのコンポーネント(使い方はモジュールの説明を参照)。
+/// `preset`はカメラの初期の向き・距離([`CameraPreset`])。
+///
+/// 状態は`ViewState`1つにまとめて`Rc<RefCell<..>>`で持ち、各contextの変化はEffect(下の
+/// Effect 1〜9)で、ポインタ・ホイール・キーの入力はイベントハンドラーで受けて描画を予約する。
 #[component]
 pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     let canvas_ref: NodeRef<leptos::html::Canvas> = NodeRef::new();
@@ -294,6 +314,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
     }
 
     // --- 自由視点カメラの操作(ドラッグ回転・ホイールズーム) ---
+    // 押した時点でドラッグの追跡を始め、ポインタをcanvasに捕まえる(canvasの外へ出ても
+    // pointermove/pointerupを受け取り続けるため)。
     let state_pd = state.clone();
     let on_pointer_down = move |ev: leptos::ev::PointerEvent| {
         let (x, y) = client_xy(&ev);
@@ -335,6 +357,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
                 }
             }
         }
+        // ドラッグ中なら、前回からの移動量でカメラを動かす(モードとShiftに応じて回転・平行移動。
+        // `input::apply_drag`)。
         let should_render = {
             let mut s = state_pm.borrow_mut();
             match s.drag.update(ev.pointer_id(), pos.0, pos.1) {
@@ -371,6 +395,7 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
         if ev.button() != 0 {
             return;
         }
+        // 押してから離すまでに`CLICK_MAX_MOVE_PX`以上動いたならドラッグ(カメラ操作)で、クリックではない。
         if drag_end.is_none_or(|drag| drag.distance() >= CLICK_MAX_MOVE_PX) {
             return;
         }
@@ -402,6 +427,8 @@ pub fn TerrainView(preset: CameraPreset) -> impl IntoView {
 
     let state_wheel = state.clone();
     let on_wheel = move |ev: leptos::ev::WheelEvent| {
+        // ページのスクロールを止め、wheelイベント1回ごとにカメラの距離を1.12倍(下スクロール
+        // `delta_y > 0`)か1/1.12倍にする。`delta_y`の大きさは見ず、向きだけを使う。
         ev.prevent_default();
         let factor = if ev.delta_y() > 0.0 { 1.12 } else { 1.0 / 1.12 };
         state_wheel.borrow_mut().camera.zoom(factor);

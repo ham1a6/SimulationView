@@ -11,7 +11,8 @@
 //! - `MediaRecorder.start()`に`timeslice`を渡さないため、`ondataavailable`は`stop()`の
 //!   タイミングで録画全体を1つの`Blob`として1回だけ発火する(`onstop`は使わずこれだけで足りる)。
 //!   `Closure::once`はJS側から1回呼ばれた時点でRust側のメモリも自動解放されるので、
-//!   (`mod.rs`のResizeObserver用クロージャと違い)`forget()`してもリークしない。
+//!   `forget()`してもリークしない(`resize.rs`のResizeObserver用クロージャのように何度も呼ばれるものは
+//!   `forget()`せず、後始末で解放している)。
 
 use leptos::prelude::*;
 use wasm_bindgen::closure::Closure;
@@ -36,6 +37,7 @@ pub(super) fn save_screenshot(canvas: &web_sys::HtmlCanvasElement) {
     {
         log::warn!("[capture] HTMLCanvasElement.toBlob の呼び出しに失敗しました");
     }
+    // `Closure::once`なので、toBlobのコールバックが呼ばれた時点で解放される。
     callback.forget();
 }
 
@@ -43,10 +45,12 @@ pub(super) fn save_screenshot(canvas: &web_sys::HtmlCanvasElement) {
 /// 非同期にWebMとしてダウンロードが始まる(このハンドル自体をdropしても録画は止まらない。
 /// 必ず`stop()`を呼ぶこと)。
 pub(super) struct Recording {
+    /// 録画中の`MediaRecorder`。
     recorder: web_sys::MediaRecorder,
 }
 
 impl Recording {
+    /// 録画を止める(録画データは`ondataavailable`で非同期にダウンロードされる)。
     pub(super) fn stop(&self) {
         let _ = self.recorder.stop();
     }
@@ -147,6 +151,7 @@ fn trigger_download(blob: &web_sys::Blob, filename: &str) {
         body.remove_child(&anchor).ok()?;
         Some(())
     })();
+    // `click()`でダウンロードが始まればURLは不要なので、すぐ解放する。
     let _ = web_sys::Url::revoke_object_url(&url);
 }
 

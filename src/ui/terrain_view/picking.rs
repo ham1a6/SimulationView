@@ -16,6 +16,8 @@ pub(super) fn pick_at_client(
     canvas: &web_sys::HtmlCanvasElement,
     (client_x, client_y): (f64, f64),
 ) -> Option<(f64, f64)> {
+    // client座標をcanvasの左上基準のCSSピクセルへ(canvasの大きさはCSSピクセルに合わせてある:
+    // `resize::observe_canvas_size`)。
     let rect = canvas.get_bounding_client_rect();
     let x = client_x as f32 - rect.left() as f32;
     let y = client_y as f32 - rect.top() as f32;

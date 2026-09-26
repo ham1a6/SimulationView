@@ -43,14 +43,18 @@ const AZIMUTHS_PER_STEP: usize = 4;
 
 /// 覆域の計算結果。
 enum CoverageData {
+    /// 3D: 半球ドームの仰角ごとのリング。
     Dome(Vec<DomeRing>),
+    /// 2D: 覆域高度での、方位ごとの探知可能な範囲の端。
     Area(Vec<LosPoint>),
 }
 
 /// 覆域の計算結果が使い回せる条件。原点(メッシュ)は含まない(結果は観測点を中心とした値なので)。
 #[derive(Clone, PartialEq)]
 struct CoverageKey {
+    /// 観測点(位置・高さ・最大観測範囲などすべて)。
     marker: RadarMarker,
+    /// 3D(ドーム)か2D(領域)か。
     mode: ViewMode,
     /// 2Dの覆域高度(`f64::to_bits`)。3Dは0。
     altitude_bits: u64,
@@ -67,28 +71,38 @@ impl CoverageKey {
     }
 }
 
+/// 観測点1つぶんの、最後に計算し終えた覆域。
 struct CoverageCache {
+    /// 計算したときの条件。
     key: CoverageKey,
+    /// 計算結果(ジオメトリ作成に渡すため`Rc`で共有する)。
     data: Rc<CoverageData>,
 }
 
 /// 計算結果から作った頂点(観測点の色つき)。
 enum Geometry {
+    /// 3Dのドーム(地形と同じ頂点形式・パイプラインで描く)。
     Dome(Vec<TerrainVertex>),
+    /// 2Dの領域(塗り+輪郭線。作図と同じ頂点形式)。
     Area(Vec<DrawVertex>),
 }
 
 /// 作ったジオメトリと、その元(計算結果のキーと、頂点を作ったメッシュ原点)。
 struct BuiltGeometry {
+    /// 元にした計算結果のキー。
     key: CoverageKey,
+    /// 頂点のENU座標の基準にしたメッシュ原点(原点が変われば作り直す)。
     origin: Origin,
+    /// 作った頂点。
     geometry: Geometry,
 }
 
 /// 観測点1つぶんの覆域の状態。
 #[derive(Default)]
 struct MarkerCoverage {
+    /// 最後に計算し終えた覆域。
     cache: Option<CoverageCache>,
+    /// いま表示に使う頂点(計算中でも、地形だけが変わったなら前のものを残す)。
     built: Option<BuiltGeometry>,
     /// 計算中(待ち時間を含む)のキー。
     pending: Option<CoverageKey>,
@@ -99,6 +113,7 @@ struct MarkerCoverage {
 /// `ViewState`が持つ覆域の状態。
 #[derive(Default)]
 pub(super) struct CoverageState {
+    /// 観測点(ID)ごとの状態。
     markers: HashMap<u64, MarkerCoverage>,
     /// 表示する観測点(表示の順)。
     visible: Vec<u64>,
@@ -113,6 +128,8 @@ fn terrain_signature(
     resident: &HashMap<TileKey, TileLayout>,
     marker: &RadarMarker,
 ) -> u64 {
+    // 最大観測範囲を囲む緯度経度の矩形(緯度1度≈111km。経度方向は緯度のcosで広げ、極付近で
+    // 発散しないようcosに下限を置く)。
     let lat_span = marker.max_range_m / 111_000.0;
     let lon_span = lat_span / marker.lat_deg.to_radians().cos().max(0.05);
     let (lat0, lat1) = (marker.lat_deg - lat_span, marker.lat_deg + lat_span);
@@ -120,6 +137,8 @@ fn terrain_signature(
     let k = terrain.chunks_per_tile();
     let step = 1.0 / k as f64;
 
+    // 矩形に掛かるタイルごとに、チャンク表示なら重なるチャンクのレベルを、全体表示・未読み込みなら
+    // それぞれを表す印をハッシュに入れる。
     let mut hasher = DefaultHasher::new();
     for tile_lat in lat0.floor() as i32..=lat1.floor() as i32 {
         for tile_lon in lon0.floor() as i32..=lon1.floor() as i32 {
@@ -198,6 +217,7 @@ fn sync_gpu(s: &mut ViewState) {
             parts.push((*id, built.key.clone(), built.origin));
         }
     }
+    // 載せる内容(観測点・キー・原点の並び)が前回と同じなら、頂点をつなぎ直すまでもない。
     if parts == s.coverage.uploaded {
         return;
     }
@@ -247,6 +267,7 @@ pub(super) fn refresh_coverage(state: &Rc<RefCell<ViewState>>, terrain_changed: 
             .copied()
             .collect()
     };
+    // 3Dのドームは高度に依存しないので、キーの高度は0に固定する(2D用の高度を変えても計算し直さない)。
     let altitude_m = match mode {
         ViewMode::ThreeD => 0.0,
         ViewMode::TwoD => radar_markers.coverage_altitude_m.get_untracked(),
@@ -331,6 +352,7 @@ fn spawn_job(
         if terrain_changed {
             gloo_timers::future::TimeoutFuture::new(TERRAIN_DEBOUNCE_MS).await;
         }
+        // 自分の世代でなくなった(新しい要求・取り消し)か、観測点が削除されたら、計算を止める。
         let is_stale = {
             let state = state.clone();
             move || {
@@ -366,6 +388,7 @@ fn spawn_job(
                 finished.then(|| CoverageData::Area(computation.finish()))
             }
         };
+        // 途中で止められたら(`run_in_slices`がfalse)、結果は捨てる。
         let Some(data) = data else {
             return;
         };
@@ -376,6 +399,7 @@ fn spawn_job(
             let Some(entry) = s.coverage.markers.get_mut(&id) else {
                 return;
             };
+            // 最後の一区切りのあいだに新しい要求が来ていたら、この結果は古い。
             if entry.generation != generation {
                 return;
             }

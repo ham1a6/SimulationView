@@ -45,6 +45,7 @@ const MAX_FETCH_RETRIES: u8 = 3;
 /// 再接続と同じ考え方)、`RETRY_BACKOFF_MAX_MS`で頭打ちにする。裏で進む地形取得の再試行なので、
 /// WebSocket再接続(最大30秒)より短めにしてある。
 const RETRY_BACKOFF_INITIAL_MS: u32 = 500;
+/// 再試行までの待ち時間の上限(ミリ秒)。`RETRY_BACKOFF_INITIAL_MS`参照。
 const RETRY_BACKOFF_MAX_MS: u32 = 4000;
 
 /// `attempt`回目(1始まり)の失敗の後、次の再試行まで待つ時間(ミリ秒)。倍々に伸ばし、
@@ -90,7 +91,9 @@ fn schedule(
 
 /// 1回のLOD更新の進み具合。
 struct Round {
+    /// この更新を始めた時刻(`js_sys::Date::now()`、ミリ秒)。`UPLOAD_TIME_BUDGET_MS`の起点。
     start_ms: f64,
+    /// この更新でGPUへ上げたメッシュの頂点数の合計(`MAX_UPLOAD_VERTICES_PER_ROUND`と比べる)。
     uploaded_vertices: usize,
     /// 地形のメッシュを1つ以上差し替えたか。
     changed: bool,
@@ -103,6 +106,7 @@ struct Round {
 }
 
 impl Round {
+    /// いまの時刻を起点に、何もしていない状態から始める。
     fn new() -> Self {
         Self {
             start_ms: js_sys::Date::now(),
@@ -133,6 +137,8 @@ impl Round {
         level: usize,
         chunk: usize,
     ) {
+        // 小さいレベルはタイル1枚分のファイルをまるごと取るので、チャンクを区別しない
+        // (同じファイルをチャンクの数だけ重ねて取りに行かないため)。
         let fetch_key: FetchKey = if level <= loader::WHOLE_FILE_MAX_LEVEL {
             (key, level, None)
         } else {
@@ -186,6 +192,8 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
         (terrain, origin, transform, plan)
     };
 
+    // 計画をタイルごとに適用する。`state`の借用はメッシュ生成(重い)をまたがないよう、
+    // 読み書きのたびに短く取り直す。
     let mut round = Round::new();
     for (key, tile_plan) in plan {
         let Some(tile) = terrain.tile(key) else {
@@ -200,6 +208,7 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
             .map(<[u8]>::to_vec);
         match tile_plan {
             TileLayout::Whole => {
+                // いまチャンク表示なら全体1枚へ戻す(もともと全体表示なら何もしない)。
                 if current.is_some() {
                     show_whole_tile(&mut round, state, &terrain, tile, &transform);
                 }
@@ -212,6 +221,7 @@ pub(super) fn update_lod(state: &Rc<RefCell<ViewState>>) {
         }
     }
 
+    // 取得は借用を手放したあとでまとめて始める(`spawn_fetch`の中で`state`を借用するため)。
     for fetch_key in round.to_fetch {
         spawn_fetch(state, &terrain, fetch_key);
     }
@@ -312,6 +322,8 @@ fn update_chunks(
         let want = targets[c] as usize;
         let have = levels[c] as usize;
         let now = available[c];
+        // 取得済みの細かいグリッドが無ければ据え置き。目標が今より粗いなら取得済みの最細
+        // (目標以下)まで下げ、そうでなければ今より粗くはしない。
         let new_level = if now == 0 {
             have
         } else if want < have {
@@ -363,6 +375,8 @@ fn spawn_fetch(state: &Rc<RefCell<ViewState>>, terrain: &Rc<TerrainData>, fetch_
                 .await
                 .map(|grid| terrain.insert_chunk_grid(key, level, c, grid)),
         };
+        // 取得中の印を外し、結果に応じて再試行の状態を更新する(成功なら消す・失敗なら数えて
+        // 待ち時間を決める・上限を超えたら諦める)。
         let retry_backoff_ms = {
             let lod = &mut state.borrow_mut().lod;
             lod.loading.remove(&fetch_key);
@@ -418,6 +432,8 @@ fn after_terrain_changed(
         s.target_up = heightmap::sample_heightmap(terrain, origin.lat_deg, origin.lon_deg);
         let (tx, ty) = (s.camera.target.x as f64, s.camera.target.y as f64);
         s.camera.target.z = heightmap::ground_at_enu(terrain, transform, tx, ty).2;
+        // いま表示に使っている(チャンクごとのレベルと一致する)グリッドは残し、それ以外を
+        // 上限を超えたぶんだけ解放する。
         let chunks = terrain.chunk_count();
         let resident = &s.lod.resident;
         terrain.evict_unused(
@@ -430,6 +446,7 @@ fn after_terrain_changed(
             DETAIL_CACHE_LIMIT_BYTES,
         );
     }
+    // 観測点(地表に立てたマーカー・覆域)も地形の高さに合わせて作り直す。
     let has_markers = !state
         .borrow()
         .radar_markers

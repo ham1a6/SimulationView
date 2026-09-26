@@ -10,6 +10,7 @@ pub(super) fn observe_canvas_size(
     canvas: &web_sys::HtmlCanvasElement,
     apply_size: impl Fn(u32, u32) + Clone + 'static,
 ) {
+    // `apply_size`はResizeObserverとvisibilitychangeの2つのコールバックで使うので複製しておく。
     let apply_size_for_resize = apply_size.clone();
     let closure = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
         let Some(entry) = entries
@@ -19,6 +20,7 @@ pub(super) fn observe_canvas_size(
         else {
             return;
         };
+        // 監視しているのはcanvas1つなので、先頭のエントリーだけ見ればよい。
         let rect = entry.content_rect();
         let width = rect.width().round().max(0.0) as u32;
         let height = rect.height().round().max(0.0) as u32;

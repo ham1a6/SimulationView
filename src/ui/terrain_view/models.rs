@@ -16,7 +16,7 @@ use crate::terrain::models::placement::{
 use crate::terrain::models::{import_glb, ModelDisplayMode, ModelsState};
 use crate::terrain::tracks::TrackId;
 
-/// モデルファイル1つの取得状況。
+/// モデルファイル1つの取得状況(`Loading`は取得・解析の途中)。
 enum ModelLoad {
     Loading,
     /// 読み込んでGPUへ登録済み。`radius_m`はモデルの実寸の半径(`source.scale`を掛ける前)。
@@ -29,6 +29,7 @@ enum ModelLoad {
 
 /// `ViewState`が持つ、3Dモデルの状態。
 pub(super) struct ModelsView {
+    /// 表示方式・切り替え距離・モデルの登録(context。アプリ側が変える)。
     pub(super) state: ModelsState,
     /// URLごとの取得状況。
     loads: HashMap<String, ModelLoad>,
@@ -39,6 +40,7 @@ pub(super) struct ModelsView {
 }
 
 impl ModelsView {
+    /// 何も取得・配置していない状態で作る。
     pub(super) fn new(state: ModelsState) -> Self {
         Self {
             state,
@@ -96,6 +98,8 @@ pub(super) fn update_models(state: &Rc<RefCell<ViewState>>) {
             }
         }
 
+        // カメラからの距離・画面上の大きさで、モデルで描くトラックを決める(読み込み済みのモデルだけ)。
+        // いまの`shown`を渡すのは、境目で表示が行ったり来たりしないようにするため(`plan_models`)。
         let camera = s.camera.to_camera(renderer.aspect_ratio());
         let metrics = ViewMetrics::new(&camera, renderer.canvas_size_px().1 as f32);
         let loads = &s.models.loads;
@@ -150,6 +154,7 @@ async fn load_model(state: Rc<RefCell<ViewState>>, url: String) {
                 log::warn!("[models] {url}を読み込めません(シンボルで描きます): {e}");
                 ModelLoad::Failed
             }
+            // レンダラーが無い(通常は起きない)ときは登録できないので、失敗扱いにする。
             (Ok(_), None) => ModelLoad::Failed,
         };
         s.models.loads.insert(url, load);

@@ -9,7 +9,9 @@ use crate::terrain::store::TerrainStore;
 pub(super) enum InitStatus {
     /// 地形データの取得中、またはレンダラーの準備中。
     Pending,
+    /// レンダラーの初期化が終わり、地形を描いている。
     Ready,
+    /// レンダラー(wgpu)の初期化に失敗した(中身はエラーの文言)。
     Failed(String),
 }
 
@@ -27,10 +29,12 @@ pub(super) fn MapStatus(init: RwSignal<InitStatus>, store: TerrainStore) -> impl
     }
 }
 
+/// エラーの文言を、状態表示の位置に出す要素。
 fn error_text(text: String) -> AnyView {
     view! { <p class="placeholder map-status">{text}</p> }.into_any()
 }
 
+/// 地形データの読み込みのプログレスバー(割合のラベル・受信量のMB表示つき)。
 #[component]
 fn LoadingProgress(store: TerrainStore) -> impl IntoView {
     let downloaded = move || store.get().is_some();
@@ -58,6 +62,7 @@ fn LoadingProgress(store: TerrainStore) -> impl IntoView {
             _ => String::new(),
         }
     };
+    // 割合が分からない間はCSSで左右に動き続けるバー(`indeterminate`)にする。
     let indeterminate = move || percent().is_none();
     let fill_width = move || percent().map(|p| format!("{p}%"));
     view! {

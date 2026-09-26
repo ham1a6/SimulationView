@@ -21,6 +21,7 @@ pub(super) fn set_labels(
     let Some(layer) = layer else {
         return;
     };
+    // 数が変わったら要素を全部作り直す(トラックの順に並べるので、途中の追加・削除を追わない)。
     if s.labels.len() != labels.len() {
         layer.set_text_content(None);
         s.labels.clear();
@@ -62,6 +63,7 @@ pub(super) fn set_labels(
             });
         }
     }
+    // 変わったところだけDOMを書き換える(航跡は高頻度で更新されるので、同じ値の書き込みを避ける)。
     for (view, new) in s.labels.iter_mut().zip(labels) {
         if view.anchor.name != new.name {
             view.name.set_text_content(Some(&new.name));
@@ -108,6 +110,7 @@ pub(super) fn update_labels(s: &ViewState) {
         let [x, y, z] = label.anchor.position;
         let clip = view_proj * glam::Vec4::new(x, y, z, 1.0);
         let (ndc_x, ndc_y) = (clip.x / clip.w, clip.y / clip.w);
+        // ラベルはシンボルからずらして置くので、画面の縁から少し(NDCで0.1)外れた位置までは出す。
         let visible = clip.w > 0.0 && ndc_x.abs() <= 1.1 && ndc_y.abs() <= 1.1;
         let style = label.root.style();
         if visible {
@@ -124,4 +127,5 @@ pub(super) fn update_labels(s: &ViewState) {
 
 /// 航跡ラベルを、シンボルの位置からずらす量(画面のpx)。
 pub(super) const LABEL_OFFSET_X_PX: f32 = 18.0;
+/// `LABEL_OFFSET_X_PX`の縦方向(負なら上へ)。
 pub(super) const LABEL_OFFSET_Y_PX: f32 = -16.0;

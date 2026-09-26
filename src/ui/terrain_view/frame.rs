@@ -27,6 +27,7 @@ pub(super) fn try_init(
     origin_state: OriginState,
     status: RwSignal<InitStatus>,
 ) {
+    // canvasの大きさ・地形データのどちらかがまだなら、揃ったときにもう一方から呼ばれるので待つ。
     let width = canvas.width();
     let height = canvas.height();
     if width == 0 || height == 0 {
@@ -35,6 +36,7 @@ pub(super) fn try_init(
     let Some(data) = data else {
         return;
     };
+    // 初期化済み・初期化中なら何もしない(両方のイベントがほぼ同時に来ても1回だけ初期化する)。
     {
         let s = state.borrow();
         if s.renderer.is_some() || s.initializing {
@@ -227,6 +229,7 @@ pub(super) fn render_frame(state: &Rc<RefCell<ViewState>>) {
             return;
         }
     }
+    // コールバックは弱参照で状態を持つ(コンポーネントが破棄された後に走っても何もしない)。
     let weak_state = Rc::downgrade(state);
     if let Err(error) = request_animation_frame_with_handle(move || {
         if let Some(state) = weak_state.upgrade() {
@@ -257,6 +260,7 @@ pub(super) fn draw_frame(state: &Rc<RefCell<ViewState>>) {
     update_labels(s);
     // シグナル更新や次フレームの予約より先にRefCellの借用を解放する。
     drop(guard);
+    // クロスフェードの途中なら、時間を進めるために次のフレームも描く。
     if fading {
         render_frame(state);
     }

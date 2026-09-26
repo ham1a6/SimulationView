@@ -1,7 +1,10 @@
 //! 入力・通信・フェードからの再描画要求を、画面更新ごとにまとめる。
 
+/// `requestAnimationFrame`の予約が1つだけになるようにするための印。
+/// 予約したら立て、コールバックの実行が始まったら(または予約に失敗したら)下ろす。
 #[derive(Default)]
 pub(super) struct FrameRequest {
+    /// 予約済みで、まだコールバックが走っていないか。
     pending: bool,
 }
 
