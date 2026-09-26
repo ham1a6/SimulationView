@@ -1,5 +1,6 @@
 //! 全体レイアウト(AppLayout)。DETAILED_DESIGN.md 7.1節: 3カラムの横並びは崩さない。
 //! 左パネルは固定幅、メインパネル・右パネルはレスポンシブ対応 + ドラッグでサイズ変更できる。
+//! 最下部には画面幅いっぱいのログパネル(7.10節)を置く。
 
 use leptos::prelude::*;
 
@@ -16,6 +17,7 @@ use sim3dview::ui::split_pane::SplitPane;
 use sim3dview::viewer::ViewerState;
 
 use crate::components::drawing_window::{DrawingWindow, DrawingWindowState};
+use crate::components::log_panel::{LogPanel, LogState};
 use crate::components::main_panel::MainPanel;
 use crate::components::map_menu::provide_map_menu;
 use crate::components::menu_bar::MenuBar;
@@ -23,6 +25,7 @@ use crate::components::operation_panel::SimulationStatusPanel;
 use crate::components::right_panel::{BottomStatusPanel, TopStatusPanel};
 use crate::components::upload_window::{UploadWindow, UploadWindowState};
 use crate::components::vab::VabPanel;
+use crate::log_bridge::bridge_logs;
 use crate::protocol::ClientCommand;
 use crate::track_bridge::bridge_tracks;
 use crate::ws::{default_terrain_base_url, default_ws_url, WsConnection, WsHandle, WsSignals};
@@ -37,6 +40,11 @@ pub fn App() -> impl IntoView {
     let show_right_panel = RwSignal::new(true);
     let signals = WsSignals::new();
     provide_context(signals);
+    // 画面下部のログパネルの内容。`log`クレートの警告・エラーもここへ流す(main.rsのinit_logger)。
+    let log = LogState::new();
+    provide_context(log);
+    log.install_as_log_sink();
+    bridge_logs(signals, log);
     // 原点設定フローティングパネルの開閉状態(メニューバーから開く。sim3dviewライブラリの型)。
     provide_context(OriginDialogState(RwSignal::new(false)));
     // 覆域高度設定フローティングパネルの開閉状態(メニューバーから開く。sim3dviewライブラリの型)。
@@ -120,6 +128,7 @@ pub fn App() -> impl IntoView {
                     />
                 </div>
             </div>
+            <LogPanel/>
             <OriginDialog
                 on_submit=UnsyncCallback::new(move |(lat, lon)| {
                     conn.send_command(&ClientCommand::set_origin(lat, lon));

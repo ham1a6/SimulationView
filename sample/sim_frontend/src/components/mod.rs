@@ -1,5 +1,6 @@
 pub mod drawing_demo;
 pub mod drawing_window;
+pub mod log_panel;
 pub mod main_panel;
 pub mod map_menu;
 pub mod menu_bar;

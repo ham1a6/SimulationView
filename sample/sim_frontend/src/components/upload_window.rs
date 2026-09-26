@@ -11,6 +11,7 @@ const MAX_UPLOAD_BYTES: f64 = 64.0 * 1024.0 * 1024.0;
 #[component]
 pub fn UploadWindow() -> impl IntoView {
     let state = use_context::<UploadWindowState>().expect("UploadWindowState context not found");
+    let log = use_context::<crate::components::log_panel::LogState>().expect("LogState context not found");
     let selected = RwSignal::new_local(None::<web_sys::File>);
     let busy = RwSignal::new(false);
     let message = RwSignal::new(String::new());
@@ -36,10 +37,17 @@ pub fn UploadWindow() -> impl IntoView {
                     message.set("送信中…".into());
                     wasm_bindgen_futures::spawn_local(async move {
                         let result = upload_blob(&crate::ws::default_upload_url(), &file, &[]).await;
-                        message.set(match result {
-                            Ok(id) => format!("{} の送信が完了しました。保存先: {id}", file.name()),
-                            Err(error) => error,
-                        });
+                        match result {
+                            Ok(id) => {
+                                let text = format!("{} の送信が完了しました。保存先: {id}", file.name());
+                                log.info(text.clone());
+                                message.set(text);
+                            }
+                            Err(error) => {
+                                log.error(format!("{} の送信に失敗: {error}", file.name()));
+                                message.set(error);
+                            }
+                        }
                         busy.set(false);
                     });
                 }

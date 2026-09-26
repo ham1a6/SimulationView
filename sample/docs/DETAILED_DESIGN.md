@@ -477,12 +477,14 @@ graph TD
     App --> BottomStatusPanel["BottomStatusPanel<br/>TabbedPanel: [断面図]=CrossSectionView / [見通し範囲]=LosView"]
     App --> DrawingWindow["DrawingWindow<br/>(drawing_window.rs) 非モーダルFloatingPanel+DrawingEditor(7.7節)"]
     App --> ContextMenu["ContextMenu<br/>右クリックメニュー本体(項目はmap_menu.rsが決める。7.7節)"]
+    App --> LogPanel["LogPanel<br/>(log_panel.rs) 画面最下部のログ表示(7.10節)"]
 
     App -.provide_context.-> WsSignals["WsSignals<br/>(接続状態・受信データのシグナル群)"]
     App -.provide_context.-> TerrainStore["TerrainStore<br/>(地形データを全パネルで共有)"]
     App -.provide_context.-> RadarMarkersState["RadarMarkersState<br/>(観測点一覧・選択状態、全パネル共有)"]
     App -.provide_context.-> DrawToolState["DrawingState / DrawToolState<br/>(作図の一覧・図形の対話作成。6.11節)"]
     App -.provide_context.-> TracksState["TracksState<br/>(航跡の一覧・選択・表示設定。6.12節)"]
+    App -.provide_context.-> LogState["LogState<br/>(ログの一覧。log_bridge.rsとlogクレートのロガーが追記)"]
     App -.provide_context.-> MenuStates["ContextMenuState / MapMenuState<br/>(右クリックメニューの状態と、地図の項目を作る関数)"]
     App -.propとして渡す.-> WsConnection["WsConnection<br/>(Rc<RefCell<...>>、Send/Sync境界回避のためcontext不使用)"]
 
@@ -572,12 +574,17 @@ stateDiagram-v2
 ├───────────────────────┤     メインパネル     ├───────────────────┤
 │ VABパネル(下)            │    (3D地形)        │ ボトムステータスパネル │
 │                         │                   │ [断面図][見通し範囲]  │
-└───────────────────────┴───────────────────┴───────────────────┘
+├───────────────────────┴───────────────────┴───────────────────┤
+│ 12:34:56 情報 サーバー: 接続済み                  [自動スクロール] │
+│ 12:34:57 情報 シミュレーション実行中               [クリア]        │
+│ 12:35:02 エラー [set_origin] シミュレーション実行中は…  ← ログパネル  │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 画面最上部にメニューバー(`components/menu_bar.rs`)を固定高さで配置し、その下に
-既存の3カラムレイアウト(`.app-shell`)を残り高さいっぱいで敷く(`.app-root`が
-`display:flex; flex-direction:column`で両者を縦に並べる)。
+既存の3カラムレイアウト(`.app-shell`)を残り高さいっぱいで敷き、最下部に画面幅いっぱいの
+ログパネル(`components/log_panel.rs`、7.10節)を3行分の固定高さで置く(`.app-root`が
+`display:flex; flex-direction:column`で3者を縦に並べる)。
 
 パネル名は全て位置ベースの汎用名で統一している(シミュレーションステータスパネル/VABパネル/
 メインパネル/トップステータスパネル/ボトムステータスパネル)。表示内容そのものを指す旧称
@@ -786,3 +793,31 @@ GDALはConfig形式を優先し、見つからなければCMakeのFindGDALへフ
 配布生成前に地形の必須ファイルを検査し、全タイルを `resources/terrain` へコピーする。
 コピーに失敗した場合は配布生成を失敗させる。GeoTIFF入力は同梱しない。
 地形の出典表示を含む `sample/THIRD_PARTY_NOTICE.md` を配布物にコピーする。
+
+### 7.10 ログパネル
+
+画面最下部に、アプリの出来事と警告・エラーを1行ずつ表示するログパネル(`components/log_panel.rs`)を置く。
+サンプル固有の画面であり、ライブラリへは持ち込まない。
+
+- 配置: `.app-root`の直下で`.app-shell`の下。`.app-shell`が横スクロールしても画面幅いっぱいのまま動かない。
+  高さは3行分で固定し(`.log-list`の`height: calc(3 * 1.4em)`)、地図・左右パネルはその分だけ縮む。
+  上下の余白は外側の`.log-panel`に持たせる(スクロール領域の中に持たせると、最下部で4行目の端が覗くため)。
+- 1行は「時刻(`HH:MM:SS`、ローカル時刻)・レベル(情報/警告/エラー)・本文」。警告は黄、エラーは赤で表示する。
+  本文は折り返し、長い文字列でも横スクロールは出さない。
+- 保持件数は`MAX_LOG_ENTRIES`(1000件)。超えたら古いものから捨てる。「クリア」ボタンで全消去する。
+- 追記元:
+  - `log_bridge.rs`: 接続状態の変化(再接続の試行は警告。再接続のたびの「接続中...」は最初の1回だけ)、
+    `AppStatus`・`OriginState`の変化(再接続時に同じ値が再送されても重複させない)、`CommandError`(エラー)。
+  - ファイル転送ウインドウ: 送信の成功(情報)・失敗(エラー)。
+  - `log`クレート: `main.rs`で`console_log::init_with_level`の代わりに`log_panel::init_logger`を登録する。
+    このロガーは従来どおり全レベルをブラウザのコンソールへ出し、警告・エラーだけをログパネルへも流す
+    (ライブラリの警告・エラーを含む)。ログはシグナルの読み書きの途中からも呼ばれうるため、
+    パネルへの追記は`spawn_local`で現在の処理が終わってから行う。
+- 自動スクロール: 有効な間は追記のたびに、描画後(`request_animation_frame`)に最下部へ移動する。
+  スクロールイベントでは、最下部(残り2px以内)なら自動スクロールを有効にし、そうでなく上向きに動いた
+  ときだけ無効にする。追記後の最下部への移動は下向きなので、移動中に次の行が追記されても止まらない。
+  内容が減ってscrollTopが切り詰められた場合は最下部に張り付くので止まらない。先頭の行を捨てたときの
+  ブラウザの表示位置補正が上向きのスクロールと判定されないよう、`.log-list`は`overflow-anchor: none`にする。
+- 手動スクロール: ホイール・スクロールバー・キー操作で上へ戻すと自動スクロールが止まり、新しい行が
+  追記されても表示位置を保つ。最下部まで戻すと再開する。右端の「自動スクロール」ボタン(有効時は反転色、
+  `aria-pressed`)でも切り替えられ、有効にした時点で最下部へ移動する。
