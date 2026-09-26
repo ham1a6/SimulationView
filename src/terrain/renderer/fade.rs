@@ -57,25 +57,24 @@ impl<T> Fades<T> {
     /// 新しいメッシュを出す側に、`old`を消える側に登録する。前のクロスフェードの途中だったら、その古い側は
     /// 捨てる(いま出ている側が改めて消える側になる)。
     pub(super) fn replace(&mut self, key: MeshKey, old: Option<T>, now_ms: f64) {
-        self.outgoing.retain(|o| o.key != key);
+        self.cancel(key);
         self.incoming.insert(key, now_ms);
         if let Some(mesh) = old {
-            self.outgoing.push(Outgoing {
-                key,
-                mesh,
-                start_ms: now_ms,
-            });
+            self.push_outgoing(key, mesh, now_ms);
         }
     }
 
     /// `key`のメッシュ`old`を取り除いたときに呼ぶ(消える側に登録する)。
     pub(super) fn remove(&mut self, key: MeshKey, old: T, now_ms: f64) {
-        self.outgoing.retain(|o| o.key != key);
-        self.incoming.remove(&key);
+        self.cancel(key);
+        self.push_outgoing(key, old, now_ms);
+    }
+
+    fn push_outgoing(&mut self, key: MeshKey, mesh: T, start_ms: f64) {
         self.outgoing.push(Outgoing {
             key,
-            mesh: old,
-            start_ms: now_ms,
+            mesh,
+            start_ms,
         });
     }
 
@@ -104,6 +103,11 @@ impl<T> Fades<T> {
         self.incoming
             .get(key)
             .map(|&start| fade_progress(start, now_ms))
+    }
+
+    /// 出てくる途中のメッシュか。
+    pub(super) fn is_incoming(&self, key: &MeshKey) -> bool {
+        self.incoming.contains_key(key)
     }
 
     /// 出てくる途中のメッシュがあるか(無ければ、描くときにメッシュごとの照会を省ける)。

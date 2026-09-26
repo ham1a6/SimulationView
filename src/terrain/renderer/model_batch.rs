@@ -1,14 +1,16 @@
 //! 3Dモデル(`terrain::models`)のGPU側: モデルごとの頂点・インデックスと、インスタンス(1機ごとの変換行列)のバッファ、
 //! 描画パイプライン(`model.wgsl`)。モデルの追加・削除・インスタンスの更新は`TerrainRenderer`の`set_model`等が、
-//! 描画は`encode_main_pass`が呼ぶ。パイプラインは頂点バッファ2本(頂点・インスタンス)を使うので、
-//! 1本しか持てない共通の`pipelines::create_pipeline`は使わず、ここで作る(設定の中身は同じ: MSAA・反転Zの深度・カリングなし)。
+//! 描画は`encode_main_pass`が呼ぶ。パイプラインは頂点バッファ2本(頂点・インスタンス)を使う。
 
 use std::collections::HashMap;
 
 use wgpu::util::DeviceExt;
 
-use super::overlay::DrawSpace;
+use super::pipelines::{
+    create_pipeline, pipeline_layout, vertex_layout, wgsl_module, PipelineSpec,
+};
 use super::targets::SAMPLE_COUNT;
+use super::uniforms::UniformSlot;
 use crate::terrain::models::types::{ModelInstance, ModelMesh, ModelVertex};
 
 /// 頂点(`ModelVertex`)のシェーダー入力(`model.wgsl`の`VertexInput`のlocation 0〜2)。
@@ -43,66 +45,35 @@ impl ModelBatch {
         format: wgpu::TextureFormat,
         draw_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("model_shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../models/model.wgsl").into()),
-        });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("model_pipeline_layout"),
-            bind_group_layouts: &[Some(draw_bind_group_layout)],
-            immediate_size: 0,
-        });
+        let shader = wgsl_module(device, "model_shader", include_str!("../models/model.wgsl"));
+        let layout = pipeline_layout(device, "model_pipeline_layout", &[draw_bind_group_layout]);
         let buffers = [
-            wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<ModelVertex>() as wgpu::BufferAddress,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &MODEL_VERTEX_ATTRIBUTES,
-            },
-            wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<ModelInstance>() as wgpu::BufferAddress,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &MODEL_INSTANCE_ATTRIBUTES,
-            },
+            Some(vertex_layout::<ModelVertex>(
+                &MODEL_VERTEX_ATTRIBUTES,
+                wgpu::VertexStepMode::Vertex,
+            )),
+            Some(vertex_layout::<ModelInstance>(
+                &MODEL_INSTANCE_ATTRIBUTES,
+                wgpu::VertexStepMode::Instance,
+            )),
         ];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("model_pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                buffers: &buffers.map(Some),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+        // 裏面カリングは使わない(両面のモデルがある。`create_pipeline`の共通の設定)。
+        let pipeline = create_pipeline(
+            device,
+            &PipelineSpec {
+                label: "model_pipeline",
+                layout: &layout,
+                shader: &shader,
+                vs_entry: "vs_main",
+                fs_entry: "fs_main",
+                buffers: &buffers,
+                format,
+                blend: wgpu::BlendState::REPLACE,
+                // 不透明なので深度を書く。反転Zなので「より近ければ描く」はGreater。
+                depth: Some((true, wgpu::CompareFunction::Greater)),
+                samples: SAMPLE_COUNT,
             },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            // 裏面カリングは使わない(両面のモデルがある。パイプライン共通の設定と同じ)。
-            primitive: wgpu::PrimitiveState {
-                cull_mode: None,
-                ..Default::default()
-            },
-            // 不透明なので深度を書く。反転Zなので「より近ければ描く」はGreater。
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Greater),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: SAMPLE_COUNT,
-                ..Default::default()
-            },
-            multiview_mask: None,
-            cache: None,
-        });
+        );
         Self {
             pipeline,
             models: HashMap::new(),
@@ -172,11 +143,12 @@ impl ModelBatch {
     }
 
     /// 描くインスタンスが1つも無いか。
-    pub(super) fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.models.values().all(|m| m.count == 0)
     }
 
-    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, space: &DrawSpace) {
+    /// `space`は作図の絶対座標のuniform(`DrawUniform`)。
+    pub(super) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, space: &UniformSlot) {
         if self.is_empty() {
             return;
         }

@@ -3,7 +3,7 @@
 //! 描画はcanvasの`SUPERSAMPLE_FACTOR`倍の内部解像度で、4倍MSAAをかけて行い、最後に線形フィルタで
 //! canvasの解像度へ縮小する。
 
-use super::pipelines::{create_pipeline, PipelineSpec};
+use super::pipelines::{create_pipeline, pipeline_layout, PipelineSpec};
 
 /// マルチサンプルアンチエイリアシング(MSAA)のサンプル数。地形メッシュの解像度を
 /// 高解像度化した後、遠景で多数の細かい三角形が1画素に収まりきらず
@@ -146,11 +146,7 @@ impl Downsample {
                 },
             ],
         });
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("downsample_pipeline_layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
-            immediate_size: 0,
-        });
+        let layout = pipeline_layout(device, "downsample_pipeline_layout", &[&bind_group_layout]);
         let pipeline = create_pipeline(
             device,
             &PipelineSpec {
@@ -159,7 +155,7 @@ impl Downsample {
                 shader,
                 vs_entry: "vs_fullscreen",
                 fs_entry: "fs_downsample",
-                vertex_layout: None,
+                buffers: &[],
                 format,
                 blend: wgpu::BlendState::REPLACE,
                 // スワップチェーンへ直接(シングルサンプルで)描くパスなので深度・MSAAとも不要。

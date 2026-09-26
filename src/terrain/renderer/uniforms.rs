@@ -47,22 +47,6 @@ pub(super) struct CameraUniform {
     pub ellipsoid_g: [f32; 4],
 }
 
-impl CameraUniform {
-    /// 描画前の初期値(バッファを作るためだけの値。毎フレーム`render`が書き直す)。
-    pub(super) fn initial() -> Self {
-        Self {
-            view_proj: glam::Mat4::IDENTITY.to_cols_array_2d(),
-            shading: [0.0; 4],
-            eye: [0.0; 4],
-            forward: [0.0, 0.0, -1.0, 0.0],
-            right: [1.0, 0.0, 0.0, 0.0],
-            up: [0.0, 1.0, 0.0, 0.0],
-            ellipsoid_m: [[0.0; 4]; 3],
-            ellipsoid_g: [0.0; 4],
-        }
-    }
-}
-
 /// 地形の頂点(`TerrainVertex`)のシェーダー入力(`terrain.wgsl`の`VertexInput`)。位置・色・法線xy(snorm16x2)。
 /// オフセットは`vertex_attr_array!`が並びから求める(構造体のレイアウトと一致することは単体テストで確認)。
 pub(super) const TERRAIN_VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] =
@@ -93,19 +77,43 @@ pub(super) fn uniform_layout(
     })
 }
 
-/// `uniform_layout`のレイアウトで、バッファ全体を束縛するbind group。
-pub(super) fn uniform_bind_group(
-    device: &wgpu::Device,
-    label: &str,
-    layout: &wgpu::BindGroupLayout,
-    buffer: &wgpu::Buffer,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some(label),
-        layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: buffer.as_entire_binding(),
-        }],
-    })
+/// uniformバッファ1つと、`uniform_layout`のレイアウトでそのバッファ全体を束縛するbind group。
+/// 中身は描画のたびに`write`で書く(作った直後は0で埋まっている)。
+pub(super) struct UniformSlot {
+    buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+}
+
+impl UniformSlot {
+    pub(super) fn new(
+        device: &wgpu::Device,
+        layout: &wgpu::BindGroupLayout,
+        label: &str,
+        size: usize,
+    ) -> Self {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some(label),
+            size: size as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some(label),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        });
+        Self { buffer, bind_group }
+    }
+
+    /// バッファの先頭へ`bytes`を書く。
+    pub(super) fn write(&self, queue: &wgpu::Queue, bytes: &[u8]) {
+        queue.write_buffer(&self.buffer, 0, bytes);
+    }
+
+    pub(super) fn bind_group(&self) -> &wgpu::BindGroup {
+        &self.bind_group
+    }
 }

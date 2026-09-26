@@ -16,17 +16,18 @@ mod targets;
 mod uniforms;
 
 use std::collections::HashMap;
+use std::ops::Range;
 
 use wgpu::util::DeviceExt;
 
 use self::fade::{fade_progress, Fades, MAX_FADE_ENTRIES};
 use self::frustum::{is_outside_frustum, position_bounds};
 use self::model_batch::ModelBatch;
-use self::overlay::{DrawSpace, VertexBatch};
+use self::overlay::VertexBatch;
 use self::pipelines::{terrain_shader, Pipelines};
 use self::targets::{Downsample, RenderTargets};
 use self::uniforms::{
-    screen_matrix, uniform_bind_group, uniform_layout, CameraUniform, DrawUniform, VIEW_DRAW_LIGHT,
+    screen_matrix, uniform_layout, CameraUniform, DrawUniform, UniformSlot, VIEW_DRAW_LIGHT,
     WORLD_DRAW_LIGHT,
 };
 use super::camera::Camera;
@@ -45,6 +46,15 @@ struct MeshGpu {
     /// 頂点位置を囲む直方体(最小の角, 最大の角。ENU座標)。視錐台の外のメッシュを描かないために使う
     /// (`is_outside_frustum`)。原点変更で頂点位置が変わる(`update_mesh_vertices`)ので更新する。
     bounds: ([f32; 3], [f32; 3]),
+}
+
+impl MeshGpu {
+    /// パイプライン・bind groupを設定済みの`pass`へ、このメッシュを`instances`の範囲で描く。
+    fn draw(&self, pass: &mut wgpu::RenderPass<'_>, instances: Range<u32>) {
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..self.num_indices, 0, instances);
+    }
 }
 
 /// このフレームでクロスフェードするメッシュ1個(`fade_draws`)。`entry`は割合の表の値(`terrain.wgsl`の`FadeTable`)。
@@ -67,10 +77,9 @@ pub struct TerrainRenderer {
     meshes: HashMap<MeshKey, MeshGpu>,
     /// 解像度レベルの切り替え中のメッシュ(クロスフェード。`fade`)と、その割合の表(`terrain.wgsl`の`FadeTable`)。
     fades: Fades<MeshGpu>,
-    fade_buffer: wgpu::Buffer,
-    fade_bind_group: wgpu::BindGroup,
-    camera_buffer: wgpu::Buffer,
-    camera_bind_group: wgpu::BindGroup,
+    fade_table: UniformSlot,
+    /// 地形・水域・ドームのカメラ(`CameraUniform`)。
+    camera: UniformSlot,
     /// スーパーサンプリングの内部解像度の深度・MSAA・解決先。canvasの大きさが変わるたびに作り直す。
     targets: RenderTargets,
     /// 内部解像度→canvas解像度への縮小。
@@ -95,9 +104,9 @@ pub struct TerrainRenderer {
     // 作図(`terrain::drawing`)。面も太い線もTriangleListで、`draw.wgsl`が描く。不透明は深度を書き、
     // 半透明は深度を書かずにアルファブレンドする。画面座標だけ深度テストなし(描く順で重ねる)。
     // 座標の種類ごとのuniform: 絶対座標(カメラのview_proj)・視点空間(射影のみ)・画面(ピクセル座標)。
-    draw_world: DrawSpace,
-    draw_view: DrawSpace,
-    draw_screen: DrawSpace,
+    draw_world: UniformSlot,
+    draw_view: UniformSlot,
+    draw_screen: UniformSlot,
     world_opaque: VertexBatch,
     world_blend: VertexBatch,
     view_opaque: VertexBatch,
@@ -125,40 +134,57 @@ fn create_canvas_surface(
     Err("canvasへの描画はwasm32でのみ利用できます".to_string())
 }
 
+/// canvasにWebGPU(wgpu)のsurfaceを作り、デバイスを得て設定する(sRGB形式を優先、垂直同期)。
+async fn init_surface(
+    canvas: web_sys::HtmlCanvasElement,
+) -> Result<
+    (
+        wgpu::Surface<'static>,
+        wgpu::Device,
+        wgpu::Queue,
+        wgpu::SurfaceConfiguration,
+    ),
+    String,
+> {
+    let width = canvas.width().max(1);
+    let height = canvas.height().max(1);
+
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    let surface = create_canvas_surface(&instance, canvas)?;
+
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| format!("request_adapter failed: {e}"))?;
+
+    let (device, queue) = adapter
+        .request_device(&wgpu::DeviceDescriptor::default())
+        .await
+        .map_err(|e| format!("request_device failed: {e}"))?;
+
+    let surface_caps = surface.get_capabilities(&adapter);
+    let mut config = surface
+        .get_default_config(&adapter, width, height)
+        .ok_or_else(|| "surface is not supported by adapter".to_string())?;
+    // sRGB形式があればそれを使う。無ければ`get_default_config`が選んだ形式のまま。
+    if let Some(srgb) = surface_caps.formats.iter().copied().find(|f| f.is_srgb()) {
+        config.format = srgb;
+    }
+    config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
+    config.present_mode = wgpu::PresentMode::Fifo;
+    surface.configure(&device, &config);
+    Ok((surface, device, queue, config))
+}
+
 impl TerrainRenderer {
     pub async fn new(canvas: web_sys::HtmlCanvasElement) -> Result<Self, String> {
-        let width = canvas.width().max(1);
-        let height = canvas.height().max(1);
-
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
-        let surface = create_canvas_surface(&instance, canvas)?;
-
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| format!("request_adapter failed: {e}"))?;
-
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
-            .await
-            .map_err(|e| format!("request_device failed: {e}"))?;
-
-        let surface_caps = surface.get_capabilities(&adapter);
-        let mut config = surface
-            .get_default_config(&adapter, width, height)
-            .ok_or_else(|| "surface is not supported by adapter".to_string())?;
-        // sRGB形式があればそれを使う。無ければ`get_default_config`が選んだ形式のまま。
-        if let Some(srgb) = surface_caps.formats.iter().copied().find(|f| f.is_srgb()) {
-            config.format = srgb;
-        }
-        config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
-        config.present_mode = wgpu::PresentMode::Fifo;
-        surface.configure(&device, &config);
+        let (surface, device, queue, config) = init_surface(canvas).await?;
+        let (width, height) = (config.width, config.height);
 
         let shader = terrain_shader(&device);
         let targets = RenderTargets::new(&device, config.format, width, height);
@@ -169,52 +195,37 @@ impl TerrainRenderer {
             &targets.supersample_color_view,
         );
 
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("camera_buffer"),
-            contents: bytemuck::bytes_of(&CameraUniform::initial()),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
         // 頂点(view_proj・陰影)と、水域レイヤーのフラグメント(視線・楕円体)が読む。
         let camera_bind_group_layout = uniform_layout(
             &device,
             "camera_bind_group_layout",
             wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
         );
-        let camera_bind_group = uniform_bind_group(
+        let camera = UniformSlot::new(
             &device,
-            "camera_bind_group",
             &camera_bind_group_layout,
-            &camera_buffer,
+            "camera_uniform",
+            std::mem::size_of::<CameraUniform>(),
         );
 
         let pipelines = Pipelines::new(&device, config.format, &shader, &camera_bind_group_layout);
-        let fade_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("fade_buffer"),
-            size: (MAX_FADE_ENTRIES * std::mem::size_of::<[f32; 4]>()) as wgpu::BufferAddress,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let fade_bind_group = uniform_bind_group(
+        let fade_table = UniformSlot::new(
             &device,
-            "fade_bind_group",
             &pipelines.fade_bind_group_layout,
-            &fade_buffer,
+            "fade_table",
+            MAX_FADE_ENTRIES * std::mem::size_of::<[f32; 4]>(),
         );
-        let draw_world = DrawSpace::new(
-            &device,
-            &pipelines.draw_bind_group_layout,
-            "draw_world_uniform",
-        );
-        let draw_view = DrawSpace::new(
-            &device,
-            &pipelines.draw_bind_group_layout,
-            "draw_view_uniform",
-        );
-        let draw_screen = DrawSpace::new(
-            &device,
-            &pipelines.draw_bind_group_layout,
-            "draw_screen_uniform",
-        );
+        let draw_space = |label| {
+            UniformSlot::new(
+                &device,
+                &pipelines.draw_bind_group_layout,
+                label,
+                std::mem::size_of::<DrawUniform>(),
+            )
+        };
+        let draw_world = draw_space("draw_world_uniform");
+        let draw_view = draw_space("draw_view_uniform");
+        let draw_screen = draw_space("draw_screen_uniform");
         let models = ModelBatch::new(&device, config.format, &pipelines.draw_bind_group_layout);
 
         Ok(Self {
@@ -225,15 +236,13 @@ impl TerrainRenderer {
             pipelines,
             meshes: HashMap::new(),
             fades: Fades::new(),
-            fade_buffer,
-            fade_bind_group,
-            camera_buffer,
-            camera_bind_group,
+            fade_table,
+            camera,
             targets,
             downsample,
-            markers: VertexBatch::empty(),
-            coverage_2d: VertexBatch::empty(),
-            tracks: VertexBatch::empty(),
+            markers: VertexBatch::new("marker_vertex_buffer"),
+            coverage_2d: VertexBatch::new("coverage_2d_vertex_buffer"),
+            tracks: VertexBatch::new("tracks_vertex_buffer"),
             models,
             dome_vertex_buffer: None,
             num_dome_vertices: 0,
@@ -242,43 +251,23 @@ impl TerrainRenderer {
             draw_world,
             draw_view,
             draw_screen,
-            world_opaque: VertexBatch::empty(),
-            world_blend: VertexBatch::empty(),
-            view_opaque: VertexBatch::empty(),
-            view_blend: VertexBatch::empty(),
-            screen_batch: VertexBatch::empty(),
+            world_opaque: VertexBatch::new("draw_world_opaque"),
+            world_blend: VertexBatch::new("draw_world_blend"),
+            view_opaque: VertexBatch::new("draw_view_opaque"),
+            view_blend: VertexBatch::new("draw_view_blend"),
+            screen_batch: VertexBatch::new("draw_screen"),
         })
     }
 
     /// 作図(`terrain::drawing`)の頂点列を更新する。作図の一覧・原点・地形のLOD・canvasの大きさが
     /// 変わるたびに`drawing_geometry::build`で作り直して呼ぶ。
     pub fn update_drawings(&mut self, batches: &DrawingBatches) {
-        self.world_opaque.set(
-            &self.device,
-            &self.queue,
-            "draw_world_opaque",
-            &batches.world.opaque,
-        );
-        self.world_blend.set(
-            &self.device,
-            &self.queue,
-            "draw_world_blend",
-            &batches.world.blend,
-        );
-        self.view_opaque.set(
-            &self.device,
-            &self.queue,
-            "draw_view_opaque",
-            &batches.view.opaque,
-        );
-        self.view_blend.set(
-            &self.device,
-            &self.queue,
-            "draw_view_blend",
-            &batches.view.blend,
-        );
-        self.screen_batch
-            .set(&self.device, &self.queue, "draw_screen", &batches.screen);
+        let (device, queue) = (&self.device, &self.queue);
+        self.world_opaque.set(device, queue, &batches.world.opaque);
+        self.world_blend.set(device, queue, &batches.world.blend);
+        self.view_opaque.set(device, queue, &batches.view.opaque);
+        self.view_blend.set(device, queue, &batches.view.blend);
+        self.screen_batch.set(device, queue, &batches.screen);
     }
 
     /// canvasの内部解像度(ピクセル)。作図の画面座標(`Position::Screen`)の角の位置を決めるのに使う。
@@ -289,25 +278,18 @@ impl TerrainRenderer {
     /// レーダー観測点のマーカー(画面サイズ固定のピン)の頂点データを更新する。原点変更・マーカー追加/
     /// 削除/選択変更のたびに呼び直す想定(`terrain/markers.rs`が頂点データを作る)。
     pub fn update_markers(&mut self, vertices: &[DrawVertex]) {
-        self.markers
-            .set(&self.device, &self.queue, "marker_vertex_buffer", vertices);
+        self.markers.set(&self.device, &self.queue, vertices);
     }
 
     /// 2D地図モードの覆域(塗り+輪郭線)の頂点データを更新する。深度テストなしで描く(`terrain/markers.rs`)。
     pub fn update_coverage_2d(&mut self, vertices: &[DrawVertex]) {
-        self.coverage_2d.set(
-            &self.device,
-            &self.queue,
-            "coverage_2d_vertex_buffer",
-            vertices,
-        );
+        self.coverage_2d.set(&self.device, &self.queue, vertices);
     }
 
     /// 航跡(トラック)の頂点データ(シンボル・航跡・高度線)を更新する。トラックの受信・原点変更・地形のLOD切り替え・
     /// 2D/3D切り替えのたびに`terrain::tracks::build_track_geometry`で作り直して呼ぶ。
     pub fn update_tracks(&mut self, vertices: &[DrawVertex]) {
-        self.tracks
-            .set(&self.device, &self.queue, "tracks_vertex_buffer", vertices);
+        self.tracks.set(&self.device, &self.queue, vertices);
     }
 
     /// 3Dモデル(`terrain::models`)を1つ登録する(`key`はモデルの識別子。アプリが登録したURL)。同じキーがあれば置き換える。
@@ -413,7 +395,7 @@ impl TerrainRenderer {
     }
 
     /// メッシュ1個を取り除く(GPUバッファは解放される)。
-    pub fn remove_mesh(&mut self, key: MeshKey) {
+    fn remove_mesh(&mut self, key: MeshKey) {
         self.fades.cancel(key);
         self.meshes.remove(&key);
     }
@@ -497,8 +479,8 @@ impl TerrainRenderer {
             ellipsoid_m,
             ellipsoid_g,
         };
-        self.queue
-            .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(&camera_uniform));
+        self.camera
+            .write(&self.queue, bytemuck::bytes_of(&camera_uniform));
 
         // 作図のuniform。絶対座標=地形と同じカメラ、視点空間=射影だけ(カメラから見た座標をそのまま射影)、
         // 画面=ピクセル座標。
@@ -518,8 +500,7 @@ impl TerrainRenderer {
                 viewport,
                 light,
             };
-            self.queue
-                .write_buffer(&space.buffer, 0, bytemuck::bytes_of(&uniform));
+            space.write(&self.queue, bytemuck::bytes_of(&uniform));
         }
         // カメラ固定の作図(視点空間・画面)は、地形の奥行きとは別に、地形の手前へ重ねて描く。
         // 深度バッファを作り直す必要があるので、地形のパスとは別のパスにする。
@@ -556,8 +537,8 @@ impl TerrainRenderer {
         let fade_draws = self.fade_draws(camera, now);
         let entries: Vec<[f32; 4]> = fade_draws.iter().map(|d| d.entry).collect();
         if !entries.is_empty() {
-            self.queue
-                .write_buffer(&self.fade_buffer, 0, bytemuck::cast_slice(&entries));
+            self.fade_table
+                .write(&self.queue, bytemuck::cast_slice(&entries));
         }
         self.encode_main_pass(&mut encoder, camera, has_overlay, &fade_draws);
         if has_overlay {
@@ -633,12 +614,7 @@ impl TerrainRenderer {
                 depth_slice: None,
                 ops: wgpu::Operations {
                     // 地形が描かれない領域(空・海・データ範囲の外側)は黒。
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 1.0,
-                    }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     // resolve_targetへ解決した後はこのMSAAテクスチャ自体は不要なので
                     // 保存しない(Discard)。オーバーレイのパスへ引き継ぐときだけ保存する。
                     store: if has_overlay {
@@ -648,15 +624,7 @@ impl TerrainRenderer {
                     },
                 },
             })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.targets.depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    // 反転Z(reversed-Z): 「最も遠い」を表す深度値は0.0(camera.rs参照)。
-                    load: wgpu::LoadOp::Clear(0.0),
-                    store: wgpu::StoreOp::Discard,
-                }),
-                stencil_ops: None,
-            }),
+            depth_stencil_attachment: Some(self.cleared_depth()),
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
@@ -665,11 +633,11 @@ impl TerrainRenderer {
         // 水域レイヤーを最初に描く(楕円体との交点の深度を書く。続く地形メッシュは深度テストで、
         // 地球本体の向こう側は隠れ、手前(と余裕の範囲)は水域の上に描かれる)。
         render_pass.set_pipeline(&self.pipelines.water);
-        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
         render_pass.draw(0..3, 0..1);
 
         render_pass.set_pipeline(&self.pipelines.terrain);
-        render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+        render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
         // 視錐台の外のメッシュは描かない(全タイルをチャンクで常駐させているので、画面外の
         // 大量の頂点を毎フレーム処理しないため)。
         let view_proj = camera.view_proj_matrix();
@@ -677,25 +645,20 @@ impl TerrainRenderer {
         for (key, mesh) in &self.meshes {
             if is_outside_frustum(&view_proj, mesh.bounds)
                 // 出てくる途中のメッシュは、次のクロスフェード用の描画でまとめて描く。
-                || (any_incoming && self.fades.incoming_progress(key, 0.0).is_some())
+                || (any_incoming && self.fades.is_incoming(key))
             {
                 continue;
             }
-            render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..mesh.num_indices, 0, 0..1);
+            mesh.draw(&mut render_pass, 0..1);
         }
         // クロスフェード中のメッシュ(新旧)。割合の表の何番目かを`first_instance`で渡す(`terrain.wgsl`の`vs_fade`)。
         if !fade_draws.is_empty() {
             render_pass.set_pipeline(&self.pipelines.terrain_fade);
-            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            render_pass.set_bind_group(1, &self.fade_bind_group, &[]);
+            render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
+            render_pass.set_bind_group(1, self.fade_table.bind_group(), &[]);
             for (index, draw) in fade_draws.iter().enumerate() {
-                let mesh = draw.mesh;
-                render_pass.set_vertex_buffer(0, mesh.vertex_buffer.slice(..));
-                render_pass
-                    .set_index_buffer(mesh.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-                render_pass.draw_indexed(0..mesh.num_indices, 0, index as u32..index as u32 + 1);
+                let index = index as u32;
+                draw.mesh.draw(&mut render_pass, index..index + 1);
             }
         }
 
@@ -712,7 +675,7 @@ impl TerrainRenderer {
         // `update_dome`は空の頂点列ならバッファを持たない。
         if let Some(dome_buffer) = self.dome_vertex_buffer.as_ref() {
             render_pass.set_pipeline(&self.pipelines.dome);
-            render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_bind_group(0, self.camera.bind_group(), &[]);
             render_pass.set_vertex_buffer(0, dome_buffer.slice(..));
             render_pass.draw(0..self.num_dome_vertices, 0..1);
         }
@@ -755,14 +718,7 @@ impl TerrainRenderer {
                     store: wgpu::StoreOp::Discard,
                 },
             })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &self.targets.depth_view,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(0.0),
-                    store: wgpu::StoreOp::Discard,
-                }),
-                stencil_ops: None,
-            }),
+            depth_stencil_attachment: Some(self.cleared_depth()),
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
@@ -784,6 +740,19 @@ impl TerrainRenderer {
         );
     }
 
+    /// 深度バッファを0.0で消して使い、パスの後には残さない深度アタッチメント
+    /// (反転Z(reversed-Z): 「最も遠い」を表す深度値は0.0。camera.rs参照)。
+    fn cleared_depth(&self) -> wgpu::RenderPassDepthStencilAttachment<'_> {
+        wgpu::RenderPassDepthStencilAttachment {
+            view: &self.targets.depth_view,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Clear(0.0),
+                store: wgpu::StoreOp::Discard,
+            }),
+            stencil_ops: None,
+        }
+    }
+
     /// スーパーサンプリングのダウンサンプルパス: 内部解像度で描いたsupersample_color_viewを、実際の
     /// canvas解像度のスワップチェーンへ線形フィルタで縮小して描く(画面いっぱいの三角形1枚、頂点バッファなし)。
     fn encode_downsample_pass(&self, encoder: &mut wgpu::CommandEncoder, view: &wgpu::TextureView) {
@@ -794,12 +763,7 @@ impl TerrainRenderer {
                 resolve_target: None,
                 depth_slice: None,
                 ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color {
-                        r: 0.0,
-                        g: 0.0,
-                        b: 0.0,
-                        a: 1.0,
-                    }),
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                     store: wgpu::StoreOp::Store,
                 },
             })],

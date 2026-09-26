@@ -6,6 +6,41 @@ use super::uniforms::{uniform_layout, DRAW_VERTEX_ATTRIBUTES, TERRAIN_VERTEX_ATT
 use crate::terrain::mesh::TerrainVertex;
 use crate::terrain::vertex::DrawVertex;
 
+/// 頂点バッファ1本のレイアウト(1要素が`T`)。
+pub(super) fn vertex_layout<T>(
+    attributes: &[wgpu::VertexAttribute],
+    step_mode: wgpu::VertexStepMode,
+) -> wgpu::VertexBufferLayout<'_> {
+    wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<T>() as wgpu::BufferAddress,
+        step_mode,
+        attributes,
+    }
+}
+
+/// bind groupのレイアウトを並べたパイプラインレイアウト(添字がgroup番号)。
+pub(super) fn pipeline_layout(
+    device: &wgpu::Device,
+    label: &str,
+    bind_group_layouts: &[&wgpu::BindGroupLayout],
+) -> wgpu::PipelineLayout {
+    let layouts: Vec<Option<&wgpu::BindGroupLayout>> =
+        bind_group_layouts.iter().copied().map(Some).collect();
+    device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts: &layouts,
+        immediate_size: 0,
+    })
+}
+
+/// WGSLのシェーダーモジュール。
+pub(super) fn wgsl_module(device: &wgpu::Device, label: &str, source: &str) -> wgpu::ShaderModule {
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Wgsl(source.into()),
+    })
+}
+
 /// パイプライン1本ぶんの、パイプラインごとに違う設定。
 pub(super) struct PipelineSpec<'a> {
     pub label: &'a str,
@@ -13,8 +48,8 @@ pub(super) struct PipelineSpec<'a> {
     pub shader: &'a wgpu::ShaderModule,
     pub vs_entry: &'a str,
     pub fs_entry: &'a str,
-    /// 頂点バッファのレイアウト。`None`なら頂点バッファなし(画面いっぱいの三角形を頂点番号から作る)。
-    pub vertex_layout: Option<wgpu::VertexBufferLayout<'a>>,
+    /// 頂点バッファのレイアウト(添字がスロット番号)。空なら頂点バッファなし(画面いっぱいの三角形を頂点番号から作る)。
+    pub buffers: &'a [Option<wgpu::VertexBufferLayout<'a>>],
     pub format: wgpu::TextureFormat,
     pub blend: wgpu::BlendState,
     /// (深度を書くか, 深度の比較)。`None`なら深度バッファなし。
@@ -24,15 +59,13 @@ pub(super) struct PipelineSpec<'a> {
 }
 
 pub(super) fn create_pipeline(device: &wgpu::Device, spec: &PipelineSpec) -> wgpu::RenderPipeline {
-    let buffers: Vec<Option<wgpu::VertexBufferLayout>> =
-        spec.vertex_layout.iter().cloned().map(Some).collect();
     device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some(spec.label),
         layout: Some(spec.layout),
         vertex: wgpu::VertexState {
             module: spec.shader,
             entry_point: Some(spec.vs_entry),
-            buffers: &buffers,
+            buffers: spec.buffers,
             compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
@@ -70,30 +103,9 @@ pub(super) fn create_pipeline(device: &wgpu::Device, spec: &PipelineSpec) -> wgp
     })
 }
 
-/// 地形の頂点バッファのレイアウト(`TerrainVertex`)。
-fn terrain_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
-    wgpu::VertexBufferLayout {
-        array_stride: std::mem::size_of::<TerrainVertex>() as wgpu::BufferAddress,
-        step_mode: wgpu::VertexStepMode::Vertex,
-        attributes: &TERRAIN_VERTEX_ATTRIBUTES,
-    }
-}
-
-/// 作図の頂点バッファのレイアウト(`DrawVertex`)。
-fn draw_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
-    wgpu::VertexBufferLayout {
-        array_stride: std::mem::size_of::<DrawVertex>() as wgpu::BufferAddress,
-        step_mode: wgpu::VertexStepMode::Vertex,
-        attributes: &DRAW_VERTEX_ATTRIBUTES,
-    }
-}
-
 /// 地形用のシェーダーモジュール(地形・水域・ドーム・縮小の4本が共有する)。
 pub(super) fn terrain_shader(device: &wgpu::Device) -> wgpu::ShaderModule {
-    device.create_shader_module(wgpu::ShaderModuleDescriptor {
-        label: Some("terrain_shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../terrain.wgsl").into()),
-    })
+    wgsl_module(device, "terrain_shader", include_str!("../terrain.wgsl"))
 }
 
 /// メインパスで使うパイプライン一式(縮小パスのパイプラインは`targets::Downsample`)。
@@ -110,7 +122,7 @@ pub(super) struct Pipelines {
     pub draw_opaque: wgpu::RenderPipeline,
     pub draw_blend: wgpu::RenderPipeline,
     pub draw_screen: wgpu::RenderPipeline,
-    /// 作図のuniform(`DrawSpace`)のbind groupレイアウト。
+    /// 作図のuniform(`DrawUniform`)のbind groupレイアウト。
     pub draw_bind_group_layout: wgpu::BindGroupLayout,
 }
 
@@ -121,18 +133,22 @@ impl Pipelines {
         terrain_shader: &wgpu::ShaderModule,
         camera_bind_group_layout: &wgpu::BindGroupLayout,
     ) -> Self {
-        let terrain_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("terrain_pipeline_layout"),
-            bind_group_layouts: &[Some(camera_bind_group_layout)],
-            immediate_size: 0,
-        });
-        let terrain_spec = |label, vs_entry, fs_entry, vertex_layout, blend, depth| PipelineSpec {
+        let terrain_layout = pipeline_layout(
+            device,
+            "terrain_pipeline_layout",
+            &[camera_bind_group_layout],
+        );
+        let terrain_vertices = [Some(vertex_layout::<TerrainVertex>(
+            &TERRAIN_VERTEX_ATTRIBUTES,
+            wgpu::VertexStepMode::Vertex,
+        ))];
+        let terrain_spec = |label, vs_entry, fs_entry, buffers, blend, depth| PipelineSpec {
             label,
             layout: &terrain_layout,
             shader: terrain_shader,
             vs_entry,
             fs_entry,
-            vertex_layout,
+            buffers,
             format,
             blend,
             depth: Some(depth),
@@ -146,7 +162,7 @@ impl Pipelines {
                 "terrain_pipeline",
                 "vs_main",
                 "fs_main",
-                Some(terrain_vertex_layout()),
+                &terrain_vertices,
                 wgpu::BlendState::REPLACE,
                 (true, wgpu::CompareFunction::Greater),
             ),
@@ -155,27 +171,23 @@ impl Pipelines {
         // (`discard`を持つシェーダーは早期深度テストが効きにくいので、切り替え中のメッシュだけに使う)。
         let fade_bind_group_layout =
             uniform_layout(device, "fade_bind_group_layout", wgpu::ShaderStages::VERTEX);
-        let fade_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("terrain_fade_pipeline_layout"),
-            bind_group_layouts: &[
-                Some(camera_bind_group_layout),
-                Some(&fade_bind_group_layout),
-            ],
-            immediate_size: 0,
-        });
+        let fade_layout = pipeline_layout(
+            device,
+            "terrain_fade_pipeline_layout",
+            &[camera_bind_group_layout, &fade_bind_group_layout],
+        );
         let terrain_fade = create_pipeline(
             device,
             &PipelineSpec {
-                label: "terrain_fade_pipeline",
                 layout: &fade_layout,
-                shader: terrain_shader,
-                vs_entry: "vs_fade",
-                fs_entry: "fs_fade",
-                vertex_layout: Some(terrain_vertex_layout()),
-                format,
-                blend: wgpu::BlendState::REPLACE,
-                depth: Some((true, wgpu::CompareFunction::Greater)),
-                samples: SAMPLE_COUNT,
+                ..terrain_spec(
+                    "terrain_fade_pipeline",
+                    "vs_fade",
+                    "fs_fade",
+                    &terrain_vertices,
+                    wgpu::BlendState::REPLACE,
+                    (true, wgpu::CompareFunction::Greater),
+                )
             },
         );
         // 水域レイヤー。画面いっぱいの三角形(頂点バッファなし)を、地形メッシュより先に描く。深度テストは
@@ -189,7 +201,7 @@ impl Pipelines {
                 "water_pipeline",
                 "vs_fullscreen",
                 "fs_water",
-                None,
+                &[],
                 wgpu::BlendState::REPLACE,
                 (true, wgpu::CompareFunction::Always),
             ),
@@ -204,24 +216,22 @@ impl Pipelines {
                 "dome_surface_pipeline",
                 "vs_main",
                 "fs_dome",
-                Some(terrain_vertex_layout()),
+                &terrain_vertices,
                 wgpu::BlendState::ALPHA_BLENDING,
                 (false, wgpu::CompareFunction::Greater),
             ),
         );
 
         // 作図用(`draw.wgsl`)。地形とは別のシェーダー・bind group(uniformの中身が違う)。
-        let draw_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("draw_shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../draw.wgsl").into()),
-        });
+        let draw_shader = wgsl_module(device, "draw_shader", include_str!("../draw.wgsl"));
         let draw_bind_group_layout =
             uniform_layout(device, "draw_bind_group_layout", wgpu::ShaderStages::VERTEX);
-        let draw_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("draw_pipeline_layout"),
-            bind_group_layouts: &[Some(&draw_bind_group_layout)],
-            immediate_size: 0,
-        });
+        let draw_layout =
+            pipeline_layout(device, "draw_pipeline_layout", &[&draw_bind_group_layout]);
+        let draw_vertices = [Some(vertex_layout::<DrawVertex>(
+            &DRAW_VERTEX_ATTRIBUTES,
+            wgpu::VertexStepMode::Vertex,
+        ))];
         let draw = |label, depth| {
             create_pipeline(
                 device,
@@ -231,7 +241,7 @@ impl Pipelines {
                     shader: &draw_shader,
                     vs_entry: "vs_main",
                     fs_entry: "fs_main",
-                    vertex_layout: Some(draw_vertex_layout()),
+                    buffers: &draw_vertices,
                     format,
                     blend: wgpu::BlendState::ALPHA_BLENDING,
                     depth: Some(depth),

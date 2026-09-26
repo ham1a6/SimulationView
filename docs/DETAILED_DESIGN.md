@@ -589,7 +589,7 @@ flowchart LR
   新しい側は「疎密のパターン < 割合」の画素、古い側は残りの画素だけを描く(半透明ではなく`discard`)ので、深度は通常どおり書け、描く順にも依存せず、新旧が同じ画素で深度を奪い合うこともない。割合は時間の経過を`smoothstep`にしたもの。
   メッシュごとの割合は`FadeTable`(uniform、`vec4`×2048)に入れ、描画側が`draw_indexed`の`first_instance`に表の番号を渡して、頂点シェーダーが`instance_index`で引く(メッシュごとにバッファ・bind groupを作らない)。
   クロスフェード中のメッシュだけ専用パイプライン(`terrain_fade`)で描く(`discard`を持つシェーダーは早期深度テストが効きにくいので、普段の地形には使わない)。
-  API: `set_mesh_faded`・`remove_mesh_faded`(`set_mesh`・`remove_mesh`はすぐに切り替える。起動時の初回配置・原点変更は後者)。`is_fading`の間は`render_frame`が`requestAnimationFrame`で描き直し続ける(でないと途中の割合で止まる)。
+  API: `set_mesh_faded`・`remove_mesh_faded`(`set_mesh`はすぐに切り替える。起動時の初回配置・原点変更はこちら。クロスフェードの枠が足りないときは`remove_mesh_faded`も内部ですぐに取り除く)。`is_fading`の間は`render_frame`が`requestAnimationFrame`で描き直し続ける(でないと途中の割合で止まる)。
   途中でさらに差し替わったら、前の古い側は捨てて、いま出ている側が改めて消える側になる(連続して段階的に細かくなるとき、途中の1段は混ざらず切り替わる)。同時に混ぜる数が表の大きさを超える分・原点変更は、混ぜずにすぐ切り替える
 
 **水域レイヤー**(「マスクファイルの水域と地形データの範囲外を水色で表示。標高は海抜0m。WGS84の丸みを考慮し、地形を隠さないように。標高が0m以下の地形の上にも水域が来ないように」との要望で追加。
@@ -1219,9 +1219,9 @@ pub struct OrbitCamera { target: Vec3, distance, yaw, pitch, fov_y_radians, z_ne
 - 縮小サンプラーは`ClampToEdge`・`Linear`/`Linear`/`Nearest`。**wgpu標準の`TextureBlitter`は縮小側がNearest固定なので使わない**(線形フィルタの2×2平均がスーパーサンプリングの要)
 - 水域のbind groupと縮小のbind groupはどちらも`@group(0)`(別パイプラインで別のレイアウト)
 
-**`TerrainRenderer`の公開API**: `new(canvas)`(async)、`set_mesh(key, &mesh)`(同じキーは置換、`indices.is_empty()`なら削除。`bounds`=頂点位置のAABBを保持)、`remove_mesh`、`set_mesh_faded`・`remove_mesh_faded`(クロスフェードで切り替える版)・`is_fading`、`update_mesh_vertices(key, &vertices)`(頂点数不変で位置だけ更新=原点変更。boundsも更新)、
+**`TerrainRenderer`の公開API**: `new(canvas)`(async)、`set_mesh(key, &mesh)`(同じキーは置換、`indices.is_empty()`なら削除。`bounds`=頂点位置のAABBを保持)、`set_mesh_faded`・`remove_mesh_faded`(クロスフェードで切り替える版)・`is_fading`、`update_mesh_vertices(key, &vertices)`(頂点数不変で位置だけ更新=原点変更。boundsも更新)、
 `update_markers`・`update_coverage_2d`・`update_tracks`(`&[DrawVertex]`)、`update_drawings(&DrawingBatches)`、`update_dome(&[TerrainVertex])`、`set_hillshade(bool)`、`set_ellipsoid_origin(&EnuTransform)`(頂点を作り直す場面で必ず呼ぶ)、
-`resize(w,h)`(0または現状と同じなら何もしない)、`aspect_ratio`・`canvas_height_px`・`canvas_size_px`、`render(&Camera) -> Result<(), String>`。
+`resize(w,h)`(0または現状と同じなら何もしない)、`aspect_ratio`・`canvas_size_px`、`render(&Camera) -> Result<(), String>`。
 
 - **`new`**: `canvas.width()/height()`(0なら1)。ネイティブ(単体テスト)ではcanvas surfaceが作れないので`cfg(target_arch="wasm32")`で分け、非wasmは`Err`を返す(ライブラリ全体が`cargo test`でビルドできるように)。
   `request_adapter{HighPerformance, compatible_surface}`、`surface.get_default_config`で**sRGB形式があればそれに変更**、`present_mode=Fifo`
